@@ -1,0 +1,32 @@
+
+planner_configs:
+  BiRRT:
+    type: geometric::BiRRT
+    range: 0.2
+    delay_collision_checking: 1
+    path_simplify: true
+    shortcut_path: true
+    optimize_path_length: true
+    optimize_path_clearance: true
+    simplification_factor: 2.0
+    interpolate: true
+    num_smoothing_steps: 5
+
+  RRTstar:
+    type: geometric::RRTstar
+    range: 0.2
+    goal_bias: 0.05
+    delay_collision_checking: 1
+
+  RRTConnect:
+    type: geometric::RRTConnect
+    range: 0.2
+
+
+base_arm:
+  planner_configs:
+    - BiRRT
+  default_planner_config: BiRRT
+  projection_evaluator: joints(base_x,base_y,base_theta,JointFrame,JointTelescope,JointArm1,JointArm2,JointWrist,JointHand)
+  planning_time: 10.0
+  num_planning_attempts: 5

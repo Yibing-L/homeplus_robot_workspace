@@ -1,0 +1,33 @@
+joint_state_publisher_gui:
+  source_list:
+    - base_x
+    - base_y
+    - base_theta
+    - JointFrame
+    - JointTelescope
+    - JointArm1
+    - JointArm2
+    - JointWrist
+    - JointHand
+    - JointFingerR
+    - JointFingerL
+    - JointWheelFL
+    - JointWheelFR
+    - JointWheelBL
+    - JointWheelBR
+  initial:
+    base_x: 0.5
+    base_y: 0.5
+    base_theta: 0.5
+    JointFrame: 0.0
+    JointTelescope: 0.0
+    JointArm1: 0.0
+    JointArm2: 0.0
+    JointWrist: 0.0
+    JointHand: 0.0
+    JointFingerR: 0.0
+    JointFingerL: 0.0
+    JointWheelFL: 0.0
+    JointWheelFR: 0.0
+    JointWheelBL: 0.0
+    JointWheelBR: 0.0
