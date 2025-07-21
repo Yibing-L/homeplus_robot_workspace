@@ -2,31 +2,57 @@
 planner_configs:
   BiRRT:
     type: geometric::BiRRT
-    range: 0.2
+    range: 0.1  # Step size for tree extension
     delay_collision_checking: 1
-    path_simplify: true
+    path_simplify: false
     shortcut_path: true
-    optimize_path_length: true
-    optimize_path_clearance: true
-    simplification_factor: 2.0
+    optimize_path_length: false
+    optimize_path_clearance: false
+    simplification_factor: 1.0
     interpolate: true
-    num_smoothing_steps: 5
+    num_smoothing_steps: 20
+    longest_valid_segment_fraction: 0.01
+    # Key parameters for more sampling points
+    max_nearest_neighbors: 10
+    rewire_factor: 1.1
+    use_k_nearest: false
 
   RRTstar:
     type: geometric::RRTstar
-    range: 0.2
+    range: 0.1
     goal_bias: 0.05
     delay_collision_checking: 1
+    path_simplify: false
+    shortcut_path: true
+    optimize_path_length: false
+    interpolate: true
+    num_smoothing_steps: 20
+    longest_valid_segment_fraction: 0.01
+    # Parameters for more sampling
+    rewire_factor: 1.1
+    use_k_nearest: false
+    max_nearest_neighbors: 10
 
   RRTConnect:
     type: geometric::RRTConnect
-    range: 0.2
+    range: 0.1  # Step size for tree extension
+    delay_collision_checking: 1
+    path_simplify: false
+    shortcut_path: true
+    interpolate: true
+    num_smoothing_steps: 20
+    longest_valid_segment_fraction: 0.01
 
 
 base_arm:
   planner_configs:
     - BiRRT
+    - RRTConnect
+    - RRTstar
   default_planner_config: BiRRT
   projection_evaluator: joints(base_x,base_y,base_theta,JointFrame,JointTelescope,JointArm1,JointArm2,JointWrist,JointHand)
-  planning_time: 10.0
-  num_planning_attempts: 5
+  planning_time: 15.0  # More time for sampling
+  num_planning_attempts: 1  # Focus on one good attempt
+  # Force more waypoints in trajectory processing
+  trajectory_initialization: "quintic-spline"
+  max_acceleration_scaling_factor: 0.1  # Slower motion = more waypoints

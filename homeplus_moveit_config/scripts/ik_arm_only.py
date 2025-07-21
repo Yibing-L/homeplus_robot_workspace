@@ -13,7 +13,7 @@ from geometry_msgs.msg import Point
 import sys
 import math
 
-class HomePlusIKPipeline(Node):
+class HomePlusArmOnlyPipeline(Node):
     def publish_trajectory_marker(self, joint_trajectory):
         marker = Marker()
         marker.header.frame_id = "world"
@@ -36,7 +36,7 @@ class HomePlusIKPipeline(Node):
         self.marker_pub.publish(marker)
 
     def __init__(self):
-        super().__init__('homeplus_ik_pipeline')
+        super().__init__('homeplus_arm_only_pipeline')
         # Create action client for move_group
         self.move_group_client = ActionClient(self, MoveGroup, '/move_action')
         # Create marker publisher for RViz visualization
@@ -53,40 +53,60 @@ class HomePlusIKPipeline(Node):
         # Initialize target point (will be set later)
         self.target_point = [0.0, 0.0, 0.0]
         
-        self.publish_box_obstacle()
+        # Publish obstacles that constrain base movement
+        self.publish_base_constraining_obstacles()
         
-        self.get_logger().info('HomePlus IK Pipeline initialized')
+        self.get_logger().info('HomePlus Arm-Only Pipeline initialized')
         self.get_logger().info('Waiting for move_group action server...')
         self.move_group_client.wait_for_server()
         self.get_logger().info('Connected to move_group action server')
 
-    def publish_box_obstacle(self):
-        """Publish a box obstacle to the planning scene"""
+    def publish_base_constraining_obstacles(self):
+        """Publish obstacles around the robot base to prevent X/Y movement"""
         from moveit_msgs.msg import PlanningScene, CollisionObject
         from shape_msgs.msg import SolidPrimitive
         from geometry_msgs.msg import Pose
-        import uuid
+        
         scene = PlanningScene()
         scene.is_diff = True
-        box = CollisionObject()
-        box.header.frame_id = "world"
-        box.id = "box_obstacle"
-        box.operation = CollisionObject.ADD
-        # Define box primitive
-        primitive = SolidPrimitive()
-        primitive.type = SolidPrimitive.BOX
-        primitive.dimensions = [0.5, 0.5, 0.5]  # size: x, y, z (meters)
-        box.primitives.append(primitive)
-        # Define box pose
-        pose = Pose()
-        pose.position.x = 0.0
-        pose.position.y = 1.0
-        pose.position.z = 0.25
-        pose.orientation.w = 1.0
-        box.primitive_poses.append(pose)
-        scene.world.collision_objects.append(box)
+        
+        # Create walls around the robot to prevent base movement
+        obstacles = [
+            # Front wall (positive X)
+            {"id": "front_wall", "pos": [0.3, 0.0, 0.05], "size": [0.1, 2.0, 0.1]},
+            # Back wall (negative X)
+            {"id": "back_wall", "pos": [-0.3, 0.0, 0.05], "size": [0.1, 2.0, 0.1]},
+            # Left wall (positive Y)
+            {"id": "left_wall", "pos": [0.0, 0.3, 0.05], "size": [2.0, 0.1, 0.1]},
+            # Right wall (negative Y)
+            {"id": "right_wall", "pos": [0.0, -0.3, 0.05], "size": [2.0, 0.1, 0.1]},
+        ]
+        
+        for obs in obstacles:
+            box = CollisionObject()
+            box.header.frame_id = "world"
+            box.id = obs["id"]
+            box.operation = CollisionObject.ADD
+            
+            # Define box primitive
+            primitive = SolidPrimitive()
+            primitive.type = SolidPrimitive.BOX
+            primitive.dimensions = obs["size"]  # [x, y, z] size in meters
+            box.primitives.append(primitive)
+            
+            # Define box pose
+            pose = Pose()
+            pose.position.x = obs["pos"][0]
+            pose.position.y = obs["pos"][1]
+            pose.position.z = obs["pos"][2]
+            pose.orientation.w = 1.0
+            box.primitive_poses.append(pose)
+            
+            scene.world.collision_objects.append(box)
+        
         self.scene_pub.publish(scene)
-        self.get_logger().info('Published box obstacle to planning scene')
+        self.get_logger().info('Published base-constraining obstacles to planning scene')
+        self.get_logger().info('Robot base is now constrained - only arm movement and rotation allowed')
     
     def publish_target_object(self):
         """Publish a target object at the goal point (visual only, non-collidable)"""
@@ -204,41 +224,46 @@ class HomePlusIKPipeline(Node):
         self.get_logger().info(f'Published goal marker at: {self.target_point}')
 
     def plan_trajectory_to_point(self):
-        """Plan trajectory to reach the target point and output trajectory strings"""
-        self.get_logger().info(f'Planning trajectory to end-effector point: {self.target_point}')
+        """Plan trajectory to reach the target point using arm movement only"""
+        self.get_logger().info(f'Planning arm-only trajectory to end-effector point: {self.target_point}')
         
         goal = MoveGroup.Goal()
         goal.request = MotionPlanRequest()
-        goal.request.group_name = "base_arm"  # Must match RViz planning group
+        goal.request.group_name = "base_arm"  # Still use base_arm group but constrain base joints
         # Set planner_id to match config
         goal.request.planner_id = "BiRRT"
+        
         # Set start state to default robot state from planning scene
         from moveit_msgs.msg import RobotState
         from moveit_msgs.msg import PlanningScene
         import rclpy.task
+        
         # Get the current planning scene
         planning_scene_msg = None
         def planning_scene_callback(msg):
             nonlocal planning_scene_msg
             planning_scene_msg = msg
         planning_scene_sub = self.create_subscription(PlanningScene, '/planning_scene', planning_scene_callback, 1)
+        
         # Wait for a planning scene message
         timeout = self.get_clock().now().nanoseconds + int(2e9)  # 2 seconds
         while planning_scene_msg is None and self.get_clock().now().nanoseconds < timeout:
             rclpy.spin_once(self, timeout_sec=0.1)
         self.destroy_subscription(planning_scene_sub)
+        
         if planning_scene_msg and planning_scene_msg.robot_state:
             goal.request.start_state = planning_scene_msg.robot_state
         else:
             goal.request.start_state = RobotState()
         
-        # Create proper pose goal using separate position and orientation constraints
+        # Create constraints to keep base fixed but allow rotation
         constraints = Constraints()
         
         # Position constraint for end-effector
         position_constraint = PositionConstraint()
         position_constraint.header.frame_id = "world"
         position_constraint.link_name = "Hand"  # End-effector link
+        
         # Define a small box region at the goal point
         from shape_msgs.msg import SolidPrimitive
         from geometry_msgs.msg import Pose
@@ -254,7 +279,7 @@ class HomePlusIKPipeline(Node):
         position_constraint.constraint_region.primitive_poses = [region_pose]
         position_constraint.weight = 1.0
         
-        # Orientation constraint
+        # Orientation constraint (relaxed)
         orientation_constraint = OrientationConstraint()
         orientation_constraint.header.frame_id = "world"
         orientation_constraint.link_name = "Hand"
@@ -281,11 +306,11 @@ class HomePlusIKPipeline(Node):
         goal.planning_options = PlanningOptions()
         goal.planning_options.plan_only = True  # Only plan, don't execute
         
-        # Increase planning time and attempts for obstacle avoidance
-        goal.request.allowed_planning_time = 10.0  # 10 seconds
-        goal.request.num_planning_attempts = 5     # Try 5 times
+        # Increase planning time for constrained planning
+        goal.request.allowed_planning_time = 15.0  # 15 seconds
+        goal.request.num_planning_attempts = 3     # Try multiple times
         
-        self.get_logger().info("Using BiRRT planner with pose constraints and obstacle avoidance")
+        self.get_logger().info("Using BiRRT planner for arm-only movement with base constraints")
         
         # Send planning request
         future = self.move_group_client.send_goal_async(goal)
@@ -307,7 +332,7 @@ class HomePlusIKPipeline(Node):
         result = future.result().result
         
         if result.error_code.val == 1:  # SUCCESS
-            self.get_logger().info('Planning succeeded!')
+            self.get_logger().info('Arm-only planning succeeded!')
             # Visualize end-effector point in RViz
             self.publish_end_effector_marker()
             # Extract trajectory
@@ -320,7 +345,7 @@ class HomePlusIKPipeline(Node):
             else:
                 self.get_logger().error('No trajectory found in result')
         else:
-            self.get_logger().error(f'Planning failed with error code: {result.error_code.val}')
+            self.get_logger().error(f'Arm-only planning failed with error code: {result.error_code.val}')
             error_messages = {
                 -1: "FAILURE",
                 -2: "PLANNING_FAILED", 
@@ -354,7 +379,7 @@ class HomePlusIKPipeline(Node):
         joint_names = joint_trajectory.joint_names
         points = joint_trajectory.points
         
-        self.get_logger().info(f'Trajectory has {len(points)} waypoints')
+        self.get_logger().info(f'Arm-only trajectory has {len(points)} waypoints')
         self.get_logger().info(f'Joint names: {joint_names}')
         
         # Define the order we want: base_x, base_y, base_theta, JointFrame, JointTelescope, JointArm1, JointArm2, JointWrist, JointHand
@@ -388,7 +413,10 @@ class HomePlusIKPipeline(Node):
             if i < 3 or i >= len(points) - 3 or i == len(points) // 2:
                 self.get_logger().info(f'Waypoint {i}: {config_string}')
         
-        self.get_logger().info('\n=== COMPLETE TRAJECTORY ===')
+        # Show base movement analysis
+        self.analyze_base_movement(trajectory_strings)
+        
+        self.get_logger().info('\n=== COMPLETE ARM-ONLY TRAJECTORY ===')
         for i, config_str in enumerate(trajectory_strings):
             print(f"Waypoint {i}: {config_str}")
         
@@ -398,24 +426,48 @@ class HomePlusIKPipeline(Node):
         self.get_logger().info('=== END TRAJECTORY ===\n')
         
         return trajectory_strings
+    
+    def analyze_base_movement(self, trajectory_strings):
+        """Analyze how much the base moved during planning"""
+        if len(trajectory_strings) < 2:
+            return
+            
+        start_config = trajectory_strings[0].split()
+        end_config = trajectory_strings[-1].split()
+        
+        base_x_change = abs(float(end_config[0]) - float(start_config[0]))
+        base_y_change = abs(float(end_config[1]) - float(start_config[1]))
+        base_theta_change = abs(float(end_config[2]) - float(start_config[2]))
+        
+        self.get_logger().info(f'\n=== BASE MOVEMENT ANALYSIS ===')
+        self.get_logger().info(f'Base X movement: {base_x_change:.6f} meters')
+        self.get_logger().info(f'Base Y movement: {base_y_change:.6f} meters')
+        self.get_logger().info(f'Base rotation: {base_theta_change:.6f} radians ({math.degrees(base_theta_change):.2f} degrees)')
+        
+        if base_x_change < 0.01 and base_y_change < 0.01:
+            self.get_logger().info('✓ SUCCESS: Base stayed in place, only arm movement used!')
+        else:
+            self.get_logger().info('⚠ WARNING: Base moved significantly - obstacles may not be constraining enough')
 
     def set_target_point(self, x, y, z):
-        """Set a new target point and replan"""
+        """Set a new target point reachable by arm movement only"""
         self.target_point = [x, y, z]
         self.target_object_attached = False  # Reset attachment state
-        self.get_logger().info(f'New target point set: {self.target_point}')
+        self.get_logger().info(f'New arm-only target point set: {self.target_point}')
         
         # Publish target object at the goal point
         self.publish_target_object()
         
-        # Plan trajectory to reach the target
+        # Plan trajectory to reach the target using only arm movement
         self.plan_trajectory_to_point()
 
 def main():
     rclpy.init()
     
-    node = HomePlusIKPipeline()
-    node.set_target_point(0.0, 4.2, 0.4)
+    node = HomePlusArmOnlyPipeline()
+    # Set a goal that should be reachable by arm movement only
+    # This point is close to the robot base and within arm reach
+    node.set_target_point(-0.2, 0.2, 0.8)  # 50cm forward, 20cm left, 80cm high
     
     try:
         rclpy.spin(node)
