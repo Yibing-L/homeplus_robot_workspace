@@ -10,6 +10,8 @@ from moveit_msgs.msg import PositionConstraint, OrientationConstraint, Constrain
 from shape_msgs.msg import SolidPrimitive
 from visualization_msgs.msg import Marker
 from geometry_msgs.msg import Point
+from tf_transformations import quaternion_from_euler
+from sensor_msgs.msg import JointState
 import sys
 import math
 import csv
@@ -19,99 +21,21 @@ import time
 from datetime import datetime
 
 class HomePlusIKPipeline(Node):
+    def set_target_point(self, x, y, z):
+        """Set a new target point and replan (no orientation)"""
+        self.target_point = [x, y, z]
+        self.get_logger().info(f'New target point set: {self.target_point}')
+        self.plan_trajectory_to_point()
+
     def set_target_point_rpy(self, x, y, z, roll, pitch, yaw):
         """Set a new target point with RPY orientation and replan"""
         self.target_point = [x, y, z]
         self.target_rpy = [roll, pitch, yaw]
-        self.get_logger().info(f'New target point set: {self.target_point} with RPY: {self.target_rpy}')
+        self.get_logger().info(f'New target point set: {self.target_point}')
+        self.get_logger().info(f'Target orientation (RPY): {self.target_rpy}')
         self.plan_trajectory_to_point_rpy()
 
-    def plan_trajectory_to_point_rpy(self):
-        """Plan trajectory to reach the target point with RPY orientation and output trajectory strings"""
-        self.get_logger().info(f'Planning trajectory to end-effector point: {self.target_point} with RPY: {self.target_rpy}')
-
-        goal = MoveGroup.Goal()
-        goal.request = MotionPlanRequest()
-        goal.request.group_name = "arm"  # Must match RViz planning group
-        goal.request.planner_id = "RRTstarkConfigDefault"
-
-        from moveit_msgs.msg import RobotState, PlanningScene
-        import rclpy.task
-        planning_scene_msg = None
-        def planning_scene_callback(msg):
-            nonlocal planning_scene_msg
-            planning_scene_msg = msg
-        planning_scene_sub = self.create_subscription(PlanningScene, '/planning_scene', planning_scene_callback, 1)
-        timeout = self.get_clock().now().nanoseconds + int(2e9)
-        while planning_scene_msg is None and self.get_clock().now().nanoseconds < timeout:
-            rclpy.spin_once(self, timeout_sec=0.1)
-        self.destroy_subscription(planning_scene_sub)
-        if planning_scene_msg and planning_scene_msg.robot_state:
-            goal.request.start_state = planning_scene_msg.robot_state
-        else:
-            goal.request.start_state = RobotState()
-
-        # Create pose goal using RPY orientation
-        constraints = Constraints()
-        position_constraint = PositionConstraint()
-        position_constraint.header.frame_id = "world"
-        position_constraint.link_name = "Hand"
-        from shape_msgs.msg import SolidPrimitive
-        from geometry_msgs.msg import Pose
-        box = SolidPrimitive()
-        box.type = SolidPrimitive.BOX
-        box.dimensions = [0.05, 0.05, 0.05]
-        region_pose = Pose()
-        region_pose.position.x = self.target_point[0]
-        region_pose.position.y = self.target_point[1]
-        region_pose.position.z = self.target_point[2]
-        # Convert RPY to quaternion
-        try:
-            import tf_transformations
-            q = tf_transformations.quaternion_from_euler(self.target_rpy[0], self.target_rpy[1], self.target_rpy[2])
-        except ImportError:
-            from tf.transformations import quaternion_from_euler
-            q = quaternion_from_euler(self.target_rpy[0], self.target_rpy[1], self.target_rpy[2])
-        region_pose.orientation.x = q[0]
-        region_pose.orientation.y = q[1]
-        region_pose.orientation.z = q[2]
-        region_pose.orientation.w = q[3]
-        position_constraint.constraint_region.primitives = [box]
-        position_constraint.constraint_region.primitive_poses = [region_pose]
-        position_constraint.weight = 1.0
-
-        orientation_constraint = OrientationConstraint()
-        orientation_constraint.header.frame_id = "world"
-        orientation_constraint.link_name = "Hand"
-        orientation_constraint.orientation.x = q[0]
-        orientation_constraint.orientation.y = q[1]
-        orientation_constraint.orientation.z = q[2]
-        orientation_constraint.orientation.w = q[3]
-        orientation_constraint.absolute_x_axis_tolerance = 0.1
-        orientation_constraint.absolute_y_axis_tolerance = 0.1
-        orientation_constraint.absolute_z_axis_tolerance = 0.1
-        orientation_constraint.weight = 1.0
-
-        constraints.position_constraints.append(position_constraint)
-        constraints.orientation_constraints.append(orientation_constraint)
-        goal.request.goal_constraints = [constraints]
-
-        goal.request.workspace_parameters.header.frame_id = "world"
-        goal.request.workspace_parameters.min_corner.x = -2.0
-        goal.request.workspace_parameters.min_corner.y = -2.0
-        goal.request.workspace_parameters.min_corner.z = -1.0
-        goal.request.workspace_parameters.max_corner.x = 2.0
-        goal.request.workspace_parameters.max_corner.y = 2.0
-        goal.request.workspace_parameters.max_corner.z = 2.0
-
-        goal.planning_options = PlanningOptions()
-        goal.planning_options.plan_only = True
-        goal.request.allowed_planning_time = 10.0
-        goal.request.num_planning_attempts = 5
-
-        self.get_logger().info("Using RRTstarkConfigDefault planner with RPY goal and obstacle avoidance")
-        future = self.move_group_client.send_goal_async(goal)
-        future.add_done_callback(self.goal_response_callback)
+    # Position-only and RPY orientation planning methods available
     def publish_trajectory_marker(self, joint_trajectory):
         marker = Marker()
         marker.header.frame_id = "world"
@@ -136,7 +60,7 @@ class HomePlusIKPipeline(Node):
     def __init__(self):
         super().__init__('homeplus_ik_pipeline')
         # Create action client for move_group
-        self.move_group_client = ActionClient(self, MoveGroup, '/move_group')
+        self.move_group_client = ActionClient(self, MoveGroup, '/move_action')
         # Create marker publisher for RViz visualization
         self.marker_pub = self.create_publisher(Marker, '/visualization_marker', 10)
         # Create publisher for planning scene (obstacles)
@@ -153,6 +77,11 @@ class HomePlusIKPipeline(Node):
         self.csv_filename = None
         
         self.publish_box_obstacle()  # Commented out: disable publishing the obstacle
+        
+        self.get_logger().info('HomePlus IK Pipeline initialized')
+        self.get_logger().info('Waiting for move_action action server...')
+        self.move_group_client.wait_for_server()
+        self.get_logger().info('Connected to move_action action server')
 
     def publish_box_obstacle(self):
         """Publish a box obstacle to the planning scene"""
@@ -203,11 +132,6 @@ class HomePlusIKPipeline(Node):
         marker.color.a = 1.0
         self.marker_pub.publish(marker)
         self.get_logger().info(f'Published goal marker at: {self.target_point}')
-        
-        self.get_logger().info('HomePlus IK Pipeline initialized')
-        self.get_logger().info('Waiting for move_group action server...')
-        self.move_group_client.wait_for_server()
-        self.get_logger().info('Connected to move_group action server')
 
     def plan_trajectory_to_point(self):
         """Plan trajectory to reach the target point and output trajectory strings"""
@@ -217,7 +141,7 @@ class HomePlusIKPipeline(Node):
         goal.request = MotionPlanRequest()
         goal.request.group_name = "arm"  # Must match RViz planning group
         # Set planner_id to match config
-        goal.request.planner_id = "RRTstarkConfigDefault"
+        goal.request.planner_id = "BiTRRTkConfigDefault"
         # Set start state to default robot state from planning scene
         from moveit_msgs.msg import RobotState
         from moveit_msgs.msg import PlanningScene
@@ -237,22 +161,54 @@ class HomePlusIKPipeline(Node):
             goal.request.start_state = planning_scene_msg.robot_state
         else:
             goal.request.start_state = RobotState()
+        
+        # Initialize joint state with Arduino's actual initial positions to avoid empty JointState error
+        from sensor_msgs.msg import JointState
+        js = JointState()
+        js.name = ['base_x', 'base_y', 'base_theta', 'JointFingerL', 'JointHand', 'JointWrist', 'JointArm2', 'JointArm1', 'JointTelescope', 'JointFrame']
+        
+        # Convert Arduino initial servo positions to radians/meters to match MoveIt format
+        # Arduino setup(): hand=1000, wrist=900, elbow=1500, shoulder=2100, la=450, frame=0
+        # Using Arduino's map() function in reverse to get degrees, then convert to radians
+        
+        # hand_target = map(hand_, -90, 75, 925, 1110) -> 1000 maps to ~-45°
+        initial_hand_deg = -45.0  # Arduino initial hand position in degrees
+        initial_hand_rad = initial_hand_deg * 3.14159 / 180.0
+        
+        # wrist_target = map(wrist_, -80, 340, 545, 2400) -> 900 maps to ~-60°  
+        initial_wrist_deg = -60.0  # Arduino initial wrist position in degrees
+        initial_wrist_rad = initial_wrist_deg * 3.14159 / 180.0
+        
+        # elbow_target = map(elbow_, -73, 168, 2400, 550) -> 1500 maps to ~47°
+        initial_elbow_deg = 47.0  # Arduino initial elbow position in degrees  
+        initial_elbow_rad = initial_elbow_deg * 3.14159 / 180.0
+        
+        # shoulder_target = map(shoulder_, 0, 185, 2400, 550) -> 2100 maps to ~0°
+        initial_shoulder_deg = 0.0  # Arduino initial shoulder position in degrees
+        initial_shoulder_rad = initial_shoulder_deg * 3.14159 / 180.0
+        
+        # Linear actuators: la=450mm=0.45m, frame=0mm=0.0m
+        initial_telescope = -0.43  # JointTelescope: Arduino la starts at 450mm, joint range is -0.43 to 0
+        initial_frame = 0.0        # JointFrame: Arduino frame starts at 0mm
+        
+        # Gripper: Arduino grip starts closed (2100 -> 0%), convert to radians
+        initial_grip = 100.0  # Closed gripper position
+        
+        js.position = [
+            0.0,                    # base_x: start at origin
+            0.0,                    # base_y: start at origin  
+            0.0,                    # base_theta: start at 0 rotation
+            initial_grip,           # JointFingerL: Arduino's initial grip (closed), JointFingerR mimics this
+            initial_hand_rad,       # JointHand: Arduino's initial hand position (~-45°)
+            initial_wrist_rad,      # JointWrist: Arduino's initial wrist position (~-60°)
+            initial_elbow_rad,      # JointArm2: Arduino's initial elbow position (~47°)
+            initial_shoulder_rad,   # JointArm1: Arduino's initial shoulder position (~0°)
+            initial_telescope,      # JointTelescope: Arduino's initial LA position (450mm)
+            initial_frame           # JointFrame: Arduino's initial frame position (0mm)
+        ]
+        js.header.stamp = self.get_clock().now().to_msg()
+        goal.request.start_state.joint_state = js
 
-        # --- Set gripper joint to open in start state for accurate collision checking ---
-        # gripper_joint = "JointFingerL"
-        # gripper_open_value = 100       
-        # js = goal.request.start_state.joint_state
-        # if not hasattr(js, 'name') or js.name is None:
-        #     js.name = []
-        # if not hasattr(js, 'position') or js.position is None:
-        #     js.position = []
-        # if gripper_joint in js.name:
-        #     idx = js.name.index(gripper_joint)
-        #     js.position[idx] = gripper_open_value
-        # else:
-        #     js.name.append(gripper_joint)
-        #     js.position.append(gripper_open_value)
-        # goal.request.start_state.joint_state = js
         
         # Create proper pose goal using separate position and orientation constraints
         constraints = Constraints()
@@ -307,7 +263,148 @@ class HomePlusIKPipeline(Node):
         goal.request.allowed_planning_time = 10.0  # 10 seconds
         goal.request.num_planning_attempts = 5     # Try 5 times
         
-        self.get_logger().info("Using RRTstarkConfigDefault planner with pose constraints and obstacle avoidance")
+        # Send planning request
+        future = self.move_group_client.send_goal_async(goal)
+        future.add_done_callback(self.goal_response_callback)
+
+    def plan_trajectory_to_point_rpy(self):
+        """Plan trajectory to reach the target point with specific RPY orientation"""
+        self.get_logger().info(f'Planning trajectory to end-effector point: {self.target_point}')
+        self.get_logger().info(f'Target orientation (RPY): {self.target_rpy}')
+        
+        goal = MoveGroup.Goal()
+        goal.request = MotionPlanRequest()
+        goal.request.group_name = "arm"  # Must match RViz planning group
+        # Set planner_id to match config
+        goal.request.planner_id = "BiTRRTkConfigDefault"
+        # Set start state to default robot state from planning scene
+        from moveit_msgs.msg import RobotState
+        from moveit_msgs.msg import PlanningScene
+        import rclpy.task
+        # Get the current planning scene
+        planning_scene_msg = None
+        def planning_scene_callback(msg):
+            nonlocal planning_scene_msg
+            planning_scene_msg = msg
+        planning_scene_sub = self.create_subscription(PlanningScene, '/planning_scene', planning_scene_callback, 1)
+        # Wait for a planning scene message
+        timeout = self.get_clock().now().nanoseconds + int(2e9)  # 2 seconds
+        while planning_scene_msg is None and self.get_clock().now().nanoseconds < timeout:
+            rclpy.spin_once(self, timeout_sec=0.1)
+        self.destroy_subscription(planning_scene_sub)
+        if planning_scene_msg and planning_scene_msg.robot_state:
+            goal.request.start_state = planning_scene_msg.robot_state
+        else:
+            goal.request.start_state = RobotState()
+        
+        # Initialize joint state with Arduino's actual initial positions to avoid empty JointState error
+        from sensor_msgs.msg import JointState
+        js = JointState()
+        js.name = ['base_x', 'base_y', 'base_theta', 'JointFingerL', 'JointHand', 'JointWrist', 'JointArm2', 'JointArm1', 'JointTelescope', 'JointFrame']
+        
+        # Convert Arduino initial servo positions to radians/meters to match MoveIt format
+        # Arduino setup(): hand=1000, wrist=900, elbow=1500, shoulder=2100, la=450, frame=0
+        # Using Arduino's map() function in reverse to get degrees, then convert to radians
+        
+        # hand_target = map(hand_, -90, 75, 925, 1110) -> 1000 maps to ~-45°
+        initial_hand_deg = -45.0  # Arduino initial hand position in degrees
+        initial_hand_rad = initial_hand_deg * 3.14159 / 180.0
+        
+        # wrist_target = map(wrist_, -80, 340, 545, 2400) -> 900 maps to ~-60°  
+        initial_wrist_deg = -60.0  # Arduino initial wrist position in degrees
+        initial_wrist_rad = initial_wrist_deg * 3.14159 / 180.0
+        
+        # elbow_target = map(elbow_, -73, 168, 2400, 550) -> 1500 maps to ~47°
+        initial_elbow_deg = 0.0  # Arduino initial elbow position in degrees  
+        initial_elbow_rad = initial_elbow_deg * 3.14159 / 180.0
+        
+        # shoulder_target = map(shoulder_, 0, 185, 2400, 550) -> 2100 maps to ~0°
+        initial_shoulder_deg = 30.0  # Arduino initial shoulder position in degrees
+        initial_shoulder_rad = initial_shoulder_deg * 3.14159 / 180.0
+        
+        # Linear actuators: la=450mm=0.45m, frame=0mm=0.0m
+        initial_telescope = -0.43  # JointTelescope: Arduino la starts at 450mm, joint range is -0.43 to 0
+        initial_frame = 0.0        # JointFrame: Arduino frame starts at 0mm
+        
+        # Gripper: Arduino grip starts closed (2100 -> 0%), convert to radians
+        initial_grip = 100.0  # Closed gripper position
+        
+        js.position = [
+            0.0,                    # base_x: start at origin
+            0.0,                    # base_y: start at origin  
+            0.0,                    # base_theta: start at 0 rotation
+            initial_grip,           # JointFingerL: Arduino's initial grip (closed), JointFingerR mimics this
+            initial_hand_rad,       # JointHand: Arduino's initial hand position (~-45°)
+            initial_wrist_rad,      # JointWrist: Arduino's initial wrist position (~-60°)
+            initial_elbow_rad,      # JointArm2: Arduino's initial elbow position (~47°)
+            initial_shoulder_rad,   # JointArm1: Arduino's initial shoulder position (~0°)
+            initial_telescope,      # JointTelescope: Arduino's initial LA position (450mm)
+            initial_frame           # JointFrame: Arduino's initial frame position (0mm)
+        ]
+        js.header.stamp = self.get_clock().now().to_msg()
+        goal.request.start_state.joint_state = js
+        
+        # Create proper pose goal using separate position and orientation constraints
+        constraints = Constraints()
+        
+        # Position constraint for end-effector
+        position_constraint = PositionConstraint()
+        position_constraint.header.frame_id = "world"
+        position_constraint.link_name = "Hand"  # End-effector link
+        # Define a small box region at the goal point
+        from shape_msgs.msg import SolidPrimitive
+        from geometry_msgs.msg import Pose
+        box = SolidPrimitive()
+        box.type = SolidPrimitive.BOX
+        box.dimensions = [0.05, 0.05, 0.05]  # 5cm cube
+        region_pose = Pose()
+        region_pose.position.x = self.target_point[0]
+        region_pose.position.y = self.target_point[1]
+        region_pose.position.z = self.target_point[2]
+        region_pose.orientation.w = 1.0
+        position_constraint.constraint_region.primitives = [box]
+        position_constraint.constraint_region.primitive_poses = [region_pose]
+        position_constraint.weight = 1.0
+        
+        # Orientation constraint with specific RPY
+        orientation_constraint = OrientationConstraint()
+        orientation_constraint.header.frame_id = "world"
+        orientation_constraint.link_name = "Hand"
+        
+        # Convert RPY to quaternion
+        from tf_transformations import quaternion_from_euler
+        quat = quaternion_from_euler(self.target_rpy[0], self.target_rpy[1], self.target_rpy[2])
+        orientation_constraint.orientation.x = quat[0]
+        orientation_constraint.orientation.y = quat[1]
+        orientation_constraint.orientation.z = quat[2]
+        orientation_constraint.orientation.w = quat[3]
+        
+        # Set tight orientation tolerances for precise orientation
+        orientation_constraint.absolute_x_axis_tolerance = 0.1  # ~5.7 degrees
+        orientation_constraint.absolute_y_axis_tolerance = 0.1
+        orientation_constraint.absolute_z_axis_tolerance = 0.1
+        orientation_constraint.weight = 1.0  # High weight for orientation
+        
+        constraints.position_constraints.append(position_constraint)
+        constraints.orientation_constraints.append(orientation_constraint)
+        goal.request.goal_constraints = [constraints]
+        
+        # Set workspace bounds
+        goal.request.workspace_parameters.header.frame_id = "world"
+        goal.request.workspace_parameters.min_corner.x = -2.0
+        goal.request.workspace_parameters.min_corner.y = -2.0
+        goal.request.workspace_parameters.min_corner.z = -1.0
+        goal.request.workspace_parameters.max_corner.x = 2.0
+        goal.request.workspace_parameters.max_corner.y = 2.0
+        goal.request.workspace_parameters.max_corner.z = 2.0
+        
+        # Set planning options - PLAN ONLY, no execution
+        goal.planning_options = PlanningOptions()
+        goal.planning_options.plan_only = True  # Only plan, don't execute
+        
+        # Increase planning time and attempts for obstacle avoidance with orientation
+        goal.request.allowed_planning_time = 15.0  # 15 seconds for RPY planning
+        goal.request.num_planning_attempts = 10    # More attempts for orientation planning
         
         # Send planning request
         future = self.move_group_client.send_goal_async(goal)
@@ -427,7 +524,7 @@ class HomePlusIKPipeline(Node):
 
     def format_waypoint_for_arduino(self, waypoint_str):
         """Convert extracted waypoint string to Arduino expected format (servo degrees)"""
-        # Our format: base_x base_y base_theta grip JointHand JointWrist JointArm2 JointArm1 JointTelescope JointFrame
+        # Our format: base_x base_y base_theta JointFingerL JointHand JointWrist JointArm2 JointArm1 JointTelescope JointFrame
         # Output: x_cm, y_cm, theta_deg, grip, hand_deg, wrist_deg, elbow_deg, shoulder_deg, la_cm, frame_cm
 
         values = waypoint_str.split()
@@ -439,14 +536,23 @@ class HomePlusIKPipeline(Node):
             base_x = float(values[0]) * 100  # m to cm
             base_y = float(values[1]) * 100
             base_theta = float(values[2]) * 180 / 3.14159  # rad to deg
-            grip = float(values[3])
-            # Convert joint angles to degrees for servo control
-            hand_deg = float(values[4]) * 180 / 3.14159
-            wrist_deg = float(values[5]) * 180 / 3.14159
-            elbow_deg = float(values[6]) * 180 / 3.14159
-            shoulder_deg = float(values[7]) * 180 / 3.14159
-            la = max(0.0, min(450.0, float(values[8]) * 100))
-            frame = max(0.0, min(175.0, float(values[9]) * 100))
+            grip = float(values[3])  # JointFingerL: gripper value
+            
+            # Convert joint angles from radians to degrees, then constrain to Arduino ranges
+            hand_deg = float(values[4]) * 180 / 3.14159  # JointHand
+            hand_deg = max(-90.0, min(75.0, hand_deg))  # Constrain to Arduino range
+            
+            wrist_deg = float(values[5]) * 180 / 3.14159  # JointWrist
+            wrist_deg = max(-80.0, min(340.0, wrist_deg))  # Constrain to Arduino range
+            
+            elbow_deg = float(values[6]) * 180 / 3.14159  # JointArm2
+            elbow_deg = max(-73.0, min(168.0, elbow_deg))  # Constrain to Arduino range
+            
+            shoulder_deg = float(values[7]) * 180 / 3.14159  # JointArm1
+            shoulder_deg = max(0.0, min(185.0, shoulder_deg))  # Constrain to Arduino range
+            
+            la = max(0.0, min(450.0, float(values[8]) * 100))  # JointTelescope
+            frame = max(0.0, min(175.0, float(values[9]) * 100))  # JointFrame
 
             arduino_command = f"{base_x:.1f} {base_y:.1f} {base_theta:.1f} {grip:.1f} {hand_deg:.1f} {wrist_deg:.1f} {elbow_deg:.1f} {shoulder_deg:.1f} {la:.1f} {frame:.1f}"
             return arduino_command
@@ -493,7 +599,7 @@ class HomePlusIKPipeline(Node):
                 writer.writerow(['# Metadata'])
                 writer.writerow(['# Target Point:', f'{target_point[0]:.6f}', f'{target_point[1]:.6f}', f'{target_point[2]:.6f}'])
                 writer.writerow(['# Total Waypoints:', len(trajectory_data)])
-                writer.writerow(['# Planner Used:', 'RRTstarkConfigDefault'])
+                writer.writerow(['# Planner Used:', 'BiTRRTkConfigDefault'])
                 writer.writerow(['# Generated:', timestamp])
 
             self.get_logger().info(f'Trajectory saved to: {csv_path}')
@@ -513,7 +619,7 @@ class HomePlusIKPipeline(Node):
 
 
         # Arduino expects: x, y, theta, grip, hand, wrist, elbow, shoulder, la, frame
-        # Map: base_x, base_y, base_theta, grip (avg of JointFingerL/JointFingerR), JointHand, JointWrist, JointArm2, JointArm1, JointTelescope, JointFrame
+        # Map: base_x, base_y, base_theta, JointFingerL, JointHand, JointWrist, JointArm2, JointArm1, JointTelescope, JointFrame
         joint_indices = {name: i for i, name in enumerate(joint_names)}
 
         trajectory_strings = []
@@ -525,12 +631,9 @@ class HomePlusIKPipeline(Node):
                 idx = joint_indices.get(joint, None)
                 values.append(f"{point.positions[idx]:.6f}" if idx is not None else "0.000000")
 
-            # grip: set to 100 for all but last, last is 0
-            if i == n_points - 1:
-                grip_val = 0.0
-            else:
-                grip_val = 100.0
-            values.append(f"{grip_val:.6f}")
+            # JointFingerL (grip): use the actual gripper joint value
+            idx = joint_indices.get('JointFingerL', None)
+            values.append(f"{point.positions[idx]:.6f}" if idx is not None else "0.000000")
 
             # JointHand
             idx = joint_indices.get('JointHand', None)
@@ -562,7 +665,7 @@ class HomePlusIKPipeline(Node):
 
         self.get_logger().info(f'\n=== TRAJECTORY SUMMARY ===')
         self.get_logger().info(f'Total waypoints: {len(trajectory_strings)}')
-        self.get_logger().info('Joint order: base_x base_y base_theta grip JointHand JointWrist JointArm2 JointArm1 JointTelescope JointFrame')
+        self.get_logger().info('Joint order: base_x base_y base_theta JointFingerL JointHand JointWrist JointArm2 JointArm1 JointTelescope JointFrame')
         self.get_logger().info('=== END TRAJECTORY ===\n')
 
         # Save trajectory to CSV
@@ -656,8 +759,14 @@ def main():
     else:
         node.get_logger().warning('Arduino connection failed - will retry when sending trajectory')
     
-    # Set target point and RPY orientation and plan trajectory
+    # Set target point and plan trajectory
+    # Option 1: Position-only planning (no specific orientation)
+    # Format: set_target_point(x, y, z)
+    # node.set_target_point(0.6, 0.11212000250816345, 0.9)
+    
+    # Option 2: Position + RPY orientation planning
     # Format: set_target_point_rpy(x, y, z, roll, pitch, yaw)
+    # Uncomment the line below to use RPY planning instead:
     node.set_target_point_rpy(0.6, 0.11212000250816345, 0.9, 0.0, 0.0, 0.0)
 
     try:
