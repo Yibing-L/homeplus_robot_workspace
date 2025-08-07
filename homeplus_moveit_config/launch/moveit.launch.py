@@ -1,11 +1,12 @@
 #!/usr/bin/env python3
 
 from launch import LaunchDescription
-from launch.actions import DeclareLaunchArgument
+from launch.actions import DeclareLaunchArgument, TimerAction
 from launch.substitutions import Command, LaunchConfiguration, PathJoinSubstitution
 from launch.conditions import IfCondition
 from launch_ros.actions import Node
 from launch_ros.parameter_descriptions import ParameterValue
+from moveit_configs_utils import MoveItConfigsBuilder
 import os
 import yaml
 from ament_index_python.packages import get_package_share_directory
@@ -32,45 +33,20 @@ def generate_launch_description():
     with open(kinematics_yaml, 'r') as f:
         robot_description_kinematics = yaml.safe_load(f)
 
-    # Load OMPL Planning Pipeline
-    ompl_planning_yaml = os.path.join(homeplus_moveit_pkg, 'config', 'ompl_planning.yaml')
-    ompl_planning_pipeline_config = {
-        'move_group': {
-            'planning_plugin': 'ompl_interface/OMPLPlanner',
-            'request_adapters': """default_planner_request_adapters/FixWorkspaceBounds default_planner_request_adapters/FixStartStateBounds default_planner_request_adapters/FixStartStateCollision default_planner_request_adapters/FixStartStatePathConstraints""",
-            'start_state_max_bounds_error': 0.1,
-            'enforce_bounds': True,
-            'enforce_joint_model_state_space': True,
-        }
-    }
-    if os.path.exists(ompl_planning_yaml):
-        with open(ompl_planning_yaml, 'r') as f:
-            ompl_planning_pipeline_config['ompl'] = yaml.safe_load(f)
-
-    # MoveIt Controllers
-    moveit_simple_controllers = {
-        'moveit_simple_controller_manager': 'moveit_simple_controller_manager/MoveItSimpleControllerManager',
-        'moveit_controller_manager': 'moveit_simple_controller_manager/MoveItSimpleControllerManager',
-        'controller_names': ['base_arm_controller', 'arm_controller', 'gripper_controller'],
-        'base_arm_controller': {
-            'type': 'FollowJointTrajectory',
-            'action_ns': 'follow_joint_trajectory',
-            'default': True,
-            'joints': ['base_x', 'base_y', 'base_theta', 'JointFrame', 'JointTelescope', 'JointArm1', 'JointArm2', 'JointWrist', 'JointHand'],
-        },
-        'arm_controller': {
-            'type': 'FollowJointTrajectory',
-            'action_ns': 'follow_joint_trajectory',
-            'default': False,
-            'joints': ['JointArm1', 'JointArm2', 'JointHand', 'JointTelescope', 'JointWrist'],
-        },
-        'gripper_controller': {
-            'type': 'GripperCommand',
-            'joints': ['JointFingerL', 'JointFingerR'],
-            'action_ns': 'gripper_cmd',
-            'default': False,
-        },
-    }
+    moveit_config = (
+        MoveItConfigsBuilder(
+            "homeplus", package_name="homeplus_moveit_config"  # Update to your robot/group/package
+        )
+        .robot_description(file_path=urdf_path)
+        .trajectory_execution(file_path="config/moveit_controllers.yaml")
+        .planning_scene_monitor(
+            publish_robot_description=True, publish_robot_description_semantic=True
+        )
+        .planning_pipelines(
+            pipelines=["ompl"]
+        )
+        .to_moveit_configs()
+    )
 
     # Create launch arguments
     auto_start_test = LaunchConfiguration('auto_start_test')
@@ -108,51 +84,31 @@ def generate_launch_description():
             parameters=[{'use_sim_time': False}],
         ),
 
-        # Move Group
         Node(
-            package='moveit_ros_move_group',
-            executable='move_group',
-            name='move_group',
-            output='screen',
-            parameters=[{
-                'robot_description': robot_description,
-                'robot_description_semantic': robot_description_semantic,
-                'robot_description_kinematics': robot_description_kinematics,
-                'robot_description_planning': ompl_planning_pipeline_config,
-                'moveit_controller_manager': moveit_simple_controllers['moveit_controller_manager'],
-                'moveit_simple_controller_manager': moveit_simple_controllers,
-                'use_sim_time': False
-            }],
+            package="moveit_ros_move_group",
+            executable="move_group",
+            output="screen",
+            parameters=[moveit_config.to_dict()],
         ),
 
-        # RViz
-        Node(
-            package='rviz2',
-            executable='rviz2',
-            name='rviz2',
-            output='screen',
-            arguments=['-d', rviz_config_file],
-            parameters=[{
-                'robot_description': robot_description,
-                'robot_description_semantic': robot_description_semantic,
-                'robot_description_kinematics': robot_description_kinematics,
-                'use_sim_time': False
-            }],
+        # RViz (delayed to start after move_group is established)
+        TimerAction(
+            period=3.0,  # Wait 3 seconds
+            actions=[
+                Node(
+                    package='rviz2',
+                    executable='rviz2',
+                    name='rviz2',
+                    output='screen',
+                    arguments=['-d', rviz_config_file],
+                    parameters=[{
+                        'robot_description': robot_description,
+                        'robot_description_semantic': robot_description_semantic,
+                        'robot_description_kinematics': robot_description_kinematics,
+                        'use_sim_time': False
+                    }],
+                ),
+            ]
         ),
 
-        # MoveIt Controller Node
-        Node(
-            package='homeplus_moveit_config',
-            executable='moveit_controller.py',
-            name='homeplus_moveit_controller',
-            output='screen',
-        ),
-
-        # IK Test Node
-        Node(
-            package='homeplus_moveit_config',
-            executable='ik.py',
-            name='ik_test_node',
-            output='screen',
-        ),
     ])

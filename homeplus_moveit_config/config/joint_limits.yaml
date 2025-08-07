@@ -1,0 +1,76 @@
+joint_limits:
+  joint_limits:
+    base_x:
+      has_position_limits: true
+      min_position: -10.0
+      max_position: 10.0
+      has_velocity_limits: true
+      max_velocity: 1.0
+      has_acceleration_limits: false
+    base_y:
+      has_position_limits: true
+      min_position: -10.0
+      max_position: 10.0
+      has_velocity_limits: true
+      max_velocity: 1.0
+      has_acceleration_limits: false
+    base_theta:
+      has_velocity_limits: true
+      max_velocity: 1.0
+      has_acceleration_limits: false
+    JointFrame:
+      has_position_limits: true
+      min_position: -0.085
+      max_position: 0.0
+      has_velocity_limits: true
+      max_velocity: 1.0
+      has_acceleration_limits: false
+    JointTelescope:
+      has_position_limits: true
+      min_position: -0.1
+      max_position: 0.115
+      has_velocity_limits: true
+      max_velocity: 1.0
+      has_acceleration_limits: false
+    JointArm1:
+      has_position_limits: true
+      min_position: -4.8
+      max_position: 0.436
+      has_velocity_limits: true
+      max_velocity: 1.0
+      has_acceleration_limits: false
+    JointArm2:
+      has_position_limits: true
+      min_position: -2.967
+      max_position: 2.269
+      has_velocity_limits: true
+      max_velocity: 1.0
+      has_acceleration_limits: false
+    JointWrist:
+      has_position_limits: true
+      min_position: 0.0
+      max_position: 5.236
+      has_velocity_limits: true
+      max_velocity: 1.0
+      has_acceleration_limits: false
+    JointHand:
+      has_position_limits: true
+      min_position: 0.0
+      max_position: 2.967
+      has_velocity_limits: true
+      max_velocity: 1.0
+      has_acceleration_limits: false
+    JointFingerL:
+      has_position_limits: true
+      min_position: 0.0
+      max_position: 1.396
+      has_velocity_limits: true
+      max_velocity: 1.0
+      has_acceleration_limits: false
+    JointFingerR:
+      has_position_limits: true
+      min_position: -1.396
+      max_position: 0.0
+      has_velocity_limits: true
+      max_velocity: 1.0
+      has_acceleration_limits: false

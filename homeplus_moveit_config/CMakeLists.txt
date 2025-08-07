@@ -18,7 +18,6 @@ install(
 # Install Python scripts
 install(
   PROGRAMS
-    scripts/moveit_controller.py
     scripts/ik.py
   DESTINATION lib/${PROJECT_NAME}
 )

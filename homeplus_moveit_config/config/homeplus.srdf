@@ -42,4 +42,6 @@
     <disable_collisions link1="Hand" link2="FingerL" reason="Adjacent"/>
     <disable_collisions link1="Hand" link2="FingerR" reason="Adjacent"/>
     <disable_collisions link1="FingerL" link2="FingerR" reason="Never"/>
+    <virtual_joint name="world_joint" type="fixed" parent_frame="world" child_link="base" />
+
 </robot>

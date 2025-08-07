@@ -12,16 +12,9 @@ planning_pipelines:
   - ompl
 default_planning_pipeline: ompl
 
-arm:
-  planner_configs:
-    - BiRRTstar
-    - RRTstar
-    - RRTConnect
-  projection_evaluator: joints(JointFrame,JointTelescope)
-  longest_valid_segment_fraction: 0.005
-
-gripper:
-  planner_configs:
-    - RRTConnect
-    - RRTstar
-  longest_valid_segment_fraction: 0.01
+# Planning scene monitor
+planning_scene_monitor:
+  publish_planning_scene: true
+  publish_geometry_updates: true
+  publish_state_updates: true
+  publish_transforms_updates: true
