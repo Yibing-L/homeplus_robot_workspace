@@ -76,7 +76,7 @@ class HomePlusIKPipeline(Node):
         # CSV file setup
         self.csv_filename = None
         
-        self.publish_box_obstacle()  # Commented out: disable publishing the obstacle
+        self.publish_box_obstacle()
         
         self.get_logger().info('HomePlus IK Pipeline initialized')
         self.get_logger().info('Waiting for move_action action server...')
@@ -102,7 +102,7 @@ class HomePlusIKPipeline(Node):
         box.primitives.append(primitive)
         # Define box pose
         pose = Pose()
-        pose.position.x = 1.5
+        pose.position.x = 1.75
         pose.position.y = 0.0
         pose.position.z = 0.35
         pose.orientation.w = 1.0
@@ -172,15 +172,15 @@ class HomePlusIKPipeline(Node):
         # Using Arduino's map() function in reverse to get degrees, then convert to radians
         
         # hand_target = map(hand_, -90, 75, 925, 1110) -> 1000 maps to ~-45°
-        initial_hand_deg = -45.0  # Arduino initial hand position in degrees
+        initial_hand_deg = 0  # Arduino initial hand position in degrees
         initial_hand_rad = initial_hand_deg * 3.14159 / 180.0
         
         # wrist_target = map(wrist_, -80, 340, 545, 2400) -> 900 maps to ~-60°  
-        initial_wrist_deg = -60.0  # Arduino initial wrist position in degrees
+        initial_wrist_deg = 0  # Arduino initial wrist position in degrees
         initial_wrist_rad = initial_wrist_deg * 3.14159 / 180.0
         
         # elbow_target = map(elbow_, -73, 168, 2400, 550) -> 1500 maps to ~47°
-        initial_elbow_deg = 47.0  # Arduino initial elbow position in degrees  
+        initial_elbow_deg = 0  # Arduino initial elbow position in degrees  
         initial_elbow_rad = initial_elbow_deg * 3.14159 / 180.0
         
         # shoulder_target = map(shoulder_, 0, 185, 2400, 550) -> 2100 maps to ~0°
@@ -188,7 +188,7 @@ class HomePlusIKPipeline(Node):
         initial_shoulder_rad = initial_shoulder_deg * 3.14159 / 180.0
         
         # Linear actuators: la=450mm=0.45m, frame=0mm=0.0m
-        initial_telescope = -0.43  # JointTelescope: Arduino la starts at 450mm, joint range is -0.43 to 0
+        initial_telescope = 0.0  # JointTelescope: Arduino la starts at 450mm, joint range is -0.43 to 0
         initial_frame = 0.0        # JointFrame: Arduino frame starts at 0mm
         
         # Gripper: Arduino grip starts closed (2100 -> 0%), convert to radians
@@ -307,11 +307,11 @@ class HomePlusIKPipeline(Node):
         # Using Arduino's map() function in reverse to get degrees, then convert to radians
         
         # hand_target = map(hand_, -90, 75, 925, 1110) -> 1000 maps to ~-45°
-        initial_hand_deg = -45.0  # Arduino initial hand position in degrees
+        initial_hand_deg = 0  # Arduino initial hand position in degrees
         initial_hand_rad = initial_hand_deg * 3.14159 / 180.0
         
         # wrist_target = map(wrist_, -80, 340, 545, 2400) -> 900 maps to ~-60°  
-        initial_wrist_deg = -60.0  # Arduino initial wrist position in degrees
+        initial_wrist_deg = 0  # Arduino initial wrist position in degrees
         initial_wrist_rad = initial_wrist_deg * 3.14159 / 180.0
         
         # elbow_target = map(elbow_, -73, 168, 2400, 550) -> 1500 maps to ~47°
@@ -319,11 +319,11 @@ class HomePlusIKPipeline(Node):
         initial_elbow_rad = initial_elbow_deg * 3.14159 / 180.0
         
         # shoulder_target = map(shoulder_, 0, 185, 2400, 550) -> 2100 maps to ~0°
-        initial_shoulder_deg = 30.0  # Arduino initial shoulder position in degrees
+        initial_shoulder_deg = 0.0  # Arduino initial shoulder position in degrees
         initial_shoulder_rad = initial_shoulder_deg * 3.14159 / 180.0
         
         # Linear actuators: la=450mm=0.45m, frame=0mm=0.0m
-        initial_telescope = -0.43  # JointTelescope: Arduino la starts at 450mm, joint range is -0.43 to 0
+        initial_telescope = 0.0  # JointTelescope: Arduino la starts at 450mm, joint range is -0.43 to 0
         initial_frame = 0.0        # JointFrame: Arduino frame starts at 0mm
         
         # Gripper: Arduino grip starts closed (2100 -> 0%), convert to radians
@@ -371,9 +371,14 @@ class HomePlusIKPipeline(Node):
         orientation_constraint.header.frame_id = "world"
         orientation_constraint.link_name = "Hand"
         
-        # Convert RPY to quaternion
-        from tf_transformations import quaternion_from_euler
-        quat = quaternion_from_euler(self.target_rpy[0], self.target_rpy[1], self.target_rpy[2])
+        # Convert RPY to quaternion, applying fixed offset for URDF chain
+        # Wrist axis is rotated -45° about Y, so add -π/4 to pitch
+        import math
+        wrist_offset_rad = -math.pi / 4  # -45 degrees
+        roll = self.target_rpy[0]
+        pitch = self.target_rpy[1] + wrist_offset_rad
+        yaw = self.target_rpy[2]
+        quat = quaternion_from_euler(roll, pitch, yaw)
         orientation_constraint.orientation.x = quat[0]
         orientation_constraint.orientation.y = quat[1]
         orientation_constraint.orientation.z = quat[2]
@@ -402,7 +407,8 @@ class HomePlusIKPipeline(Node):
         goal.planning_options = PlanningOptions()
         goal.planning_options.plan_only = True  # Only plan, don't execute
         
-        # Increase planning time and attempts for obstacle avoidance with orientation
+        # Increase planning time and attempts for 
+        #  avoidance with orientation
         goal.request.allowed_planning_time = 15.0  # 15 seconds for RPY planning
         goal.request.num_planning_attempts = 10    # More attempts for orientation planning
         
@@ -540,19 +546,15 @@ class HomePlusIKPipeline(Node):
             
             # Convert joint angles from radians to degrees, then constrain to Arduino ranges
             hand_deg = float(values[4]) * 180 / 3.14159  # JointHand
-            hand_deg = max(-90.0, min(75.0, hand_deg))  # Constrain to Arduino range
             
             wrist_deg = float(values[5]) * 180 / 3.14159  # JointWrist
-            wrist_deg = max(-80.0, min(340.0, wrist_deg))  # Constrain to Arduino range
             
             elbow_deg = float(values[6]) * 180 / 3.14159  # JointArm2
-            elbow_deg = max(-73.0, min(168.0, elbow_deg))  # Constrain to Arduino range
             
             shoulder_deg = float(values[7]) * 180 / 3.14159  # JointArm1
-            shoulder_deg = max(0.0, min(185.0, shoulder_deg))  # Constrain to Arduino range
             
-            la = max(0.0, min(450.0, float(values[8]) * 100))  # JointTelescope
-            frame = max(0.0, min(175.0, float(values[9]) * 100))  # JointFrame
+            la = max(0.0, min(450.0, float(values[8]) * 1000))  # JointTelescope
+            frame = max(0.0, min(175.0, float(values[9]) * 1000))  # JointFrame
 
             arduino_command = f"{base_x:.1f} {base_y:.1f} {base_theta:.1f} {grip:.1f} {hand_deg:.1f} {wrist_deg:.1f} {elbow_deg:.1f} {shoulder_deg:.1f} {la:.1f} {frame:.1f}"
             return arduino_command
@@ -703,9 +705,13 @@ class HomePlusIKPipeline(Node):
                 writer.writerow(header)
                 
                 # Write Arduino formatted trajectory data
+                n_points = len(trajectory_data)
                 for i, waypoint_str in enumerate(trajectory_data):
                     arduino_command = self.format_waypoint_for_arduino(waypoint_str)
                     arduino_values = arduino_command.split()
+                    # Set grip_% to 90 for all except last, last is 0
+                    if len(arduino_values) >= 5:
+                        arduino_values[3] = '90.0' if i < n_points - 1 else '0.0'
                     row = [i] + arduino_values
                     writer.writerow(row)
                 
@@ -767,7 +773,7 @@ def main():
     # Option 2: Position + RPY orientation planning
     # Format: set_target_point_rpy(x, y, z, roll, pitch, yaw)
     # Uncomment the line below to use RPY planning instead:
-    node.set_target_point_rpy(0.6, 0.11212000250816345, 0.9, 0.0, 0.0, 0.0)
+    node.set_target_point_rpy(0.9, 0.11212000250816345, 0.9, 0.0, 0.0, 0.0)
 
     try:
         rclpy.spin(node)
