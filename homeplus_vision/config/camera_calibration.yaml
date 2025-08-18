@@ -1,0 +1,41 @@
+# Camera Calibration Parameters for RealSense Camera
+# These are example values - you should calibrate your specific camera
+# Use: ros2 run camera_calibration cameracalibrator.py for proper calibration
+
+camera_calibration:
+  # Camera intrinsic matrix (3x3)
+  # [fx  0 cx]
+  # [ 0 fy cy]
+  # [ 0  0  1]
+  camera_matrix:
+    rows: 3
+    cols: 3
+    data: [615.0, 0.0, 320.0,
+           0.0, 615.0, 240.0,
+           0.0, 0.0, 1.0]
+  
+  # Distortion coefficients [k1, k2, p1, p2, k3]
+  distortion_coefficients:
+    rows: 1
+    cols: 5
+    data: [0.1, -0.2, 0.0, 0.0, 0.0]
+  
+  # Image dimensions
+  image_width: 640
+  image_height: 480
+  
+  # Camera name
+  camera_name: "realsense_color"
+
+# Transform from camera mount to camera optical frame
+# Adjust these values based on your camera mounting
+camera_transforms:
+  # Transform from base_link to camera_link (physical mounting position)
+  base_to_camera:
+    translation: [0.3, 0.0, 0.5]  # 30cm forward, 50cm up
+    rotation: [0.0, 0.0, 0.0, 1.0]  # No rotation (quaternion: x, y, z, w)
+  
+  # Transform from camera_link to camera_color_optical_frame (ROS standard)
+  camera_to_optical:
+    translation: [0.0, 0.0, 0.0]
+    rotation: [-0.5, 0.5, -0.5, 0.5]  # 90° rotations to align with optical frame
