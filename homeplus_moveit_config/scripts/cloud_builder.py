@@ -15,9 +15,9 @@ class CloudBuilder(Node):
         super().__init__('cloud_builder')
 
         # Topics
-        self.declare_parameter('depth_topic', '/camera/depth/image_raw')
+        self.declare_parameter('depth_topic', '/camera/aligned_depth_to_color/image_raw')
         self.declare_parameter('camera_info_topic', '/camera/color/camera_info')
-        self.declare_parameter('mask_topic', '/sam_mask')
+        self.declare_parameter('mask_topic', '/object_mask')
 
         self.depth_topic = self.get_parameter('depth_topic').value
         self.camera_info_topic = self.get_parameter('camera_info_topic').value
@@ -30,9 +30,12 @@ class CloudBuilder(Node):
 
         self.mask = None
 
+        self.camera_info_received = False
+
         # Publishers (IMPORTANT FOR MOVEIT)
         self.full_pub = self.create_publisher(PointCloud2, '/full_cloud', 10)
         self.object_pub = self.create_publisher(PointCloud2, '/object_cloud', 10)
+        
 
         # Subscribers
         self.create_subscription(Image, self.depth_topic, self.depth_callback, 10)
@@ -82,7 +85,10 @@ class CloudBuilder(Node):
         for v in range(0, h, step):
             for u in range(0, w, step):
 
-                z = depth[v, u] / 1000.0
+                if depth.dtype == np.uint16:
+                    z = depth[v, u] / 1000.0
+                else:
+                    z = float(depth[v, u])
                 if z == 0 or z > 5.0:
                     continue
 
@@ -94,6 +100,16 @@ class CloudBuilder(Node):
                 # SAM2 mask (optional)
                 if self.mask is not None and self.mask[v, u] > 0:
                     object_points.append([x, y, z])
+
+        header = msg.header
+
+        # publish clouds
+        full_cloud = pc2.create_cloud_xyz32(header, full_points)
+        self.full_pub.publish(full_cloud)
+
+        if len(object_points) > 0:
+            object_cloud = pc2.create_cloud_xyz32(header, object_points)
+            self.object_pub.publish(object_cloud)
 
 def main():
     rclpy.init()

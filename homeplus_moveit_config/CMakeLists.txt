@@ -19,6 +19,7 @@ install(
 install(
   PROGRAMS
     scripts/ik.py
+    scripts/cloud_builder.py
   DESTINATION lib/${PROJECT_NAME}
 )
 

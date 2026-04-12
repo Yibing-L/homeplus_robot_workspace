@@ -25,6 +25,8 @@ ament_python_install_package(${PROJECT_NAME})
 install(PROGRAMS
   scripts/aruco_detector.py
   scripts/aruco_pose_publisher.py
+  scripts/grounding_dino_node.py
+  scripts/test_grounding_dino_static.py
   DESTINATION lib/${PROJECT_NAME}
 )
 
