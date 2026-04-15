@@ -8,6 +8,7 @@ endif()
 # find dependencies
 find_package(ament_cmake REQUIRED)
 find_package(ament_cmake_python REQUIRED)
+find_package(homeplus_interfaces REQUIRED)
 find_package(rclpy REQUIRED)
 find_package(std_msgs REQUIRED)
 find_package(sensor_msgs REQUIRED)
@@ -25,6 +26,7 @@ ament_python_install_package(${PROJECT_NAME})
 install(PROGRAMS
   scripts/aruco_detector.py
   scripts/aruco_pose_publisher.py
+  scripts/gesture_recognizer.py
   DESTINATION lib/${PROJECT_NAME}
 )
 

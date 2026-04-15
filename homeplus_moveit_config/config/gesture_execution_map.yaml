@@ -1,0 +1,47 @@
+commands:
+  home:
+    type: joint_state
+    group_name: arm
+    joints:
+      JointFrame: 0.0
+      JointTelescope: 0.0
+      JointArm1: 0.0
+      JointArm2: 0.0
+      JointWrist: 0.0
+      JointHand: 0.0
+
+  reach_forward:
+    type: pose
+    frame_id: world
+    group_name: arm
+    position: [0.80, 0.00, 0.85]
+    rpy_deg: [0.0, 0.0, 0.0]
+
+  reach_left:
+    type: pose
+    frame_id: world
+    group_name: arm
+    position: [0.80, 0.20, 0.85]
+    rpy_deg: [0.0, 0.0, 0.0]
+
+  reach_right:
+    type: pose
+    frame_id: world
+    group_name: arm
+    position: [0.80, -0.20, 0.85]
+    rpy_deg: [0.0, 0.0, 0.0]
+
+  lift_up:
+    type: pose
+    frame_id: world
+    group_name: arm
+    position: [0.72, 0.00, 1.00]
+    rpy_deg: [0.0, 0.0, 0.0]
+
+  gripper_open:
+    type: gripper
+    value: 0.0
+
+  gripper_close:
+    type: gripper
+    value: 100.0

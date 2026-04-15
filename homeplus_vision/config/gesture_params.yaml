@@ -1,0 +1,32 @@
+# Gesture recognition configuration for the ROS 2 runtime node.
+# The checkpoint path is intentionally blank here; pass it from launch or set it locally.
+
+gesture_recognizer:
+  ros__parameters:
+    checkpoint_path: ""
+    label_map_path: ""
+    label_names: []
+    device: "auto"
+
+    color_topic: "/camera/camera/color/image_raw"
+    depth_topic: "/camera/camera/aligned_depth_to_color/image_raw"
+    camera_info_topic: "/camera/camera/color/camera_info"
+    depth_unit_scale: 0.001
+    max_sync_delta_sec: 0.05
+
+    t_target: 64
+    stride_frames: 2
+    ema_alpha: 0.4
+    switch_margin: 0.05
+    min_hold_frames: 6
+    inference_stride: 12
+    buffer_size: 128
+    window_stride: 8
+    min_valid_ratio: 0.25
+    confidence_thresh: 0.45
+    hand_motion_thresh: 0.06
+    idle_reset_frames: 20
+
+    publish_debug_image: true
+    draw_landmarks: true
+    idle_label: "idle"

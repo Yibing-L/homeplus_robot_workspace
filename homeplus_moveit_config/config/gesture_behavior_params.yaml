@@ -1,0 +1,9 @@
+gesture_behavior:
+  ros__parameters:
+    behavior_map_path: ""
+    recognition_topic: "/gesture_recognition/state"
+    command_topic: "/gesture_control/command"
+    status_topic: "/gesture_control/behavior_status"
+    min_confidence: 0.55
+    min_trigger_interval_sec: 1.5
+    require_active: true
