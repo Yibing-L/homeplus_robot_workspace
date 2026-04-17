@@ -489,20 +489,24 @@ class FeatureBufferXYZ:
         x = np.nan_to_num(x, nan=0.0, posinf=0.0, neginf=0.0)
         return x, valid_t
 
-    def assemble_windows(self, window_stride: int):
+    def assemble_windows(self, window_stride: int, recent_window_count: int = 3):
         buf_list = list(self.buf)
         total_frames = len(buf_list)
         if total_frames < self.t_target:
             return None
 
-        hand_xyz_full = np.stack([frame[0] for frame in buf_list], axis=0)
-        valid_full = np.array([frame[6] for frame in buf_list], dtype=bool)
+        recent_frames = buf_list[-self.t_target:]
+        hand_xyz_full = np.stack([frame[0] for frame in recent_frames], axis=0)
+        valid_full = np.array([frame[6] for frame in recent_frames], dtype=bool)
         hand_valid = hand_xyz_full[valid_full, 1:, :]
         hand_motion = float(hand_valid.std(axis=0).mean()) if len(hand_valid) > 1 else 0.0
 
         windows = []
         for start in range(0, total_frames - self.t_target + 1, window_stride):
             windows.append(self._build_features_from_slice(buf_list[start:start + self.t_target]))
+
+        if recent_window_count > 0 and len(windows) > recent_window_count:
+            windows = windows[-recent_window_count:]
 
         return windows, hand_motion
 
@@ -616,6 +620,7 @@ class GestureRecognizerNode(Node):
         self.declare_parameter("inference_stride", 12)
         self.declare_parameter("buffer_size", 128)
         self.declare_parameter("window_stride", 8)
+        self.declare_parameter("recent_window_count", 3)
         self.declare_parameter("min_valid_ratio", 0.25)
         self.declare_parameter("confidence_thresh", 0.45)
         self.declare_parameter("hand_motion_thresh", 0.06)
@@ -644,6 +649,7 @@ class GestureRecognizerNode(Node):
         self.stride_frames = max(1, int(self.get_parameter("stride_frames").value))
         self.inference_stride = max(1, int(self.get_parameter("inference_stride").value))
         self.window_stride = max(1, int(self.get_parameter("window_stride").value))
+        self.recent_window_count = max(1, int(self.get_parameter("recent_window_count").value))
         self.min_valid_ratio = float(self.get_parameter("min_valid_ratio").value)
         self.hand_motion_thresh = float(self.get_parameter("hand_motion_thresh").value)
         self.idle_reset_frames = max(1, int(self.get_parameter("idle_reset_frames").value))
@@ -789,7 +795,10 @@ class GestureRecognizerNode(Node):
         if debug_frame is not None and self.draw_landmarks:
             self.holistic.draw_landmarks(debug_frame, result)
 
-        assembled = self.feature_buffer.assemble_windows(self.window_stride)
+        assembled = self.feature_buffer.assemble_windows(
+            self.window_stride,
+            recent_window_count=self.recent_window_count,
+        )
         if assembled is None:
             if debug_frame is not None:
                 self._draw_overlay(debug_frame, "warming_up", self.idle_label, 0.0, False)

@@ -5,5 +5,5 @@ gesture_behavior:
     command_topic: "/gesture_control/command"
     status_topic: "/gesture_control/behavior_status"
     min_confidence: 0.55
-    min_trigger_interval_sec: 1.5
+    min_trigger_interval_sec: 0.75
     require_active: true
