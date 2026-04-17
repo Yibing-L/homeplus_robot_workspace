@@ -34,6 +34,10 @@ source ~/install/setup.bash
 ```bash
 ros2 launch homeplus_moveit_config moveit.launch.py
 ```
+Run with Arduino serial reader:
+```bash
+ros2 launch homeplus_moveit_config moveit.launch.py run_arduino_reader:=true
+```
 
 ### 6. Run IK node as ROS 2 executable
 ```bash

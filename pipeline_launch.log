@@ -1,0 +1,18 @@
+[INFO] [launch]: All log files can be found below /home/homeplus/Desktop/homeplus_robot_workspace-main/.roslog/2026-04-13-13-01-55-522357-homeplus-195137
+[INFO] [launch]: Default logging verbosity is set to INFO
+[INFO] [cloud_builder.py-1]: process started with pid [195138]
+[INFO] [octomap_server_node-2]: process started with pid [195140]
+[INFO] [rviz2-3]: process started with pid [195142]
+[rviz2-3] Warning: Ignoring XDG_SESSION_TYPE=wayland on Gnome. Use QT_QPA_PLATFORM=wayland to run on Wayland anyway.
+[rviz2-3] qt.qpa.xcb: could not connect to display :0
+[rviz2-3] qt.qpa.plugin: Could not load the Qt platform plugin "xcb" in "" even though it was found.
+[rviz2-3] This application failed to start because no Qt platform plugin could be initialized. Reinstalling the application may fix this problem.
+[rviz2-3] 
+[rviz2-3] Available platform plugins are: eglfs, linuxfb, minimal, minimalegl, offscreen, vnc, xcb.
+[rviz2-3] 
+[octomap_server_node-2] [INFO] [1776099715.613039800] [octomap_server]: Publishing latched (single publish will take longer, all topics are prepared)
+[octomap_server_node-2] [WARN] [1776099715.621085997] [octomap_server]: Nothing to publish, octree is empty
+[octomap_server_node-2] [WARN] [1776099715.621156288] [octomap_server]: Could not open file 
+[ERROR] [rviz2-3]: process has died [pid 195142, exit code -11, cmd '/opt/ros/humble/lib/rviz2/rviz2 -d /home/homeplus/Desktop/homeplus_robot_workspace-main/install/homeplus_moveit_config/share/homeplus_moveit_config/config/moveit.rviz --ros-args -r __node:=rviz2'].
+[cloud_builder.py-1] [INFO] [1776099715.938356546] [cloud_builder]: CloudBuilder node ready
+[cloud_builder.py-1] [INFO] [1776099716.564956880] [cloud_builder]: Camera intrinsics received (locked)

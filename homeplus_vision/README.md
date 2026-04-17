@@ -102,6 +102,29 @@ The gesture node consumes aligned depth from `/camera/camera/aligned_depth_to_co
 and camera intrinsics from `/camera/camera/color/camera_info`, mirroring the `landmark_with_xyz.py`
 feature layout and the `online_recognizer_xyz.py` runtime logic.
 
+### 4. Grounding DINO
+
+Launch RealSense camera:
+```bash
+ros2 launch realsense2_camera rs_launch.py
+```
+
+Run node:
+```bash
+ros2 homeplus_vision/scripts/grounding_dino_node.py
+```
+
+Visualize bounding boxes:
+```bash
+ros2 run rqt_image_view rqt_image_view
+```
+- topic gdino_debug_image
+
+(Run octomap:
+```bash
+ros2 launch homeplus_moveit_config cloud_to_octomap.launch.py   octomap_input_topic:=/full_cloud   depth_topic:=/camera/camera/depth/image_rect_raw   camera_info_topic:=/camera/camera/depth/camera_info
+```
+)
 ## Configuration
 
 ### Parameter Hierarchy
