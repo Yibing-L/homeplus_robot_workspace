@@ -52,6 +52,8 @@ def generate_launch_description():
             'depth_width': '640',
             'depth_height': '480',
             'depth_fps': '30.0',
+            'enable_sync': 'true',
+            'align_depth.enable': 'true',
         }.items()
     )
     

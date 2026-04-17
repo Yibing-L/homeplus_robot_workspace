@@ -19,6 +19,7 @@ import os
 import serial
 import time
 from datetime import datetime
+from std_msgs.msg import String
 
 class HomePlusIKPipeline(Node):
     def set_target_point(self, x, y, z):
@@ -75,6 +76,12 @@ class HomePlusIKPipeline(Node):
         
         # CSV file setup
         self.csv_filename = None
+
+    # Publisher to send commands to Arduino bridge (do not open serial here)
+    self.arduino_cmd_pub = self.create_publisher(String, '/arduino/command_queue', 10)
+    # Optional: subscribe to ack lines from bridge
+    self.create_subscription(String, '/arduino/ack', self._arduino_ack_cb, 10)
+    self.last_arduino_ack = None
         
         self.publish_box_obstacle()
         
@@ -501,7 +508,6 @@ class HomePlusIKPipeline(Node):
             # Format trajectory data for Arduino
             arduino_commands = []
             for waypoint_str in trajectory_data:
-                # Convert MoveIt trajectory format to Arduino format
                 arduino_command = self.format_waypoint_for_arduino(waypoint_str)
                 arduino_commands.append(arduino_command)
             
@@ -680,11 +686,11 @@ class HomePlusIKPipeline(Node):
         if arduino_csv_path:
             self.get_logger().info(f'Arduino CSV saved successfully: {arduino_csv_path}')
 
-        # Commented out: Send trajectory to Arduino
-        # if self.send_trajectory_to_arduino(trajectory_strings):
-        #     self.get_logger().info('Trajectory sent to Arduino successfully')
-        # else:
-        #     self.get_logger().warning('Failed to send trajectory to Arduino')
+        # Send to Arduino
+        if self.send_trajectory_to_arduino(trajectory_strings):
+            self.get_logger().info('Trajectory sent to Arduino successfully')
+        else:
+            self.get_logger().warning('Failed to send trajectory to Arduino')
 
         return trajectory_strings
 
@@ -773,7 +779,8 @@ def main():
     # Option 2: Position + RPY orientation planning
     # Format: set_target_point_rpy(x, y, z, roll, pitch, yaw)
     # Uncomment the line below to use RPY planning instead:
-    node.set_target_point_rpy(0.9, 0.11212000250816345, 0.9, 0.0, 0.0, 0.0)
+    # node.set_target_point_rpy(0.9, 0.11212000250816345, 0.9, 0.0, 0.0, 0.0)
+    node.set_target_point(0.9,0.5,0.9)
 
     try:
         rclpy.spin(node)
