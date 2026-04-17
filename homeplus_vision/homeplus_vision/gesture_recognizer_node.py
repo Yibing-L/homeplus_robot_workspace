@@ -13,6 +13,7 @@ import numpy as np
 import rclpy
 from cv_bridge import CvBridge
 from homeplus_interfaces.msg import GestureRecognition
+from rclpy.exceptions import ParameterUninitializedException
 from rclpy.node import Node
 from rclpy.qos import qos_profile_sensor_data
 from sensor_msgs.msg import CameraInfo, Image
@@ -220,16 +221,90 @@ def build_model_from_artifact(artifact: Dict):
             key_padding_mask = ~(mask[:, :target_len].bool())
             return self.head(self.attn_pool(h, key_padding_mask=key_padding_mask))
 
-    model = AttentionBiLSTM(
-        int(artifact["in_dim"]),
-        int(artifact["n_classes"]),
-        hidden=int(artifact.get("hidden", 128)),
-        lstm_layers=int(artifact.get("lstm_layers", 2)),
-        attn_heads=int(artifact.get("attn_heads", 4)),
-        proj_dim=int(artifact.get("proj_dim", 128)),
-        dropout=float(artifact.get("dropout", 0.4)),
-    )
-    model.load_state_dict(artifact["state_dict"])
+    class GroupLinearDownsampler(nn.Module):
+        def __init__(self, group_dims):
+            super().__init__()
+            feature_groups = [
+                ("pose", 0, 72),
+                ("vel_pose", 72, 144),
+                ("vel_wrist", 144, 147),
+                ("scale", 147, 148),
+                ("angles", 148, 164),
+                ("validity", 164, 207),
+            ]
+            self.projections = nn.ModuleList()
+            for (_, start, end), out_dim in zip(feature_groups, group_dims):
+                self.projections.append(
+                    nn.Sequential(
+                        nn.Linear(end - start, out_dim),
+                        nn.LayerNorm(out_dim),
+                        nn.GELU(),
+                    )
+                )
+            self.out_dim = int(sum(group_dims))
+
+        def forward(self, x):
+            feature_groups = [
+                (0, 72),
+                (72, 144),
+                (144, 147),
+                (147, 148),
+                (148, 164),
+                (164, 207),
+            ]
+            parts = []
+            for (start, end), proj in zip(feature_groups, self.projections):
+                parts.append(proj(x[:, :, start:end]))
+            if x.size(-1) > 207:
+                parts.append(x[:, :, 207:])
+            return torch.cat(parts, dim=-1)
+
+    class FeatureDownsampleWrapper(nn.Module):
+        def __init__(self, downsampler, temporal_model):
+            super().__init__()
+            self.downsampler = downsampler
+            self.temporal_model = temporal_model
+
+        def forward(self, x, mask):
+            return self.temporal_model(self.downsampler(x), mask)
+
+    state_dict = artifact["state_dict"]
+    has_group_downsampler = any(key.startswith("downsampler.projections.") for key in state_dict.keys())
+
+    if has_group_downsampler:
+        group_dims = []
+        idx = 0
+        while True:
+            weight_key = f"downsampler.projections.{idx}.0.weight"
+            if weight_key not in state_dict:
+                break
+            group_dims.append(int(state_dict[weight_key].shape[0]))
+            idx += 1
+        if not group_dims:
+            raise RuntimeError("Checkpoint advertises a feature downsampler, but no projection weights were found.")
+
+        temporal_model = AttentionBiLSTM(
+            int(sum(group_dims)),
+            int(artifact["n_classes"]),
+            hidden=int(artifact.get("hidden", 128)),
+            lstm_layers=int(artifact.get("lstm_layers", 2)),
+            attn_heads=int(artifact.get("attn_heads", 4)),
+            proj_dim=int(artifact.get("proj_dim", 128)),
+            dropout=float(artifact.get("dropout", 0.4)),
+        )
+        model = FeatureDownsampleWrapper(GroupLinearDownsampler(group_dims), temporal_model)
+    else:
+        model = AttentionBiLSTM(
+            int(artifact["in_dim"]),
+            int(artifact["n_classes"]),
+            hidden=int(artifact.get("hidden", 128)),
+            lstm_layers=int(artifact.get("lstm_layers", 2)),
+            attn_heads=int(artifact.get("attn_heads", 4)),
+            proj_dim=int(artifact.get("proj_dim", 128)),
+            dropout=float(artifact.get("dropout", 0.4)),
+        )
+
+    model.load_state_dict(state_dict)
     return model
 
 
@@ -555,7 +630,10 @@ class GestureRecognizerNode(Node):
         if not Path(checkpoint_path).is_file():
             raise FileNotFoundError(f"Checkpoint not found: {checkpoint_path}")
 
-        label_names = list(self.get_parameter("label_names").value or [])
+        try:
+            label_names = list(self.get_parameter("label_names").value or [])
+        except ParameterUninitializedException:
+            label_names = []
         label_map_path = self.get_parameter("label_map_path").value
         self.label_map = load_label_map(label_map_path, label_names)
         self.idle_label = str(self.get_parameter("idle_label").value)

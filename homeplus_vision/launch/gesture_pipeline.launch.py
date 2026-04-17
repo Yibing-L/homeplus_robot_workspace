@@ -5,6 +5,7 @@ from launch.actions import DeclareLaunchArgument, IncludeLaunchDescription
 from launch.launch_description_sources import PythonLaunchDescriptionSource
 from launch.substitutions import LaunchConfiguration, PathJoinSubstitution
 from launch_ros.actions import Node
+from launch_ros.parameter_descriptions import ParameterFile, ParameterValue
 from launch_ros.substitutions import FindPackageShare
 
 
@@ -21,8 +22,8 @@ def generate_launch_description():
         description="Optional JSON label map file for class names",
     )
 
-    config_file_arg = DeclareLaunchArgument(
-        "config_file",
+    gesture_config_file_arg = DeclareLaunchArgument(
+        "gesture_config_file",
         default_value=PathJoinSubstitution(
             [FindPackageShare("homeplus_vision"), "config", "gesture_params.yaml"]
         ),
@@ -40,12 +41,11 @@ def generate_launch_description():
         launch_arguments={
             "enable_color": "true",
             "enable_depth": "true",
-            "color_width": "640",
-            "color_height": "480",
-            "color_fps": "30.0",
-            "depth_width": "640",
-            "depth_height": "480",
-            "depth_fps": "30.0",
+            "enable_accel": "false",
+            "enable_gyro": "false",
+            "enable_motion": "false",
+            "rgb_camera.color_profile": "640x480x30",
+            "depth_module.depth_profile": "640x480x30",
             "enable_sync": "true",
             "align_depth.enable": "true",
         }.items(),
@@ -56,10 +56,16 @@ def generate_launch_description():
         executable="gesture_recognizer.py",
         name="gesture_recognizer",
         parameters=[
-            LaunchConfiguration("config_file"),
+            ParameterFile(LaunchConfiguration("gesture_config_file"), allow_substs=True),
             {
-                "checkpoint_path": LaunchConfiguration("checkpoint_path"),
-                "label_map_path": LaunchConfiguration("label_map_path"),
+                "checkpoint_path": ParameterValue(
+                    LaunchConfiguration("checkpoint_path"),
+                    value_type=str,
+                ),
+                "label_map_path": ParameterValue(
+                    LaunchConfiguration("label_map_path"),
+                    value_type=str,
+                ),
             },
         ],
         output="screen",
@@ -69,7 +75,7 @@ def generate_launch_description():
         [
             checkpoint_path_arg,
             label_map_path_arg,
-            config_file_arg,
+            gesture_config_file_arg,
             realsense_launch,
             gesture_node,
         ]
