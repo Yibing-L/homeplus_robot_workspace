@@ -29,6 +29,8 @@ build/
 *.swp
 *.tmp
 
+*.jpg
+
 # Coverage / pytest
 .coverage
 .pytest_cache/

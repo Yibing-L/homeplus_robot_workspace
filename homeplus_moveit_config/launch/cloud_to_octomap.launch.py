@@ -7,6 +7,8 @@ This launch file assumes you have:
 - the `homeplus_moveit_config` package built/installed (so this script or installed node is available)
 """
 from launch import LaunchDescription
+from launch.actions import DeclareLaunchArgument
+from launch.substitutions import LaunchConfiguration
 from launch_ros.actions import Node
 import os
 from ament_index_python.packages import get_package_share_directory
@@ -18,6 +20,12 @@ def generate_launch_description():
     octomap_params = os.path.join(pkg_share, 'config', 'octomap_params.yaml')
     rviz_config = os.path.join(pkg_share, 'config', 'moveit.rviz')
 
+    depth_topic = LaunchConfiguration('depth_topic')
+    camera_info_topic = LaunchConfiguration('camera_info_topic')
+    mask_topic = LaunchConfiguration('mask_topic')
+    octomap_input_topic = LaunchConfiguration('octomap_input_topic')
+    output_frame = LaunchConfiguration('output_frame')
+
     cloud_builder_node = Node(
         package='homeplus_moveit_config',
         # the installed script filename
@@ -25,12 +33,10 @@ def generate_launch_description():
         name='cloud_builder',
         output='screen',
         parameters=[
-            # adjust these if your camera publishes on different topics
-            {'depth_topic': '/camera/camera/depth/image_rect_raw'},
-            # Some camera drivers (like the RealSense node) publish camera_info under
-            # '/camera/camera/color/camera_info' — adjust if your camera uses a different namespace
-            {'camera_info_topic': '/camera/camera/depth/camera_info'},
-            {'mask_topic': '/object_mask'}
+            {'depth_topic': depth_topic},
+            {'camera_info_topic': camera_info_topic},
+            {'mask_topic': mask_topic},
+            {'output_frame': output_frame}
         ]
     )
 
@@ -39,7 +45,8 @@ def generate_launch_description():
         executable='octomap_server_node',
         name='octomap_server',
         output='screen',
-        parameters=[octomap_params]
+        parameters=[octomap_params],
+        remappings=[('cloud_in', octomap_input_topic)]
     )
 
     rviz_node = Node(
@@ -51,6 +58,11 @@ def generate_launch_description():
     )
 
     return LaunchDescription([
+        DeclareLaunchArgument('depth_topic', default_value='/camera/camera/depth/image_rect_raw'),
+        DeclareLaunchArgument('camera_info_topic', default_value='/camera/camera/depth/camera_info'),
+        DeclareLaunchArgument('mask_topic', default_value='/object_mask'),
+        DeclareLaunchArgument('output_frame', default_value=''),
+        DeclareLaunchArgument('octomap_input_topic', default_value='/object_cloud'),
         cloud_builder_node,
         octomap_node,
         rviz_node,

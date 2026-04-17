@@ -18,7 +18,6 @@ Notes:
     depth camera info -> /camera/camera/depth/camera_info
     mask -> /object_mask
 
-These topics match the defaults used by cloud_builder in this workspace.
 """
 import argparse
 import time
@@ -32,15 +31,18 @@ from cv_bridge import CvBridge
 
 class StaticRGBDPublisher(Node):
     def __init__(self, color_path=None, depth_path=None, mask_path=None, rate=1.0, count=0,
-                 color_topic='/camera/camera/color/image_raw', color_info_topic='/camera/camera/color/camera_info',
-                 depth_topic='/camera/camera/depth/image_rect_raw', depth_info_topic='/camera/camera/depth/camera_info',
-                 mask_topic='/object_mask', frame_id='camera_color_optical_frame'):
+                 depth_topic='/camera/camera/depth/image_rect_raw',
+                 depth_info_topic='/camera/camera/depth/camera_info',
+                 color_topic='/camera/camera/color/image_raw',
+                 color_info_topic='/camera/camera/color/camera_info',
+                 mask_topic='/object_mask', frame_id='camera_depth_optical_frame'):
         super().__init__('rgbd_test_publisher')
         self.bridge = CvBridge()
         self.color = None
         self.depth = None
         self.mask = None
         self.frame_id = frame_id
+        
 
         if color_path:
             img = cv2.imread(color_path, cv2.IMREAD_COLOR)
