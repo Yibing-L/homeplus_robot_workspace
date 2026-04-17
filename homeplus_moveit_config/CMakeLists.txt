@@ -4,6 +4,7 @@ project(homeplus_moveit_config)
 find_package(ament_cmake REQUIRED)
 
 # Find required dependencies
+find_package(homeplus_interfaces REQUIRED)
 find_package(moveit_ros_planning_interface REQUIRED)
 find_package(moveit_ros_move_group REQUIRED)
 find_package(moveit_kinematics REQUIRED)
@@ -19,11 +20,15 @@ install(
 install(
   PROGRAMS
     scripts/ik.py
+    scripts/gesture_behavior.py
+    scripts/gesture_motion_executor.py
+    scripts/cloud_builder.py
   DESTINATION lib/${PROJECT_NAME}
 )
 
 # Export dependencies
 ament_export_dependencies(
+  homeplus_interfaces
   moveit_ros_planning_interface
   moveit_ros_move_group
   moveit_kinematics

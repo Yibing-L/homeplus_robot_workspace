@@ -1,0 +1,14 @@
+services:
+  ros2:
+    build: .
+    container_name: homeplus_ros2
+    stdin_open: true
+    tty: true
+    volumes:
+      - .:/ros2_ws/src/homeplus_robot_workspace
+    ports:
+      - "6080:6080"
+    environment:
+      - DISPLAY=:1
+      - LIBGL_ALWAYS_SOFTWARE=1
+      - MESA_GL_VERSION_OVERRIDE=3.3

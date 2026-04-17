@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 
 from launch import LaunchDescription
-from launch.actions import DeclareLaunchArgument, TimerAction
+from launch.actions import DeclareLaunchArgument, TimerAction, ExecuteProcess
 from launch.substitutions import Command, LaunchConfiguration, PathJoinSubstitution
 from launch.conditions import IfCondition
 from launch_ros.actions import Node
@@ -50,20 +50,27 @@ def generate_launch_description():
 
     # Create launch arguments
     auto_start_test = LaunchConfiguration('auto_start_test')
-    
+    run_arduino_reader = LaunchConfiguration('run_arduino_reader')
+
     # Declare launch arguments
     declare_auto_start_test_cmd = DeclareLaunchArgument(
         'auto_start_test',
         default_value='false',
         description='Whether to automatically start the IK test sequence'
     )
+    declare_run_arduino_reader = DeclareLaunchArgument(
+        'run_arduino_reader',
+        default_value='false',
+        description='If true, start the Arduino serial reader node (reads /dev/ttyUSB0)'
+    )
 
     # Create and return launch description
     return LaunchDescription([
-        # Launch Arguments
-        declare_auto_start_test_cmd,
+    # Launch Arguments
+    declare_auto_start_test_cmd,
+    declare_run_arduino_reader,
 
-        # Robot State Publisher
+    # Robot State Publisher
         Node(
             package='robot_state_publisher',
             executable='robot_state_publisher',
@@ -73,6 +80,13 @@ def generate_launch_description():
                 'robot_description': robot_description,
                 'use_sim_time': False
             }],
+        ),
+
+        # Launch Arduino serial reader 
+        ExecuteProcess(
+            cmd=['python3', os.path.join(homeplus_moveit_pkg, 'scripts', 'arduino_reader.py'), '--port', '/dev/ttyUSB0', '--baud', '9600'],
+            output='screen',
+            condition=IfCondition(run_arduino_reader)
         ),
 
         # Joint State Publisher GUI

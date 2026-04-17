@@ -1,1 +1,66 @@
 src/realsense-ros/
+build/
+install/
+log/
+
+# colcon / ROS2 build outputs
+/build/
+/install/
+/log/
+
+# colcon/ament/cmake files
+**/CMakeCache.txt
+**/CTestCustom.cmake
+**/cmake_install.cmake
+**/CTestTestfile.cmake
+**/install_manifest.txt
+
+# Common python
+__pycache__/
+*.py[cod]
+*.egg-info/
+dist/
+build/
+
+# VSCode / JetBrains / macOS
+.vscode/
+.idea/
+.DS_Store
+
+# Editor swap / temp
+*~
+*.swp
+*.tmp
+
+*.jpg
+
+# Coverage / pytest
+.coverage
+.pytest_cache/
+
+# Node / misc
+node_modules/
+
+# Python virtualenvs
+venv/
+.venv/
+env/
+.env/
+ENV/
+venv-*/
+
+# pip / build caches
+__pycache__/
+*.py[cod]
+*.egg-info/
+build/
+dist/
+
+# pipenv
+Pipfile.lock
+
+# poetry
+.poetry/
+
+# others
+.python-version

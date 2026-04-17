@@ -1,0 +1,6 @@
+1776099715.5232546 [INFO] [launch]: All log files can be found below /home/homeplus/Desktop/homeplus_robot_workspace-main/.roslog/2026-04-13-13-01-55-522357-homeplus-195137
+1776099715.5234127 [INFO] [launch]: Default logging verbosity is set to INFO
+1776099715.5596507 [INFO] [cloud_builder.py-1]: process started with pid [195138]
+1776099715.5598123 [INFO] [octomap_server_node-2]: process started with pid [195140]
+1776099715.5598741 [INFO] [rviz2-3]: process started with pid [195142]
+1776099715.6701500 [ERROR] [rviz2-3]: process has died [pid 195142, exit code -11, cmd '/opt/ros/humble/lib/rviz2/rviz2 -d /home/homeplus/Desktop/homeplus_robot_workspace-main/install/homeplus_moveit_config/share/homeplus_moveit_config/config/moveit.rviz --ros-args -r __node:=rviz2'].
