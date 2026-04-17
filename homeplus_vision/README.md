@@ -10,6 +10,7 @@ A ROS2 package for ArUco marker detection and pose estimation using Intel RealSe
 - Integration with RealSense D400 series cameras
 - Configurable marker sizes and dictionary types
 - Debug visualization
+- Real-time gesture recognition from aligned RGB-D streams
 
 ## Dependencies
 
@@ -23,6 +24,7 @@ sudo apt install ros-humble-realsense2-camera
 
 # Python dependencies
 pip install opencv-python numpy scipy
+pip install mediapipe torch
 ```
 
 ## Package Structure
@@ -42,6 +44,7 @@ homeplus_vision/
 └── scripts/
     ├── aruco_detector.py           # Main ArUco detection node
     └── aruco_pose_publisher.py     # Pose transformation node
+    └── gesture_recognizer.py       # Real-time gesture classifier node
 ```
 
 ## Usage
@@ -77,6 +80,27 @@ If you have another camera source running:
 ```bash
 ros2 launch homeplus_vision aruco_only.launch.py
 ```
+
+### 4. Gesture Recognition Pipeline
+
+Launch RealSense plus the gesture recognizer:
+
+```bash
+ros2 launch homeplus_vision gesture_pipeline.launch.py \
+    checkpoint_path:=/absolute/path/to/model_7.pt
+```
+
+Optional parameters:
+
+```bash
+ros2 launch homeplus_vision gesture_pipeline.launch.py \
+    checkpoint_path:=/absolute/path/to/model_7.pt \
+    label_map_path:=/absolute/path/to/labels.json
+```
+
+The gesture node consumes aligned depth from `/camera/camera/aligned_depth_to_color/image_raw`
+and camera intrinsics from `/camera/camera/color/camera_info`, mirroring the `landmark_with_xyz.py`
+feature layout and the `online_recognizer_xyz.py` runtime logic.
 
 ### 4. Grounding DINO
 
@@ -161,11 +185,17 @@ Adjust the static transforms in `vision_pipeline.launch.py` based on your camera
 - `/aruco_pose` (geometry_msgs/PoseStamped): Raw ArUco pose in camera frame
 - `/aruco_pose_base_link` (geometry_msgs/PoseStamped): Transformed pose in robot frame
 - `/aruco_debug_image` (sensor_msgs/Image): Debug visualization
+- `/gesture_recognition/label` (std_msgs/String): Stable gesture label or `idle`
+- `/gesture_recognition/class_id` (std_msgs/Int32): Predicted class index, `-1` when idle
+- `/gesture_recognition/confidence` (std_msgs/Float32): EMA confidence of the current label
+- `/gesture_recognition/active` (std_msgs/Bool): Whether the hand is currently active
+- `/gesture_recognition/debug_image` (sensor_msgs/Image): Overlay with landmarks and current state
 
 ### Subscribed Topics
 
 - `/camera/color/image_raw` (sensor_msgs/Image): RGB camera stream
 - `/camera/color/camera_info` (sensor_msgs/CameraInfo): Camera calibration
+- `/camera/camera/aligned_depth_to_color/image_raw` (sensor_msgs/Image): Depth aligned to the color image for gesture recognition
 
 ## TF Frames
 
@@ -191,6 +221,14 @@ When a marker is detected, you'll see:
 - Check marker size parameter matches physical markers
 - Ensure good lighting conditions
 - Verify camera is publishing images: `ros2 topic echo /camera/color/image_raw`
+
+### Gesture node does not start
+- Pass a valid `checkpoint_path`; the node will fail fast if the model file is missing.
+- Install runtime Python dependencies in the same environment as ROS: `mediapipe`, `torch`, `opencv-python`, `numpy`.
+
+### Gesture predictions are unstable
+- Confirm the checkpoint was trained from `landmark_with_xyz.py` / `train_with_angles.py` or `train_xyz.py`.
+- Make sure RealSense depth is aligned to color. `gesture_pipeline.launch.py` enables `enable_sync` and `align_depth.enable`.
 
 ### TF transform errors
 - Check that camera transforms are correctly configured
