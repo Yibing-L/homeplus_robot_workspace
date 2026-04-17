@@ -1,0 +1,28 @@
+behaviors:
+  - gesture_id: 0
+    command_name: home
+    command_type: joint_state
+
+  - gesture_id: 1
+    command_name: reach_forward
+    command_type: pose
+
+  - gesture_id: 2
+    command_name: reach_left
+    command_type: pose
+
+  - gesture_id: 3
+    command_name: reach_right
+    command_type: pose
+
+  - gesture_id: 4
+    command_name: lift_up
+    command_type: pose
+
+  - gesture_id: 5
+    command_name: gripper_open
+    command_type: gripper
+
+  - gesture_id: 6
+    command_name: gripper_close
+    command_type: gripper

@@ -1,0 +1,23 @@
+gesture_motion_executor:
+  ros__parameters:
+    execution_map_path: ""
+    command_topic: "/gesture_control/command"
+    status_topic: "/gesture_control/executor_status"
+    target_pose_topic: "/gesture_control/target_pose"
+    joint_target_topic: "/gesture_control/joint_target"
+    gripper_target_topic: "/gesture_control/gripper_target"
+    joint_states_topic: "/joint_states"
+
+    enable_moveit_planning: false
+    move_group_action_name: "/move_action"
+    default_group_name: "arm"
+    end_effector_link: "Hand"
+    base_frame: "world"
+    planner_id: "BiTRRTkConfigDefault"
+    plan_only: true
+    allowed_planning_time: 5.0
+    num_planning_attempts: 3
+    position_tolerance_m: 0.05
+    orientation_tolerance_rad: 0.25
+    joint_tolerance: 0.02
+    workspace_bounds: [-2.0, -2.0, -1.0, 2.0, 2.0, 2.0]

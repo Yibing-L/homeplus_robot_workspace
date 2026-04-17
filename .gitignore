@@ -1,4 +1,7 @@
 src/realsense-ros/
+build/
+install/
+log/
 
 # colcon / ROS2 build outputs
 /build/
