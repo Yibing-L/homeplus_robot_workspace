@@ -22,6 +22,7 @@ install(
     scripts/ik.py
     scripts/gesture_behavior.py
     scripts/gesture_motion_executor.py
+    scripts/cloud_builder.py
   DESTINATION lib/${PROJECT_NAME}
 )
 
