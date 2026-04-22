@@ -11,11 +11,14 @@ Parameters (declared):
 - depth_topic: topic for aligned depth images (default: /camera/aligned_depth_to_color/image_raw)
 - camera_info_topic: topic for camera info (default: /camera/camera/color/camera_info)
 - inference_rate: Hz for running inference (default 2.0)
+- task_id: 1-6 to select targets for different parts of the pipeline
+- world_frame: TF parent frame for published poses (default map); use odom, world, base_link, etc. as in your TF tree
+- tf_lookup_timeout_sec: max wait for each TF lookup (default 0.5)
 
 Outputs:
 - /gdino/detections (std_msgs/String) JSON list of detections: [{label, score, bbox: [xmin,ymin,xmax,ymax]}]
 - /gdino_debug_image (sensor_msgs/Image) annotated image
-- /gdino_pose_camera (geometry_msgs/PoseStamped) when publish_poses is true (one per detection)
+- /gdino_pose_world (geometry_msgs/PoseStamped) when publish_poses is true — 3D target in world_frame (TF2)
 - /gdino/mask_center (std_msgs/String) JSON payload with mask center pixel and optional 3D point
 
 """
@@ -23,10 +26,14 @@ Outputs:
 
 import rclpy
 from rclpy.node import Node
+from rclpy.duration import Duration
+from rclpy.time import Time
 from rclpy.qos import QoSProfile, QoSReliabilityPolicy, QoSHistoryPolicy
 from sensor_msgs.msg import Image, CameraInfo
 from geometry_msgs.msg import PoseStamped
 from std_msgs.msg import String
+from tf2_ros import Buffer, TransformListener
+import tf2_geometry_msgs
 from cv_bridge import CvBridge
 import numpy as np
 import cv2
@@ -35,6 +42,7 @@ import os
 from typing import Optional, Tuple
 from PIL import Image as PILImage
 from groundingdino.util.inference import predict 
+# from tf2_geometry_msgs import do_transform_pose
 
 class GroundingDinoNode(Node):
     def __init__(self):
@@ -50,6 +58,8 @@ class GroundingDinoNode(Node):
         self.declare_parameter('depth_topic', '/camera/camera/depth/image_rect_raw')
         self.declare_parameter('camera_info_topic', '/camera/camera/color/camera_info')
         self.declare_parameter('inference_rate', 2.0)
+        self.declare_parameter('world_frame', 'map')
+        self.declare_parameter('tf_lookup_timeout_sec', 0.5)
 
         self.device = self.get_parameter('device').value
         self.confidence_threshold = float(self.get_parameter('confidence_threshold').value)
@@ -57,18 +67,26 @@ class GroundingDinoNode(Node):
         self.image_topic = self.get_parameter('image_topic').value
         self.depth_topic = self.get_parameter('depth_topic').value
         self.camera_info_topic = self.get_parameter('camera_info_topic').value
-        self.inference_rate = 1.0
+        self.inference_rate = float(self.get_parameter('inference_rate').value)
+        self.world_frame = str(self.get_parameter('world_frame').value)
+        self._tf_timeout = Duration(seconds=float(self.get_parameter('tf_lookup_timeout_sec').value))
 
         # Target resolution for inference
         self.target_w = 640
         self.target_h = 480
 
+        self.declare_parameter('task_id', 1)
+        self.task_id = int(self.get_parameter('task_id').value)
+
         # Publishers
         self.debug_img_pub = self.create_publisher(Image, '/gdino_debug_image', 10)
         self.detections_pub = self.create_publisher(String, '/gdino/detections', 10)
-        self.pose_pub = self.create_publisher(PoseStamped, '/gdino_pose_camera', 10)
+        self.pose_pub = self.create_publisher(PoseStamped, '/gdino_pose_world', 10)
         self.mask_pub = self.create_publisher(Image, '/object_mask', 10)
         self.mask_center_pub = self.create_publisher(String, '/gdino/mask_center', 10)
+
+        self.tf_buffer = Buffer()
+        self.tf_listener = TransformListener(self.tf_buffer, self)
 
         # Subscriptions
         self.bridge = CvBridge()
@@ -81,6 +99,39 @@ class GroundingDinoNode(Node):
         self.create_subscription(Image, self.depth_topic, self.depth_callback, 5)
         self.create_subscription(CameraInfo, self.camera_info_topic, self.camera_info_callback, 5)
 
+        # targets for different tasks (needed before model setup)
+        self.tasks = {
+            1: {
+                "caption": "cup.",
+                "refinement": "handle"
+            },
+            2: {
+                "caption": "aluminum coffee machine.",
+                "refinement": "button"
+            },
+            3: {
+                "caption": "aluminum shelf.",
+                "refinement": None
+            },
+            4: {
+                "caption": "coffee cup. aluminum coffee machine.",
+                "refinement": "handle"
+            },
+            5: {
+                "caption": "coffee cup. aluminum shelf.",
+                "refinement": None
+            },
+            6: {
+                "caption": "coffee cup. aluminum coffee machine. aluminum shelf.",
+                "refinement": "handle"
+            }
+        }
+        if self.task_id not in self.tasks:
+            self.get_logger().warn(f"Invalid task_id {self.task_id}, defaulting to 1")
+            self.task_id = 1
+        self.task = self.tasks[self.task_id]
+        self.caption = self.task["caption"]
+
         # Models Setup
         from groundingdino.util.inference import load_model
         from groundingdino.datasets.transforms import Compose, RandomResize, ToTensor, Normalize
@@ -91,7 +142,6 @@ class GroundingDinoNode(Node):
         
         self.model = load_model(config_path, weights_path)
         self.model.to(self.device)
-        self.caption = "coffee cup. aluminum coffee machine. aluminum shelf."
 
         from sam2.build_sam import build_sam2
         from sam2.sam2_image_predictor import SAM2ImagePredictor
@@ -109,8 +159,10 @@ class GroundingDinoNode(Node):
             Normalize([0.485, 0.456, 0.406], [0.229, 0.224, 0.225])
         ])
 
-        self.timer = self.create_timer(1.0 / self.inference_rate, self.detect_loop)
-        self.get_logger().info('GroundingDinoNode initialized with Resizing Logic')
+        self.timer = self.create_timer(1.0 / max(self.inference_rate, 0.1), self.detect_loop)
+        self.get_logger().info(
+            f'GroundingDinoNode initialized; target 3D poses published in frame "{self.world_frame}"'
+        )
 
     def image_callback(self, msg: Image):
         self.latest_color = self.bridge.imgmsg_to_cv2(msg, desired_encoding='bgr8')
@@ -125,7 +177,7 @@ class GroundingDinoNode(Node):
     def detect_loop(self):
         if self.latest_color is None or self.camera_info is None:
             return
-
+        self.get_logger().info("Running detection loop")
         # 1. Resize Color for Inference
         img_resized = cv2.resize(self.latest_color, (self.target_w, self.target_h))
         header = self.latest_color_header
@@ -139,7 +191,12 @@ class GroundingDinoNode(Node):
             
             # Crop and Segment
             crop = img_resized[ymin:ymax, xmin:xmax]
-            refined = self.run_model_inference(crop, "handle") # Simplified refinement
+            refinement_prompt = self.task.get("refinement")
+
+            if refinement_prompt:
+                refined = self.run_model_inference(crop, refinement_prompt)
+            else:
+                refined = [d]
             
             masks, _ = self.run_segmentation(crop, refined if refined else [d])
             if masks is None or len(masks) == 0: continue
@@ -162,22 +219,36 @@ class GroundingDinoNode(Node):
                 u_depth = int(center_u * (depth_w / self.target_w))
                 v_depth = int(center_v * (depth_h / self.target_h))
                 z_center = self._read_depth_at_pixel(self.latest_depth, u_depth, v_depth)
-
-            # 3. Backproject with SCALED Camera Intrinsics
+            if z_center is None:
+                # currently hard coded depth when it doesn't work
+                self.get_logger().info("Depth read failed, defaulting to 1.0m")
+                z_center = 1.0
+            # self.get_logger().info(f"z_center raw: {z_center}")
+            # self.get_logger().info(f"depth msg exists: {self.latest_depth is not None}")
+            # 3. Backproject with SCALED Camera Intrinsics, then TF to world_frame
             if z_center is not None:
                 X, Y, Z = self._backproject_pixel_to_3d(center_u, center_v, z_center, self.camera_info)
-                
-                # Publish Pose
-                pose = PoseStamped()
-                pose.header = header
-                pose.header.frame_id = self.camera_info.header.frame_id
-                pose.pose.position.x = X
-                pose.pose.position.y = Y
-                pose.pose.position.z = Z
-                pose.pose.orientation.w = 1.0
-                self.pose_pub.publish(pose)
+                camera_frame = self.camera_info.header.frame_id
 
-                self.get_logger().info(f"Target {d['label']}: X={X:.2f}m, Y={Y:.2f}m, Z={Z:.2f}m")
+                pose_cam = PoseStamped()
+                pose_cam.header = header
+                pose_cam.header.frame_id = camera_frame
+                pose_cam.pose.position.x = X
+                pose_cam.pose.position.y = Y
+                pose_cam.pose.position.z = Z
+                pose_cam.pose.orientation.w = 1.0
+
+                pose_world = self._transform_pose_to_world(pose_cam)
+                self.get_logger().info("Hi")
+                self.get_logger().info(str(type(pose_cam)))
+                self.get_logger().info(str(pose_world))
+                if pose_world is not None:
+                    self.pose_pub.publish(pose_world)
+                    pw = pose_world.pose.position
+                    self.get_logger().info(
+                        f"Target {d['label']} in {self.world_frame}: "
+                        f"x={pw.x:.2f}m, y={pw.y:.2f}m, z={pw.z:.2f}m"
+                    )
 
             # Publish Mask
             mask_msg = self.bridge.cv2_to_imgmsg(full_mask, encoding='mono8')
@@ -189,6 +260,31 @@ class GroundingDinoNode(Node):
             cv2.circle(debug_img, (center_u, center_v), 5, (255, 0, 0), -1)
 
         self.debug_img_pub.publish(self.bridge.cv2_to_imgmsg(debug_img, "bgr8"))
+
+    def _transform_pose_to_world(self, pose_cam: PoseStamped) -> Optional[PoseStamped]:
+        src_frame = pose_cam.header.frame_id
+        try:
+            stamp = pose_cam.header.stamp
+            if stamp.sec == 0 and stamp.nanosec == 0:
+                t = Time()
+            else:
+                t = Time.from_msg(stamp)
+            tf_msg = self.tf_buffer.lookup_transform(
+                self.world_frame,
+                src_frame,
+                t,
+                timeout=self._tf_timeout,
+            )
+        except Exception as e:
+            self.get_logger().warn(
+                f'Could not transform pose from {src_frame} to {self.world_frame}: {e}',
+                throttle_duration_sec=2.0,
+            )
+            return None
+        pose_world = tf2_geometry_msgs.do_transform_pose_stamped(pose_cam, tf_msg)
+        pose_world.header.frame_id = self.world_frame
+        pose_world.header.stamp = tf_msg.header.stamp
+        return pose_world
 
     #scales xyz to resized image
     def _backproject_pixel_to_3d(self, u: int, v: int, z: float, cam_info: CameraInfo) -> Tuple[float, float, float]:

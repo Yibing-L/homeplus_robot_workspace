@@ -102,16 +102,10 @@ The gesture node consumes aligned depth from `/camera/camera/aligned_depth_to_co
 and camera intrinsics from `/camera/camera/color/camera_info`, mirroring the `landmark_with_xyz.py`
 feature layout and the `online_recognizer_xyz.py` runtime logic.
 
-### 4. Grounding DINO
+### 5. Grounding DINO
 
-Launch RealSense camera:
 ```bash
-ros2 launch realsense2_camera rs_launch.py
-```
-
-Run node:
-```bash
-ros2 homeplus_vision/scripts/grounding_dino_node.py
+ros2 launch homeplus_vision dino_pipeline.launch.py
 ```
 
 Visualize bounding boxes:
