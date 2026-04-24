@@ -52,7 +52,7 @@ def generate_launch_description():
 
     # Only load OctoMap sensor plugin when use_octomap:=true
     if use_octomap:
-        builder = builder.sensors(file_path="config/sensors_3d.yaml")
+        builder = builder.sensors(file_path="config/octomap_sensors.yaml")
 
     moveit_config = builder.to_moveit_configs()
 
