@@ -2,7 +2,7 @@ from launch import LaunchDescription
 from launch_ros.actions import Node
 from launch.actions import LogInfo
 from launch.substitutions import Command
-from ament_index_python.packages import get_package_share_directory
+from ament_index_python.packages import get_package_share_directory, PackageNotFoundError
 import os
 
 def generate_launch_description():
@@ -25,10 +25,8 @@ def generate_launch_description():
     if not os.path.exists(rviz_config_path):
         rviz_config_path = ""  # If config doesn't exist, let RViz use default settings
 
-    return LaunchDescription([
-        # Log the URDF path being used
+    actions = [
         LogInfo(msg=['Loading URDF from: ', urdf_path]),
-        
         Node(
             package='robot_state_publisher',
             executable='robot_state_publisher',
@@ -37,12 +35,35 @@ def generate_launch_description():
             parameters=[{'robot_description': robot_description_content,
                         'use_sim_time': False}],
         ),
-        Node(
-            package='joint_state_publisher_gui',
-            executable='joint_state_publisher_gui',
-            name='joint_state_publisher_gui',
-            output='screen',
-        ),
+    ]
+
+    try:
+        get_package_share_directory('joint_state_publisher_gui')
+        actions.append(
+            Node(
+                package='joint_state_publisher_gui',
+                executable='joint_state_publisher_gui',
+                name='joint_state_publisher_gui',
+                output='screen',
+            )
+        )
+    except PackageNotFoundError:
+        try:
+            get_package_share_directory('joint_state_publisher')
+            actions.append(
+                Node(
+                    package='joint_state_publisher',
+                    executable='joint_state_publisher',
+                    name='joint_state_publisher',
+                    output='screen',
+                )
+            )
+        except PackageNotFoundError:
+            actions.append(
+                LogInfo(msg='joint_state_publisher(_gui) not installed; launching URDF view without joint controls.')
+            )
+
+    actions.append(
         Node(
             package='rviz2',
             executable='rviz2',
@@ -50,4 +71,6 @@ def generate_launch_description():
             output='screen',
             arguments=['-d', rviz_config_path] if rviz_config_path else [],
         )
-    ])
+    )
+
+    return LaunchDescription(actions)
