@@ -7,7 +7,7 @@ import rclpy
 import yaml
 from homeplus_interfaces.msg import GestureCommand, GestureRecognition
 from rclpy.node import Node
-from std_msgs.msg import String
+from std_msgs.msg import Bool, String
 
 
 class GestureBehaviorNode(Node):
@@ -21,6 +21,7 @@ class GestureBehaviorNode(Node):
         self.declare_parameter("min_confidence", 0.55)
         self.declare_parameter("min_trigger_interval_sec", 1.5)
         self.declare_parameter("require_active", True)
+        self.declare_parameter("executor_busy_topic", "/gesture_control/executor_busy")
 
         behavior_map_path = str(self.get_parameter("behavior_map_path").value)
         if not behavior_map_path:
@@ -49,9 +50,16 @@ class GestureBehaviorNode(Node):
             self.recognition_callback,
             10,
         )
+        self.create_subscription(
+            Bool,
+            str(self.get_parameter("executor_busy_topic").value),
+            self._executor_busy_callback,
+            10,
+        )
 
         self.latched_gesture_id: Optional[int] = None
         self.last_trigger_time: Optional[rclpy.time.Time] = None
+        self.executor_busy: bool = False
 
         self.get_logger().info(
             f"Gesture behavior ready with {len(self.behaviors)} mappings from {behavior_map_path}"
@@ -68,8 +76,15 @@ class GestureBehaviorNode(Node):
             raise ValueError(f"No behaviors found in {path}")
         return behaviors
 
+    def _executor_busy_callback(self, msg: Bool) -> None:
+        self.executor_busy = msg.data
+        if msg.data:
+            self.get_logger().info("Executor is busy — suppressing gesture triggers")
+
     def recognition_callback(self, msg: GestureRecognition) -> None:
         gesture_id = int(msg.class_id)
+        if self.executor_busy:
+            return
         if gesture_id < 0:
             self.latched_gesture_id = None
             return

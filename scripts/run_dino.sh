@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-set -euo pipefail
+set -eo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT"
@@ -9,6 +9,7 @@ WORLD_FRAME="${WORLD_FRAME:-base_link}"
 
 source /opt/ros/humble/setup.bash
 source install/setup.bash
+set -u
 
 ros2 run homeplus_vision grounding_dino_node.py --ros-args \
   -p task_id:="$TASK_ID" \

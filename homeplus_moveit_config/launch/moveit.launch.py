@@ -44,8 +44,15 @@ def generate_launch_description():
         .planning_pipelines(
             pipelines=["ompl"]
         )
+        .sensors(file_path="config/sensors_3d.yaml")
         .to_moveit_configs()
     )
+
+    # OctoMap parameters for move_group's internal occupancy map
+    octomap_config = {
+        'octomap_frame': 'world',
+        'octomap_resolution': 0.05,
+    }
 
     # Create launch arguments
     auto_start_test = LaunchConfiguration('auto_start_test')
@@ -101,7 +108,7 @@ def generate_launch_description():
             package="moveit_ros_move_group",
             executable="move_group",
             output="screen",
-            parameters=[moveit_config.to_dict()],
+            parameters=[moveit_config.to_dict(), octomap_config],
         ),
 
         # RViz (delayed to start after move_group is established)
