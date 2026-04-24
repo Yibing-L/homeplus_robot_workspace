@@ -1,0 +1,47 @@
+homeplus_urdf_controller:
+  # Publish all joint states -----------------------------------
+  joint_state_controller:
+    type: joint_state_controller/JointStateController
+    publish_rate: 50
+
+  # Position Controllers --------------------------------------
+  joint_wheel_RR_position_controller:
+    type: effort_controllers/JointPositionController
+    joint: joint_wheel_RR
+    pid: {p: 100.0, i: 0.01, d: 10.0}
+  joint_wheel_RL_position_controller:
+    type: effort_controllers/JointPositionController
+    joint: joint_wheel_RL
+    pid: {p: 100.0, i: 0.01, d: 10.0}
+  joint_wheel_FL_position_controller:
+    type: effort_controllers/JointPositionController
+    joint: joint_wheel_FL
+    pid: {p: 100.0, i: 0.01, d: 10.0}
+  joint_wheel_FR_position_controller:
+    type: effort_controllers/JointPositionController
+    joint: joint_wheel_FR
+    pid: {p: 100.0, i: 0.01, d: 10.0}
+  joint_shoulder_position_controller:
+    type: effort_controllers/JointPositionController
+    joint: joint_shoulder
+    pid: {p: 100.0, i: 0.01, d: 10.0}
+  joint_wrist_position_controller:
+    type: effort_controllers/JointPositionController
+    joint: joint_wrist
+    pid: {p: 100.0, i: 0.01, d: 10.0}
+  joint_hand_position_controller:
+    type: effort_controllers/JointPositionController
+    joint: joint_hand
+    pid: {p: 100.0, i: 0.01, d: 10.0}
+  joint_grip_L_position_controller:
+    type: effort_controllers/JointPositionController
+    joint: joint_grip_L
+    pid: {p: 100.0, i: 0.01, d: 10.0}
+  joint_grip_R_position_controller:
+    type: effort_controllers/JointPositionController
+    joint: joint_grip_R
+    pid: {p: 100.0, i: 0.01, d: 10.0}
+  joint_elbow_position_controller:
+    type: effort_controllers/JointPositionController
+    joint: joint_elbow
+    pid: {p: 100.0, i: 0.01, d: 10.0}

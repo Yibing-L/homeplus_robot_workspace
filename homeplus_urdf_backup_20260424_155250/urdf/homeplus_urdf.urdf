@@ -1,0 +1,796 @@
+
+<robot name="homeplus_urdf">
+  <link name="world"/>
+  <joint name="base_x" type="prismatic">
+    <parent link="world"/>
+    <child link="base_x_link"/>
+    <origin xyz="0 0 0" rpy="0 0 0"/>
+    <axis xyz="1 0 0"/>
+    <limit lower="-10" upper="10" effort="1000" velocity="1"/>
+  </joint>
+  <link name="base_x_link"/>
+  <joint name="base_y" type="prismatic">
+    <parent link="base_x_link"/>
+    <child link="base_y_link"/>
+    <origin xyz="0 0 0" rpy="0 0 0"/>
+    <axis xyz="0 1 0"/>
+    <limit lower="-10" upper="10" effort="1000" velocity="1"/>
+  </joint>
+  <link name="base_y_link"/>
+  <joint name="base_theta" type="continuous">
+    <parent link="base_y_link"/>
+    <child link="base"/>
+    <origin xyz="0 0 0" rpy="0 0 0"/>
+    <axis xyz="0 0 1"/>
+    <limit effort="1000" velocity="1"/>
+  </joint>
+  
+  <link
+    name="base">
+    <inertial>
+      <origin
+        xyz="5.36687302932215E-07 5.36687302016281E-07 0.0698335734039721"
+        rpy="0 0 0" />
+      <mass
+        value="1.93599733287841" />
+      <inertia
+        ixx="0.00763024520313416"
+        ixy="5.63522720337797E-07"
+        ixz="3.13778475182127E-09"
+        iyy="0.0075494508667239"
+        iyz="-3.13792658746155E-09"
+        izz="0.002529154108625" />
+    </inertial>
+    <visual>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="package://homeplus_urdf/meshes/base.STL" />
+      </geometry>
+      <material
+        name="">
+        <color
+          rgba="0.752941176470588 0.752941176470588 0.752941176470588 1" />
+      </material>
+    </visual>
+    <collision>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="package://homeplus_urdf/meshes/base.STL" />
+      </geometry>
+    </collision>
+  </link>
+  <link
+    name="Frame">
+    <inertial>
+      <origin
+        xyz="0.201896542252504 0.0799990907117468 -0.0342714033622259"
+        rpy="0 0 0" />
+      <mass
+        value="3.29967833042039" />
+      <inertia
+        ixx="0.0339685155112727"
+        ixy="2.44583411704262E-06"
+        ixz="-0.00082022948549501"
+        iyy="0.0344616286643939"
+        iyz="4.66669657135815E-11"
+        izz="0.00669916365911231" />
+    </inertial>
+    <visual>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="package://homeplus_urdf/meshes/Frame.STL" />
+      </geometry>
+      <material
+        name="">
+        <color
+          rgba="0.752941176470588 0.752941176470588 0.752941176470588 1" />
+      </material>
+    </visual>
+    <collision>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="package://homeplus_urdf/meshes/Frame.STL" />
+      </geometry>
+    </collision>
+  </link>
+  <joint
+    name="JointFrame"
+    type="prismatic">
+    <origin
+      xyz="-0.18 -0.08398 0.283"
+      rpy="0 0 0" />
+    <parent
+      link="base" />
+    <child
+      link="Frame" />
+    <axis
+      xyz="0 0 1" />
+    <limit
+      lower="0"
+      upper="0.15"
+      effort="1"
+      velocity="1" />
+  </joint>
+  <link
+    name="Telescope">
+    <inertial>
+      <origin
+        xyz="0.000771729775495889 0.000437143680824342 -0.104187938876505"
+        rpy="0 0 0" />
+      <mass
+        value="0.251949298778275" />
+      <inertia
+        ixx="0.00285644942984616"
+        ixy="8.99244714545801E-11"
+        ixz="-1.6278133894529E-09"
+        iyy="0.00286169389796737"
+        iyz="9.5798002526495E-08"
+        izz="3.17904819039154E-05" />
+    </inertial>
+    <visual>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="package://homeplus_urdf/meshes/Telescope.STL" />
+      </geometry>
+      <material
+        name="">
+        <color
+          rgba="0.752941176470588 0.752941176470588 0.752941176470588 1" />
+      </material>
+    </visual>
+    <collision>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="package://homeplus_urdf/meshes/Telescope.STL" />
+      </geometry>
+    </collision>
+  </link>
+  <joint
+    name="JointTelescope"
+    type="prismatic">
+    <origin
+      xyz="0.285 0.08398 0.477"
+      rpy="0 0 0" />
+    <parent
+      link="Frame" />
+    <child
+      link="Telescope" />
+    <axis
+      xyz="0 0 1" />
+    <limit
+      lower="0"
+      upper="0.43"
+      effort="1"
+      velocity="1" />
+  </joint>
+  <link
+    name="Arm1">
+    <inertial>
+      <origin
+        xyz="0.231608117533619 0.0255523612695389 -0.231607123025033"
+        rpy="0 0 0" />
+      <mass
+        value="0.142458692559679" />
+      <inertia
+        ixx="0.000344048781743376"
+        ixy="6.78781398843054E-08"
+        ixz="0.000303370900150246"
+        iyy="0.000670896160973874"
+        iyz="-6.8032670316871E-08"
+        izz="0.000344045727501834" />
+    </inertial>
+    <visual>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="package://homeplus_urdf/meshes/Arm1.STL" />
+      </geometry>
+      <material
+        name="">
+        <color
+          rgba="0.752941176470588 0.752941176470588 0.752941176470588 1" />
+      </material>
+    </visual>
+    <collision>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="package://homeplus_urdf/meshes/Arm1.STL" />
+      </geometry>
+    </collision>
+  </link>
+  <joint
+    name="JointArm1"
+    type="revolute">
+    <origin
+      xyz="0 0.027951 0.093587"
+      rpy="0 0 0" />
+    <parent
+      link="Telescope" />
+    <child
+      link="Arm1" />
+    <axis
+      xyz="0 -1 0" />
+    <limit
+      lower="-0.7854"
+      upper="2.4435"
+      effort="1"
+      velocity="1" />
+  </joint>
+  <link
+    name="Arm2">
+    <inertial>
+      <origin
+        xyz="0.229877453875047 -0.00821863334885756 -0.231410969608228"
+        rpy="0 0 0" />
+      <mass
+        value="0.116165387072632" />
+      <inertia
+        ixx="0.000263865689307406"
+        ixy="1.15597043757505E-09"
+        ixz="0.000220534688604804"
+        iyy="0.000506000074754496"
+        iyz="1.00178635705143E-09"
+        izz="0.000264057896540768" />
+    </inertial>
+    <visual>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="package://homeplus_urdf/meshes/Arm2.STL" />
+      </geometry>
+      <material
+        name="">
+        <color
+          rgba="0.752941176470588 0.752941176470588 0.752941176470588 1" />
+      </material>
+    </visual>
+    <collision>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="package://homeplus_urdf/meshes/Arm2.STL" />
+      </geometry>
+    </collision>
+  </link>
+  <joint
+    name="JointArm2"
+    type="revolute">
+    <origin
+      xyz="0.31439 0.0665 -0.31439"
+      rpy="0 0 0" />
+    <parent
+      link="Arm1" />
+    <child
+      link="Arm2" />
+    <axis
+      xyz="0 -1 0" />
+    <limit
+      lower="-1.274"
+      upper="2.932"
+      effort="1"
+      velocity="1" />
+  </joint>
+  <link
+    name="Wrist">
+    <inertial>
+      <origin
+        xyz="0.00821485527606913 0.00862941103056888 -0.00834029232738279"
+        rpy="0 0 0" />
+      <mass
+        value="0.0363561056351056" />
+      <inertia
+        ixx="8.21468554621405E-06"
+        ixy="1.10422688179401E-07"
+        ixz="-2.10661583523176E-06"
+        iyy="6.65835103821054E-06"
+        iyz="-4.81256546213012E-08"
+        izz="8.21542228204658E-06" />
+    </inertial>
+    <visual>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="package://homeplus_urdf/meshes/Wrist.STL" />
+      </geometry>
+      <material
+        name="">
+        <color
+          rgba="0.752941176470588 0.752941176470588 0.752941176470588 1" />
+      </material>
+    </visual>
+    <collision>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="package://homeplus_urdf/meshes/Wrist.STL" />
+      </geometry>
+    </collision>
+  </link>
+  <joint
+    name="JointWrist"
+    type="revolute">
+    <origin
+      xyz="0.28806 -0.0175 -0.32191"
+      rpy="0 0 0" />
+    <parent
+      link="Arm2" />
+    <child
+      link="Wrist" />
+    <axis
+      xyz="0.70711 0 -0.70711" />
+    <limit
+      lower="-1.396"
+      upper="1.396"
+      effort="1"
+      velocity="1" />
+  </joint>
+  <link
+    name="Hand">
+    <inertial>
+      <origin
+        xyz="0.0360909126870599 -0.0235637345554119 -0.036090912687017"
+        rpy="0 0 0" />
+      <mass
+        value="0.0198930486204882" />
+      <inertia
+        ixx="1.2451533035291E-05"
+        ixy="-6.44244955922808E-19"
+        ixz="-7.36497990245303E-07"
+        iyy="9.95405369555553E-06"
+        iyz="4.69179038678503E-19"
+        izz="1.24515330352891E-05" />
+    </inertial>
+    <visual>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="package://homeplus_urdf/meshes/Hand.STL" />
+      </geometry>
+      <material
+        name="">
+        <color
+          rgba="0.752941176470588 0.752941176470588 0.752941176470588 1" />
+      </material>
+    </visual>
+    <collision>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="package://homeplus_urdf/meshes/Hand.STL" />
+      </geometry>
+    </collision>
+  </link>
+  <joint
+    name="JointHand"
+    type="revolute">
+    <origin
+      xyz="0.0026623 0.035169 -0.015015"
+      rpy="0 0 0" />
+    <parent
+      link="Wrist" />
+    <child
+      link="Hand" />
+    <axis
+      xyz="0 -1 0" />
+    <limit
+      lower="-1.571"
+      upper="1.309"
+      effort="1"
+      velocity="1" />
+  </joint>
+  <link
+    name="FingerL">
+    <inertial>
+      <origin
+        xyz="0.0218255753338862 -0.00724008001230267 -0.0593022347367217"
+        rpy="0 0 0" />
+      <mass
+        value="0.00826272704567777" />
+      <inertia
+        ixx="3.91242754529497E-06"
+        ixy="1.16329023022E-06"
+        ixz="2.94673322850978E-06"
+        iyy="6.02166319912774E-06"
+        iyz="-1.16329023021855E-06"
+        izz="3.91242754530252E-06" />
+    </inertial>
+    <visual>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="package://homeplus_urdf/meshes/FingerL.STL" />
+      </geometry>
+      <material
+        name="">
+        <color
+          rgba="0.752941176470588 0.752941176470588 0.752941176470588 1" />
+      </material>
+    </visual>
+    <collision>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="package://homeplus_urdf/meshes/FingerL.STL" />
+      </geometry>
+    </collision>
+  </link>
+  <joint
+    name="JointFingerL"
+    type="revolute">
+    <origin
+      xyz="0.071418 -0.012 -0.036062"
+      rpy="0 0 0" />
+    <parent
+      link="Hand" />
+    <child
+      link="FingerL" />
+    <axis
+      xyz="0.70711 0 0.70711" />
+    <limit
+      lower="0"
+      upper="1.5708"
+      effort="1"
+      velocity="1" />
+  </joint>
+  <link
+    name="FingerR">
+    <inertial>
+      <origin
+        xyz="0.0163533589374076 0.00457292966685408 -0.053830018340248"
+        rpy="0 0 0" />
+      <mass
+        value="0.00654686444830018" />
+      <inertia
+        ixx="1.8640335430842E-06"
+        ixy="-4.46804795842902E-07"
+        ixz="1.35953847821751E-06"
+        iyy="2.79431749639908E-06"
+        iyz="4.46804795842274E-07"
+        izz="1.86403354308785E-06" />
+    </inertial>
+    <visual>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="package://homeplus_urdf/meshes/FingerR.STL" />
+      </geometry>
+      <material
+        name="">
+        <color
+          rgba="0.752941176470588 0.752941176470588 0.752941176470588 1" />
+      </material>
+    </visual>
+    <collision>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="package://homeplus_urdf/meshes/FingerR.STL" />
+      </geometry>
+    </collision>
+  </link>
+  <joint
+    name="JointFingerR"
+    type="revolute">
+    <origin
+      xyz="0.071418 -0.036 -0.036062"
+      rpy="0 0 0" />
+    <parent
+      link="Hand" />
+    <child
+      link="FingerR" />
+    <axis
+      xyz="-0.70711 0 -0.70711" />
+    <limit
+      lower="0"
+      upper="1.5708"
+      effort="1"
+      velocity="1" />
+    <mimic
+      joint="JointFingerL"
+      multiplier="1"
+      offset="0" />
+  </joint>
+  <link
+    name="WheelFL">
+    <inertial>
+      <origin
+        xyz="-0.00221199790886903 -0.00203064277825026 -2.08166817117217E-17"
+        rpy="0 0 0" />
+      <mass
+        value="0.024229926039893" />
+      <inertia
+        ixx="1.19080621671214E-05"
+        ixy="3.92089420362736E-06"
+        ixz="-5.75732396144862E-21"
+        iyy="1.19080621671214E-05"
+        iyz="-4.47858125197631E-21"
+        izz="7.98716796349408E-06" />
+    </inertial>
+    <visual>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="package://homeplus_urdf/meshes/WheelFL.STL" />
+      </geometry>
+      <material
+        name="">
+        <color
+          rgba="0.792156862745098 0.819607843137255 0.933333333333333 1" />
+      </material>
+    </visual>
+    <collision>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="package://homeplus_urdf/meshes/WheelFL.STL" />
+      </geometry>
+    </collision>
+  </link>
+  <joint
+    name="JointWheelFL"
+    type="continuous">
+    <origin
+      xyz="0.19317 0.19299 -0.033"
+      rpy="0 0 0" />
+    <parent
+      link="base" />
+    <child
+      link="WheelFL" />
+    <axis
+      xyz="0.70711 0.70711 0" />
+    <limit
+      effort="1"
+      velocity="1" />
+  </joint>
+  <link
+    name="WheelFR">
+    <inertial>
+      <origin
+        xyz="-0.00212132034355968 0.00212132034355966 6.93889390390723E-18"
+        rpy="0 0 0" />
+      <mass
+        value="0.024229926039893" />
+      <inertia
+        ixx="1.19080621671215E-05"
+        ixy="-3.92089420362737E-06"
+        ixz="1.64880775117558E-21"
+        iyy="1.19080621671215E-05"
+        iyz="-1.5934710140752E-21"
+        izz="7.9871679634941E-06" />
+    </inertial>
+    <visual>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="package://homeplus_urdf/meshes/WheelFR.STL" />
+      </geometry>
+      <material
+        name="">
+        <color
+          rgba="0.792156862745098 0.819607843137255 0.933333333333333 1" />
+      </material>
+    </visual>
+    <collision>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="package://homeplus_urdf/meshes/WheelFR.STL" />
+      </geometry>
+    </collision>
+  </link>
+  <joint
+    name="JointWheelFR"
+    type="continuous">
+    <origin
+      xyz="0.19308 -0.19308 -0.033"
+      rpy="0 0 0" />
+    <parent
+      link="base" />
+    <child
+      link="WheelFR" />
+    <axis
+      xyz="-0.70711 0.70711 0" />
+    <limit
+      effort="1"
+      velocity="1" />
+  </joint>
+  <link
+    name="WheelBL">
+    <inertial>
+      <origin
+        xyz="0.00212132034355966 -0.00212132034355965 -6.93889390390723E-18"
+        rpy="0 0 0" />
+      <mass
+        value="0.0242299260398929" />
+      <inertia
+        ixx="1.19080621671214E-05"
+        ixy="-3.92089420362736E-06"
+        ixz="-6.89559011753301E-21"
+        iyy="1.19080621671215E-05"
+        iyz="5.66640417014397E-21"
+        izz="7.98716796349408E-06" />
+    </inertial>
+    <visual>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="package://homeplus_urdf/meshes/WheelBL.STL" />
+      </geometry>
+      <material
+        name="">
+        <color
+          rgba="0.792156862745098 0.819607843137255 0.933333333333333 1" />
+      </material>
+    </visual>
+    <collision>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="package://homeplus_urdf/meshes/WheelBL.STL" />
+      </geometry>
+    </collision>
+  </link>
+  <joint
+    name="JointWheelBL"
+    type="continuous">
+    <origin
+      xyz="-0.19308 0.19308 -0.033"
+      rpy="0 0 0" />
+    <parent
+      link="base" />
+    <child
+      link="WheelBL" />
+    <axis
+      xyz="-0.70711 0.70711 0" />
+    <limit
+      effort="1"
+      velocity="1" />
+  </joint>
+  <link
+    name="WheelBR">
+    <inertial>
+      <origin
+        xyz="0.00212132034355966 0.00212132034355961 0"
+        rpy="0 0 0" />
+      <mass
+        value="0.0242299260398931" />
+      <inertia
+        ixx="1.19080621671215E-05"
+        ixy="3.92089420362738E-06"
+        ixz="-1.37844200497226E-22"
+        iyy="1.19080621671215E-05"
+        iyz="-1.37844200497228E-22"
+        izz="7.98716796349412E-06" />
+    </inertial>
+    <visual>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="package://homeplus_urdf/meshes/WheelBR.STL" />
+      </geometry>
+      <material
+        name="">
+        <color
+          rgba="0.792156862745098 0.819607843137255 0.933333333333333 1" />
+      </material>
+    </visual>
+    <collision>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="package://homeplus_urdf/meshes/WheelBR.STL" />
+      </geometry>
+    </collision>
+  </link>
+  <joint
+    name="JointWheelBR"
+    type="continuous">
+    <origin
+      xyz="-0.193081475451951 -0.193081475451951 -0.033"
+      rpy="0 0 0" />
+    <parent
+      link="base" />
+    <child
+      link="WheelBR" />
+    <axis
+      xyz="0.707106781186548 0.707106781186547 0" />
+    <limit
+      effort="1"
+      velocity="1" />
+  </joint>
+  <link name="camera_link"/>
+  <joint
+    name="JointCameraMount"
+    type="fixed">
+    <origin
+      xyz="0.06 -0.02 0.03"
+      rpy="0 0 0" />
+    <parent
+      link="Hand" />
+    <child
+      link="camera_link" />
+  </joint>
+  <link name="camera_color_optical_frame"/>
+  <joint
+    name="JointCameraColorOptical"
+    type="fixed">
+    <origin
+      xyz="0 0 0"
+      rpy="-1.57079632679 0 -1.57079632679" />
+    <parent
+      link="camera_link" />
+    <child
+      link="camera_color_optical_frame" />
+  </joint>
+  <link name="camera_depth_optical_frame"/>
+  <joint
+    name="JointCameraDepthOptical"
+    type="fixed">
+    <origin
+      xyz="0 0 0"
+      rpy="-1.57079632679 0 -1.57079632679" />
+    <parent
+      link="camera_link" />
+    <child
+      link="camera_depth_optical_frame" />
+  </joint>
+</robot>

@@ -1,1 +1,0 @@
-controller_joint_names: ['', 'JointFrame', 'JointTelescope', 'JointArm1', 'JointArm2', 'JointWrist', 'JointHand', 'JointFingerR', 'JointFingerL', 'JointWheelFL', 'JointWheelFR', 'JointWheelBL', 'JointWheelBR', ]
