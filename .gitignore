@@ -33,6 +33,10 @@ build/
 *.tmp
 
 *.jpg
+*.pdf
+*.JPG
+*.txt
+*.png
 
 # Coverage / pytest
 .coverage
