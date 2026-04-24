@@ -151,6 +151,12 @@ The current `grounding_dino_node.py` supports this local layout through the
 export PYTHONPATH="/mnt/c/users/easha/arl/homeplus_robot_workspace/Grounded-SAM-2:/mnt/c/users/easha/arl/homeplus_robot_workspace/Grounded-SAM-2/grounding_dino:${PYTHONPATH}"
 ```
 
+Quick launch path:
+
+```bash
+ros2 launch homeplus_vision dino_pipeline.launch.py
+```
+
 2. Install the compatible Hugging Face version:
 
 ```bash
