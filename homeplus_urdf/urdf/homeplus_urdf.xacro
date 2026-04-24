@@ -1,0 +1,400 @@
+<?xml version="1.0" ?>
+<robot name="homeplus_urdf" xmlns:xacro="http://www.ros.org/wiki/xacro">
+
+<xacro:include filename="$(find homeplus_urdf_description)/urdf/materials.xacro" />
+<xacro:include filename="$(find homeplus_urdf_description)/urdf/homeplus_urdf.trans" />
+<xacro:include filename="$(find homeplus_urdf_description)/urdf/homeplus_urdf.gazebo" />
+
+
+<link name="world"/>
+
+<link name="base_x_link"/>
+<joint name="base_x" type="prismatic">
+  <parent link="world"/>
+  <child link="base_x_link"/>
+  <origin xyz="0 0 0" rpy="0 0 0"/>
+  <axis xyz="1 0 0"/>
+  <limit lower="-10" upper="10" effort="1000" velocity="1"/>
+</joint>
+
+<link name="base_y_link"/>
+<joint name="base_y" type="prismatic">
+  <parent link="base_x_link"/>
+  <child link="base_y_link"/>
+  <origin xyz="0 0 0" rpy="0 0 0"/>
+  <axis xyz="0 1 0"/>
+  <limit lower="-10" upper="10" effort="1000" velocity="1"/>
+</joint>
+
+<joint name="base_theta" type="continuous">
+  <parent link="base_y_link"/>
+  <child link="base_link"/>
+  <origin xyz="0 0 0" rpy="0 0 0"/>
+  <axis xyz="0 0 1"/>
+  <limit effort="1000" velocity="1.0"/>
+</joint>
+
+
+<link name="base_link">
+  <inertial>
+    <origin xyz="0.00041305276955943664 0.00022365100039778606 0.228379766827485" rpy="0 0 0"/>
+    <mass value="608.392751255125"/>
+    <inertia ixx="19.850428" iyy="19.865375" izz="17.066258" ixy="-0.011119" iyz="-0.05416" ixz="-0.100026"/>
+  </inertial>
+  <visual>
+    <origin xyz="0 0 0" rpy="0 0 0"/>
+    <geometry>
+      <mesh filename="package://homeplus_urdf_description/meshes/base_link.stl" scale="0.001 0.001 0.001"/>
+    </geometry>
+    <material name="silver"/>
+  </visual>
+  <collision>
+    <origin xyz="0 0 0" rpy="0 0 0"/>
+    <geometry>
+      <mesh filename="package://homeplus_urdf_description/meshes/base_link.stl" scale="0.001 0.001 0.001"/>
+    </geometry>
+  </collision>
+</link>
+
+<link name="wheel_RR_1">
+  <inertial>
+    <origin xyz="-0.0070714058982290495 -0.007071405898229632 -2.1510571102112408e-16" rpy="0 0 0"/>
+    <mass value="1.043674778634371"/>
+    <inertia ixx="0.000846" iyy="0.000846" izz="0.000587" ixy="0.000259" iyz="0.0" ixz="0.0"/>
+  </inertial>
+  <visual>
+    <origin xyz="0.228579 0.228579 0.036" rpy="0 0 0"/>
+    <geometry>
+      <mesh filename="package://homeplus_urdf_description/meshes/wheel_RR_1.stl" scale="0.001 0.001 0.001"/>
+    </geometry>
+    <material name="silver"/>
+  </visual>
+  <collision>
+    <origin xyz="0.228579 0.228579 0.036" rpy="0 0 0"/>
+    <geometry>
+      <mesh filename="package://homeplus_urdf_description/meshes/wheel_RR_1.stl" scale="0.001 0.001 0.001"/>
+    </geometry>
+  </collision>
+</link>
+
+<link name="wheel_RL_1">
+  <inertial>
+    <origin xyz="-0.0070714058982287165 0.007071405898229105 -6.938893903907228e-18" rpy="0 0 0"/>
+    <mass value="1.043674778634372"/>
+    <inertia ixx="0.000846" iyy="0.000846" izz="0.000587" ixy="-0.000259" iyz="-0.0" ixz="0.0"/>
+  </inertial>
+  <visual>
+    <origin xyz="0.228579 -0.228579 0.036" rpy="0 0 0"/>
+    <geometry>
+      <mesh filename="package://homeplus_urdf_description/meshes/wheel_RL_1.stl" scale="0.001 0.001 0.001"/>
+    </geometry>
+    <material name="silver"/>
+  </visual>
+  <collision>
+    <origin xyz="0.228579 -0.228579 0.036" rpy="0 0 0"/>
+    <geometry>
+      <mesh filename="package://homeplus_urdf_description/meshes/wheel_RL_1.stl" scale="0.001 0.001 0.001"/>
+    </geometry>
+  </collision>
+</link>
+
+<link name="wheel_FL_1">
+  <inertial>
+    <origin xyz="0.007071405898228633 0.007071405898229244 6.938893903907228e-17" rpy="0 0 0"/>
+    <mass value="1.0436747786343739"/>
+    <inertia ixx="0.000846" iyy="0.000846" izz="0.000587" ixy="0.000259" iyz="0.0" ixz="0.0"/>
+  </inertial>
+  <visual>
+    <origin xyz="-0.228579 -0.228579 0.036" rpy="0 0 0"/>
+    <geometry>
+      <mesh filename="package://homeplus_urdf_description/meshes/wheel_FL_1.stl" scale="0.001 0.001 0.001"/>
+    </geometry>
+    <material name="silver"/>
+  </visual>
+  <collision>
+    <origin xyz="-0.228579 -0.228579 0.036" rpy="0 0 0"/>
+    <geometry>
+      <mesh filename="package://homeplus_urdf_description/meshes/wheel_FL_1.stl" scale="0.001 0.001 0.001"/>
+    </geometry>
+  </collision>
+</link>
+
+<link name="wheel_FR_1">
+  <inertial>
+    <origin xyz="0.007071405898228383 -0.007071405898228772 -1.5265566588595902e-16" rpy="0 0 0"/>
+    <mass value="1.0436747786343759"/>
+    <inertia ixx="0.000846" iyy="0.000846" izz="0.000587" ixy="-0.000259" iyz="-0.0" ixz="-0.0"/>
+  </inertial>
+  <visual>
+    <origin xyz="-0.228579 0.228579 0.036" rpy="0 0 0"/>
+    <geometry>
+      <mesh filename="package://homeplus_urdf_description/meshes/wheel_FR_1.stl" scale="0.001 0.001 0.001"/>
+    </geometry>
+    <material name="silver"/>
+  </visual>
+  <collision>
+    <origin xyz="-0.228579 0.228579 0.036" rpy="0 0 0"/>
+    <geometry>
+      <mesh filename="package://homeplus_urdf_description/meshes/wheel_FR_1.stl" scale="0.001 0.001 0.001"/>
+    </geometry>
+  </collision>
+</link>
+
+<link name="upper_arm_1">
+  <inertial>
+    <origin xyz="-0.1376394661573736 0.01689813688586892 0.23839854851065523" rpy="0 0 0"/>
+    <mass value="9.374875429078665"/>
+    <inertia ixx="0.219252" iyy="0.292307" izz="0.078487" ixy="-0.005264" iyz="0.009117" ixz="0.121906"/>
+  </inertial>
+  <visual>
+    <origin xyz="-0.08213 -0.05647 -0.7767" rpy="0 0 0"/>
+    <geometry>
+      <mesh filename="package://homeplus_urdf_description/meshes/upper_arm_1.stl" scale="0.001 0.001 0.001"/>
+    </geometry>
+    <material name="silver"/>
+  </visual>
+  <collision>
+    <origin xyz="-0.08213 -0.05647 -0.7767" rpy="0 0 0"/>
+    <geometry>
+      <mesh filename="package://homeplus_urdf_description/meshes/upper_arm_1.stl" scale="0.001 0.001 0.001"/>
+    </geometry>
+  </collision>
+</link>
+
+<link name="wrist_1">
+  <inertial>
+    <origin xyz="0.014644260697281974 0.007096885674173561 0.0008650732924451177" rpy="0 0 0"/>
+    <mass value="0.8191117110424703"/>
+    <inertia ixx="0.000508" iyy="0.000341" izz="0.000343" ixy="-3.6e-05" iyz="-3e-06" ixz="-7e-06"/>
+  </inertial>
+  <visual>
+    <origin xyz="-0.279125 -0.04544 -1.132533" rpy="0 0 0"/>
+    <geometry>
+      <mesh filename="package://homeplus_urdf_description/meshes/wrist_1.stl" scale="0.001 0.001 0.001"/>
+    </geometry>
+    <material name="silver"/>
+  </visual>
+  <collision>
+    <origin xyz="-0.279125 -0.04544 -1.132533" rpy="0 0 0"/>
+    <geometry>
+      <mesh filename="package://homeplus_urdf_description/meshes/wrist_1.stl" scale="0.001 0.001 0.001"/>
+    </geometry>
+  </collision>
+</link>
+
+<link name="palm_1">
+  <inertial>
+    <origin xyz="0.05846985442863173 -0.02600419842531295 -0.02175146057988253" rpy="0 0 0"/>
+    <mass value="0.7780006510985586"/>
+    <inertia ixx="0.00333" iyy="0.000729" izz="0.003148" ixy="0.0" iyz="0.0" ixz="-7.2e-05"/>
+  </inertial>
+  <visual>
+    <origin xyz="-0.303625 -0.08264 -1.122708" rpy="0 0 0"/>
+    <geometry>
+      <mesh filename="package://homeplus_urdf_description/meshes/palm_1.stl" scale="0.001 0.001 0.001"/>
+    </geometry>
+    <material name="silver"/>
+  </visual>
+  <collision>
+    <origin xyz="-0.303625 -0.08264 -1.122708" rpy="0 0 0"/>
+    <geometry>
+      <mesh filename="package://homeplus_urdf_description/meshes/palm_1.stl" scale="0.001 0.001 0.001"/>
+    </geometry>
+  </collision>
+</link>
+
+<link name="FingerL_new_1">
+  <inertial>
+    <origin xyz="-0.009097242313835907 0.057476767816965396 -0.024889912187255447" rpy="0 0 0"/>
+    <mass value="0.3095230195365785"/>
+    <inertia ixx="0.0003" iyy="0.000134" izz="0.000238" ixy="-4.5e-05" iyz="1.6e-05" ixz="-2.6e-05"/>
+  </inertial>
+  <visual>
+    <origin xyz="-0.383592 -0.06814 -1.120207" rpy="0 0 0"/>
+    <geometry>
+      <mesh filename="package://homeplus_urdf_description/meshes/FingerL_new_1.stl" scale="0.001 0.001 0.001"/>
+    </geometry>
+    <material name="silver"/>
+  </visual>
+  <collision>
+    <origin xyz="-0.383592 -0.06814 -1.120207" rpy="0 0 0"/>
+    <geometry>
+      <mesh filename="package://homeplus_urdf_description/meshes/FingerL_new_1.stl" scale="0.001 0.001 0.001"/>
+    </geometry>
+  </collision>
+</link>
+
+<link name="FingerR_new_1">
+  <inertial>
+    <origin xyz="-0.010817401279445471 -0.05120865675835252 -0.02426382548061934" rpy="0 0 0"/>
+    <mass value="0.25558652902018053"/>
+    <inertia ixx="0.000189" iyy="7.3e-05" izz="0.000158" ixy="2.4e-05" iyz="-9e-06" ixz="-1.3e-05"/>
+  </inertial>
+  <visual>
+    <origin xyz="-0.383592 -0.04514 -1.120207" rpy="0 0 0"/>
+    <geometry>
+      <mesh filename="package://homeplus_urdf_description/meshes/FingerR_new_1.stl" scale="0.001 0.001 0.001"/>
+    </geometry>
+    <material name="silver"/>
+  </visual>
+  <collision>
+    <origin xyz="-0.383592 -0.04514 -1.120207" rpy="0 0 0"/>
+    <geometry>
+      <mesh filename="package://homeplus_urdf_description/meshes/FingerR_new_1.stl" scale="0.001 0.001 0.001"/>
+    </geometry>
+  </collision>
+</link>
+
+<link name="forearm_1">
+  <inertial>
+    <origin xyz="0.21893938454667589 -0.00943878407164618 0.0005977820735099115" rpy="0 0 0"/>
+    <mass value="5.414595637933502"/>
+    <inertia ixx="0.00432" iyy="0.132402" izz="0.129924" ixy="-0.004523" iyz="-6.7e-05" ixz="-0.000582"/>
+  </inertial>
+  <visual>
+    <origin xyz="0.140215 -0.03428 -1.161813" rpy="0 0 0"/>
+    <geometry>
+      <mesh filename="package://homeplus_urdf_description/meshes/forearm_1.stl" scale="0.001 0.001 0.001"/>
+    </geometry>
+    <material name="silver"/>
+  </visual>
+  <collision>
+    <origin xyz="0.140215 -0.03428 -1.161813" rpy="0 0 0"/>
+    <geometry>
+      <mesh filename="package://homeplus_urdf_description/meshes/forearm_1.stl" scale="0.001 0.001 0.001"/>
+    </geometry>
+  </collision>
+</link>
+
+<link name="hand_camera_link_1">
+  <inertial>
+    <origin xyz="0.010254157449565204 -8.270294277607643e-05 0.018705532554486703" rpy="0 0 0"/>
+    <mass value="0.10460745071413999"/>
+    <inertia ixx="2.8e-05" iyy="1.9e-05" izz="2e-05" ixy="-0.0" iyz="0.0" ixz="-3e-06"/>
+  </inertial>
+  <visual>
+    <origin xyz="-0.387141 -0.056919 -1.129663" rpy="0 0 0"/>
+    <geometry>
+      <mesh filename="package://homeplus_urdf_description/meshes/hand_camera_link_1.stl" scale="0.001 0.001 0.001"/>
+    </geometry>
+    <material name="silver"/>
+  </visual>
+  <collision>
+    <origin xyz="-0.387141 -0.056919 -1.129663" rpy="0 0 0"/>
+    <geometry>
+      <mesh filename="package://homeplus_urdf_description/meshes/hand_camera_link_1.stl" scale="0.001 0.001 0.001"/>
+    </geometry>
+  </collision>
+</link>
+
+<link name="hand_camera_optical_frame_1">
+  <inertial>
+    <origin xyz="-1.0944575066213535 -0.40802394470576675 0.3377781997637882" rpy="0 0 0"/>
+    <mass value="6.165375582669365e-06"/>
+    <inertia ixx="0.0" iyy="0.0" izz="0.0" ixy="0.0" iyz="-0.0" ixz="0.0"/>
+  </inertial>
+  <visual>
+    <origin xyz="-1.502951 -0.464943 -0.806461" rpy="0 0 0"/>
+    <geometry>
+      <mesh filename="package://homeplus_urdf_description/meshes/hand_camera_optical_frame_1.stl" scale="0.001 0.001 0.001"/>
+    </geometry>
+    <material name="silver"/>
+  </visual>
+  <collision>
+    <origin xyz="-1.502951 -0.464943 -0.806461" rpy="0 0 0"/>
+    <geometry>
+      <mesh filename="package://homeplus_urdf_description/meshes/hand_camera_optical_frame_1.stl" scale="0.001 0.001 0.001"/>
+    </geometry>
+  </collision>
+</link>
+
+<joint name="joint_wheel_RR" type="continuous">
+  <origin xyz="-0.228579 -0.228579 -0.036" rpy="0 0 0"/>
+  <parent link="base_link"/>
+  <child link="wheel_RR_1"/>
+  <axis xyz="-0.707107 -0.707107 -0.0"/>
+</joint>
+
+<joint name="joint_wheel_RL" type="continuous">
+  <origin xyz="-0.228579 0.228579 -0.036" rpy="0 0 0"/>
+  <parent link="base_link"/>
+  <child link="wheel_RL_1"/>
+  <axis xyz="-0.707107 0.707107 0.0"/>
+</joint>
+
+<joint name="joint_wheel_FL" type="continuous">
+  <origin xyz="0.228579 0.228579 -0.036" rpy="0 0 0"/>
+  <parent link="base_link"/>
+  <child link="wheel_FL_1"/>
+  <axis xyz="0.707107 0.707107 0.0"/>
+</joint>
+
+<joint name="joint_wheel_FR" type="continuous">
+  <origin xyz="0.228579 -0.228579 -0.036" rpy="0 0 0"/>
+  <parent link="base_link"/>
+  <child link="wheel_FR_1"/>
+  <axis xyz="0.707107 -0.707107 -0.0"/>
+</joint>
+
+<joint name="joint_shoulder" type="revolute">
+  <origin xyz="0.08213 0.05647 0.7767" rpy="0 0 0"/>
+  <parent link="base_link"/>
+  <child link="upper_arm_1"/>
+  <axis xyz="0.0 1.0 0.0"/>
+  <limit upper="2.617994" lower="-0.523599" effort="100" velocity="100"/>
+</joint>
+
+<joint name="joint_wrist" type="revolute">
+  <origin xyz="0.41934 0.01116 -0.02928" rpy="0 0 0"/>
+  <parent link="forearm_1"/>
+  <child link="wrist_1"/>
+  <axis xyz="-1.0 -0.0 -0.0"/>
+  <limit upper="1.570796" lower="-1.570796" effort="100" velocity="100"/>
+</joint>
+
+<joint name="joint_hand" type="revolute">
+  <origin xyz="0.0245 0.0372 -0.009825" rpy="0 0 0"/>
+  <parent link="wrist_1"/>
+  <child link="palm_1"/>
+  <axis xyz="-0.0 -1.0 0.0"/>
+  <limit upper="1.396263" lower="-1.22173" effort="100" velocity="100"/>
+</joint>
+
+<joint name="joint_grip_L" type="revolute">
+  <origin xyz="0.079967 -0.0145 -0.002501" rpy="0 0 0"/>
+  <parent link="palm_1"/>
+  <child link="FingerL_new_1"/>
+  <axis xyz="0.34202 0.0 0.939693"/>
+  <limit upper="0.0" lower="-1.570796" effort="100" velocity="100"/>
+</joint>
+
+<joint name="joint_grip_R" type="revolute">
+  <origin xyz="0.079967 -0.0375 -0.002501" rpy="0 0 0"/>
+  <parent link="palm_1"/>
+  <child link="FingerR_new_1"/>
+  <axis xyz="0.34202 0.0 0.939693"/>
+  <limit upper="1.570796" lower="0.0" effort="100" velocity="100"/>
+  <mimic joint="joint_grip_L" multiplier="-1" offset="0"/>
+</joint>
+
+<joint name="joint_elbow" type="revolute">
+  <origin xyz="-0.222345 -0.02219 0.385113" rpy="0 0 0"/>
+  <parent link="upper_arm_1"/>
+  <child link="forearm_1"/>
+  <axis xyz="0.0 -1.0 -0.0"/>
+  <limit upper="2.530727" lower="-0.610865" effort="100" velocity="100"/>
+</joint>
+
+<joint name="Rigid 18" type="fixed">
+  <origin xyz="0.083516 -0.025721 0.006955" rpy="0 0 0"/>
+  <parent link="palm_1"/>
+  <child link="hand_camera_link_1"/>
+</joint>
+
+<joint name="Rigid 19" type="fixed">
+  <origin xyz="1.11581 0.408024 -0.323202" rpy="0 0 0"/>
+  <parent link="hand_camera_link_1"/>
+  <child link="hand_camera_optical_frame_1"/>
+</joint>
+
+</robot>

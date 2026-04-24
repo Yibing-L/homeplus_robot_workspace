@@ -1,0 +1,9 @@
+<launch>
+
+<rosparam file="$(find homeplus_urdf_description)/launch/controller.yaml" command="load"/>
+<node name="controller_spawner" pkg="controller_manager" type="spawner" respawn="false" output="screen" ns="homeplus_urdf" args="joint_wheel_RR_position_controller joint_wheel_RL_position_controller joint_wheel_FL_position_controller joint_wheel_FR_position_controller joint_shoulder_position_controller joint_wrist_position_controller joint_hand_position_controller joint_grip_L_position_controller joint_grip_R_position_controller joint_elbow_position_controller joint_state_controller "/>
+<node name="robot_state_publisher" pkg="robot_state_publisher" type="robot_state_publisher" respawn="false" output="screen">
+  <remap from="/joint_states" to="/homeplus_urdf/joint_states"/>
+</node>
+
+</launch>
