@@ -18,13 +18,14 @@ def generate_launch_description():
     pkg_share = get_package_share_directory('homeplus_moveit_config')
 
     octomap_params = os.path.join(pkg_share, 'config', 'octomap_params.yaml')
-    rviz_config = os.path.join(pkg_share, 'config', 'moveit.rviz')
+    rviz_config = os.path.join(pkg_share, 'config', 'octomap.rviz')
 
     depth_topic = LaunchConfiguration('depth_topic')
     camera_info_topic = LaunchConfiguration('camera_info_topic')
     mask_topic = LaunchConfiguration('mask_topic')
     octomap_input_topic = LaunchConfiguration('octomap_input_topic')
     output_frame = LaunchConfiguration('output_frame')
+    octomap_frame = LaunchConfiguration('octomap_frame')
 
     cloud_builder_node = Node(
         package='homeplus_moveit_config',
@@ -45,7 +46,7 @@ def generate_launch_description():
         executable='octomap_server_node',
         name='octomap_server',
         output='screen',
-        parameters=[octomap_params],
+        parameters=[octomap_params, {'frame_id': octomap_frame}],
         remappings=[('cloud_in', octomap_input_topic)]
     )
 
@@ -54,7 +55,7 @@ def generate_launch_description():
         executable='rviz2',
         name='rviz2',
         output='screen',
-        arguments=['-d', rviz_config]
+        arguments=['-d', rviz_config, '-f', octomap_frame]
     )
 
     return LaunchDescription([
@@ -62,6 +63,7 @@ def generate_launch_description():
         DeclareLaunchArgument('camera_info_topic', default_value='/camera/camera/depth/camera_info'),
         DeclareLaunchArgument('mask_topic', default_value='/object_mask'),
         DeclareLaunchArgument('output_frame', default_value=''),
+        DeclareLaunchArgument('octomap_frame', default_value='camera_depth_optical_frame'),
         DeclareLaunchArgument('octomap_input_topic', default_value='/object_cloud'),
         cloud_builder_node,
         octomap_node,

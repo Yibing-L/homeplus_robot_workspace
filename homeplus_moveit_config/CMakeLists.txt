@@ -5,6 +5,7 @@ find_package(ament_cmake REQUIRED)
 
 # Find required dependencies
 find_package(homeplus_interfaces REQUIRED)
+find_package(tf2_ros REQUIRED)
 find_package(moveit_ros_planning_interface REQUIRED)
 find_package(moveit_ros_move_group REQUIRED)
 find_package(moveit_kinematics REQUIRED)
@@ -29,6 +30,7 @@ install(
 # Export dependencies
 ament_export_dependencies(
   homeplus_interfaces
+  tf2_ros
   moveit_ros_planning_interface
   moveit_ros_move_group
   moveit_kinematics

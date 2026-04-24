@@ -757,4 +757,40 @@
       effort="1"
       velocity="1" />
   </joint>
+  <link name="camera_link"/>
+  <joint
+    name="JointCameraMount"
+    type="fixed">
+    <origin
+      xyz="0.06 -0.02 0.03"
+      rpy="0 0 0" />
+    <parent
+      link="Hand" />
+    <child
+      link="camera_link" />
+  </joint>
+  <link name="camera_color_optical_frame"/>
+  <joint
+    name="JointCameraColorOptical"
+    type="fixed">
+    <origin
+      xyz="0 0 0"
+      rpy="-1.57079632679 0 -1.57079632679" />
+    <parent
+      link="camera_link" />
+    <child
+      link="camera_color_optical_frame" />
+  </joint>
+  <link name="camera_depth_optical_frame"/>
+  <joint
+    name="JointCameraDepthOptical"
+    type="fixed">
+    <origin
+      xyz="0 0 0"
+      rpy="-1.57079632679 0 -1.57079632679" />
+    <parent
+      link="camera_link" />
+    <child
+      link="camera_depth_optical_frame" />
+  </joint>
 </robot>

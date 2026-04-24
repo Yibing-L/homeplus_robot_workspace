@@ -21,6 +21,7 @@ __pycache__/
 *.egg-info/
 dist/
 build/
+Grounded-SAM-2
 
 # VSCode / JetBrains / macOS
 .vscode/

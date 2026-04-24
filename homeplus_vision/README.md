@@ -27,6 +27,24 @@ pip install opencv-python numpy scipy
 pip install mediapipe torch
 ```
 
+For the ROS Python environment used in this workspace, the combinations below were
+validated while bringing up the gesture and Grounding DINO nodes in WSL:
+
+```bash
+pip --python /usr/bin/python3 install --user \
+  "numpy==1.26.4" \
+  "opencv-contrib-python==4.10.0.84" \
+  "mediapipe==0.10.14" \
+  "torch==2.11.0"
+```
+
+Important notes:
+- `cv_bridge` in ROS Humble breaks if `numpy 2.x` is installed in `/usr/bin/python3`.
+- The `grounding_dino` stack in this repo was only compatible after downgrading
+  `transformers` to `4.33.2`.
+- Use `pip --python /usr/bin/python3 ...` so packages land in the same Python
+  interpreter that `ros2` uses.
+
 ## Package Structure
 
 ```
@@ -70,8 +88,20 @@ ros2 launch homeplus_vision vision_pipeline.launch.py \
 Launch just the RealSense camera:
 
 ```bash
-ros2 launch homeplus_vision camera_only.launch.py
+ros2 launch realsense2_camera rs_launch.py \
+    enable_color:=true \
+    enable_depth:=true \
+    enable_accel:=false \
+    enable_gyro:=false \
+    enable_motion:=false \
+    rgb_camera.color_profile:=640x480x30 \
+    depth_module.depth_profile:=640x480x30 \
+    enable_sync:=true \
+    align_depth.enable:=true
 ```
+
+The older `camera_only.launch.py` in this package still uses legacy RealSense
+argument names and may warn or fail on newer `realsense2_camera` versions.
 
 ### 3. ArUco Detection Only
 
@@ -102,27 +132,144 @@ The gesture node consumes aligned depth from `/camera/camera/aligned_depth_to_co
 and camera intrinsics from `/camera/camera/color/camera_info`, mirroring the `landmark_with_xyz.py`
 feature layout and the `online_recognizer_xyz.py` runtime logic.
 
-### 4. Grounding DINO
+### 5. Grounding DINO
 
-Launch RealSense camera:
-```bash
-ros2 launch realsense2_camera rs_launch.py
+This node was brought up against a local checkout of `Grounded-SAM-2` placed at:
+
+```text
+/mnt/c/users/easha/arl/homeplus_robot_workspace/Grounded-SAM-2
 ```
 
-Run node:
+The current `grounding_dino_node.py` supports this local layout through the
+`grounded_sam_root` parameter.
+
+#### Local setup used successfully
+
+1. Add the vendor repo to `PYTHONPATH`:
+
 ```bash
-ros2 homeplus_vision/scripts/grounding_dino_node.py
+export PYTHONPATH="/mnt/c/users/easha/arl/homeplus_robot_workspace/Grounded-SAM-2:/mnt/c/users/easha/arl/homeplus_robot_workspace/Grounded-SAM-2/grounding_dino:${PYTHONPATH}"
 ```
 
-Visualize bounding boxes:
+2. Install the compatible Hugging Face version:
+
+```bash
+pip --python /usr/bin/python3 install --user --force-reinstall "transformers==4.33.2"
+```
+
+3. Download the Grounding DINO checkpoint:
+
+```bash
+cd /mnt/c/users/easha/arl/homeplus_robot_workspace/Grounded-SAM-2/gdino_checkpoints
+bash download_ckpts.sh
+```
+
+The required file is:
+
+```text
+Grounded-SAM-2/gdino_checkpoints/groundingdino_swint_ogc.pth
+```
+
+`publish_poses:=false` is the easiest mode to start with because it does not
+require SAM2 segmentation checkpoints.
+
+#### Run with a RealSense camera
+
+Terminal 1:
+
+```bash
+ros2 launch realsense2_camera rs_launch.py \
+    enable_color:=true \
+    enable_depth:=true \
+    enable_accel:=false \
+    enable_gyro:=false \
+    enable_motion:=false \
+    rgb_camera.color_profile:=640x480x30 \
+    depth_module.depth_profile:=640x480x30 \
+    enable_sync:=true \
+    align_depth.enable:=true
+```
+
+Terminal 2:
+
+```bash
+cd /mnt/c/users/easha/arl/homeplus_robot_workspace
+source /opt/ros/humble/setup.bash
+source install/setup.bash
+export PYTHONPATH="/mnt/c/users/easha/arl/homeplus_robot_workspace/Grounded-SAM-2:/mnt/c/users/easha/arl/homeplus_robot_workspace/Grounded-SAM-2/grounding_dino:${PYTHONPATH}"
+ros2 run homeplus_vision grounding_dino_node.py --ros-args \
+    -p device:=cpu \
+    -p publish_poses:=false \
+    -p grounded_sam_root:=/mnt/c/users/easha/arl/homeplus_robot_workspace/Grounded-SAM-2 \
+    -p image_topic:=/camera/camera/color/image_raw \
+    -p camera_info_topic:=/camera/camera/color/camera_info
+```
+
+To enable 3D pose estimation from aligned depth after the 2D path is working:
+
+```bash
+ros2 run homeplus_vision grounding_dino_node.py --ros-args \
+    -p device:=cpu \
+    -p publish_poses:=true \
+    -p grounded_sam_root:=/mnt/c/users/easha/arl/homeplus_robot_workspace/Grounded-SAM-2 \
+    -p image_topic:=/camera/camera/color/image_raw \
+    -p depth_topic:=/camera/camera/aligned_depth_to_color/image_raw \
+    -p camera_info_topic:=/camera/camera/color/camera_info
+```
+
+#### Run on a standalone image
+
+Terminal 1:
+
+```bash
+cd /mnt/c/users/easha/arl/homeplus_robot_workspace
+source /opt/ros/humble/setup.bash
+source install/setup.bash
+export PYTHONPATH="/mnt/c/users/easha/arl/homeplus_robot_workspace/Grounded-SAM-2:/mnt/c/users/easha/arl/homeplus_robot_workspace/Grounded-SAM-2/grounding_dino:${PYTHONPATH}"
+ros2 run homeplus_vision grounding_dino_node.py --ros-args \
+    -p device:=cpu \
+    -p publish_poses:=false \
+    -p grounded_sam_root:=/mnt/c/users/easha/arl/homeplus_robot_workspace/Grounded-SAM-2
+```
+
+Terminal 2:
+
+```bash
+cd /mnt/c/users/easha/arl/homeplus_robot_workspace
+source /opt/ros/humble/setup.bash
+source install/setup.bash
+ros2 run homeplus_vision test_grounding_dino_static.py \
+    --image /mnt/c/users/easha/arl/homeplus_robot_workspace/pic.JPG \
+    --rate 1 \
+    --count 0
+```
+
+#### Inspect Grounding DINO output
+
+```bash
+ros2 topic echo /gdino/detections
+ros2 topic echo /gdino/mask_center
+ros2 topic hz /gdino_debug_image
+```
+
+Visualize the overlay:
+
 ```bash
 ros2 run rqt_image_view rqt_image_view
 ```
-- topic gdino_debug_image
+
+Select:
+
+```text
+/gdino_debug_image
+```
 
 (Run octomap:
 ```bash
-ros2 launch homeplus_moveit_config cloud_to_octomap.launch.py   octomap_input_topic:=/full_cloud   depth_topic:=/camera/camera/depth/image_rect_raw   camera_info_topic:=/camera/camera/depth/camera_info
+ros2 launch homeplus_moveit_config cloud_to_octomap.launch.py \
+    octomap_input_topic:=/full_cloud \
+    depth_topic:=/camera/camera/depth/image_rect_raw \
+    camera_info_topic:=/camera/camera/depth/camera_info
 ```
 )
 ## Configuration
@@ -190,12 +337,21 @@ Adjust the static transforms in `vision_pipeline.launch.py` based on your camera
 - `/gesture_recognition/confidence` (std_msgs/Float32): EMA confidence of the current label
 - `/gesture_recognition/active` (std_msgs/Bool): Whether the hand is currently active
 - `/gesture_recognition/debug_image` (sensor_msgs/Image): Overlay with landmarks and current state
+- `/gdino/detections` (std_msgs/String): JSON list of 2D detections
+- `/gdino_debug_image` (sensor_msgs/Image): Grounding DINO debug overlay
+- `/gdino/mask_center` (std_msgs/String): JSON target center payload
+- `/gdino_pose_camera` (geometry_msgs/PoseStamped): 3D target pose in the camera frame when `publish_poses:=true`
+- `/object_mask` (sensor_msgs/Image): Segmentation mask when SAM2 is enabled
 
 ### Subscribed Topics
 
 - `/camera/color/image_raw` (sensor_msgs/Image): RGB camera stream
 - `/camera/color/camera_info` (sensor_msgs/CameraInfo): Camera calibration
 - `/camera/camera/aligned_depth_to_color/image_raw` (sensor_msgs/Image): Depth aligned to the color image for gesture recognition
+- `/camera/camera/color/image_raw` (sensor_msgs/Image): RGB stream used by gesture recognition and Grounding DINO
+- `/camera/camera/color/camera_info` (sensor_msgs/CameraInfo): Camera intrinsics used by gesture recognition and Grounding DINO
+- `/camera/camera/depth/image_rect_raw` (sensor_msgs/Image): Default Grounding DINO depth topic
+- `/camera/camera/aligned_depth_to_color/image_raw` (sensor_msgs/Image): Preferred Grounding DINO depth topic for target poses
 
 ## TF Frames
 
@@ -229,6 +385,32 @@ When a marker is detected, you'll see:
 ### Gesture predictions are unstable
 - Confirm the checkpoint was trained from `landmark_with_xyz.py` / `train_with_angles.py` or `train_xyz.py`.
 - Make sure RealSense depth is aligned to color. `gesture_pipeline.launch.py` enables `enable_sync` and `align_depth.enable`.
+
+### Grounding DINO import or startup failures
+- Use the ROS interpreter explicitly when installing packages:
+  `pip --python /usr/bin/python3 ...`
+- Pin `transformers==4.33.2`; newer versions removed APIs used by this Grounding DINO code.
+- Ensure `PYTHONPATH` includes both:
+  - `Grounded-SAM-2`
+  - `Grounded-SAM-2/grounding_dino`
+- Confirm the checkpoint exists at:
+  `Grounded-SAM-2/gdino_checkpoints/groundingdino_swint_ogc.pth`
+
+### Grounding DINO crashes with `_ARRAY_API not found` or `cv_bridge` errors
+- This means `numpy 2.x` was installed into `/usr/bin/python3`.
+- Reinstall compatible versions:
+
+```bash
+pip --python /usr/bin/python3 uninstall -y numpy opencv-python opencv-contrib-python
+pip --python /usr/bin/python3 install --user --force-reinstall \
+    "numpy==1.26.4" \
+    "opencv-contrib-python==4.10.0.84"
+```
+
+### Grounding DINO warns `Failed to load custom C++ ops. Running on CPU mode Only!`
+- This is expected in the current WSL setup.
+- The patched local repo falls back to a pure PyTorch implementation.
+- It is slower, but it is sufficient for functional testing.
 
 ### TF transform errors
 - Check that camera transforms are correctly configured
