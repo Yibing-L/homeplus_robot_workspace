@@ -101,6 +101,7 @@ class ArduinoBridge(Node):
 
             # Status/ack lines from Arduino — not joint data
             if (line.lower().startswith("proceed")
+                    or line.lower().startswith("timeout")
                     or line.lower().startswith("ack")
                     or line.lower().startswith("ok")
                     or line.lower().startswith("done")
