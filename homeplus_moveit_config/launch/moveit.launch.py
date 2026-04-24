@@ -8,10 +8,14 @@ from launch_ros.actions import Node
 from launch_ros.parameter_descriptions import ParameterValue
 from moveit_configs_utils import MoveItConfigsBuilder
 import os
+import sys
 import yaml
 from ament_index_python.packages import get_package_share_directory
 
 def generate_launch_description():
+    # Check for use_octomap flag early (before LaunchConfiguration is available)
+    use_octomap = any('use_octomap:=true' in arg for arg in sys.argv)
+
     # Paths and configurations
     homeplus_urdf_pkg = get_package_share_directory('homeplus_urdf_description')
     homeplus_moveit_pkg = get_package_share_directory('homeplus_moveit_config')
@@ -32,9 +36,9 @@ def generate_launch_description():
     with open(kinematics_yaml, 'r') as f:
         robot_description_kinematics = yaml.safe_load(f)
 
-    moveit_config = (
+    builder = (
         MoveItConfigsBuilder(
-            "homeplus", package_name="homeplus_moveit_config"  # Update to your robot/group/package
+            "homeplus", package_name="homeplus_moveit_config"
         )
         .robot_description(file_path=xacro_path)
         .trajectory_execution(file_path="config/moveit_controllers.yaml")
@@ -44,21 +48,32 @@ def generate_launch_description():
         .planning_pipelines(
             pipelines=["ompl"]
         )
-        .sensors(file_path="config/sensors_3d.yaml")
-        .to_moveit_configs()
     )
 
-    # OctoMap parameters for move_group's internal occupancy map
-    octomap_config = {
-        'octomap_frame': 'world',
-        'octomap_resolution': 0.05,
-    }
+    # Only load OctoMap sensor plugin when use_octomap:=true
+    if use_octomap:
+        builder = builder.sensors(file_path="config/sensors_3d.yaml")
+
+    moveit_config = builder.to_moveit_configs()
+
+    # OctoMap parameters — only passed to move_group when enabled
+    move_group_params = [moveit_config.to_dict()]
+    if use_octomap:
+        move_group_params.append({
+            'octomap_frame': 'world',
+            'octomap_resolution': 0.05,
+        })
 
     # Create launch arguments
     auto_start_test = LaunchConfiguration('auto_start_test')
     run_arduino_reader = LaunchConfiguration('run_arduino_reader')
 
     # Declare launch arguments
+    declare_use_octomap = DeclareLaunchArgument(
+        'use_octomap',
+        default_value='false',
+        description='Enable OctoMap-based collision avoidance in MoveIt planning'
+    )
     declare_auto_start_test_cmd = DeclareLaunchArgument(
         'auto_start_test',
         default_value='false',
@@ -73,6 +88,7 @@ def generate_launch_description():
     # Create and return launch description
     return LaunchDescription([
     # Launch Arguments
+    declare_use_octomap,
     declare_auto_start_test_cmd,
     declare_run_arduino_reader,
 
@@ -108,7 +124,7 @@ def generate_launch_description():
             package="moveit_ros_move_group",
             executable="move_group",
             output="screen",
-            parameters=[moveit_config.to_dict(), octomap_config],
+            parameters=move_group_params,
         ),
 
         # RViz (delayed to start after move_group is established)
