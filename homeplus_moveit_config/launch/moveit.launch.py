@@ -13,13 +13,12 @@ from ament_index_python.packages import get_package_share_directory
 
 def generate_launch_description():
     # Paths and configurations
-    homeplus_urdf_pkg = get_package_share_directory('homeplus_urdf')
+    homeplus_urdf_pkg = get_package_share_directory('homeplus_urdf_description')
     homeplus_moveit_pkg = get_package_share_directory('homeplus_moveit_config')
 
     # Load URDF, SRDF and planning config
-    urdf_path = os.path.join(homeplus_urdf_pkg, 'urdf', 'homeplus_urdf.urdf')
-    with open(urdf_path, 'r') as f:
-        robot_description = f.read()
+    xacro_path = os.path.join(homeplus_urdf_pkg, 'urdf', 'homeplus_urdf.xacro')
+    robot_description = Command(['xacro', ' ', xacro_path])
 
     srdf_path = os.path.join(homeplus_moveit_pkg, 'config', 'homeplus.srdf')
     with open(srdf_path, 'r') as f:
@@ -37,7 +36,7 @@ def generate_launch_description():
         MoveItConfigsBuilder(
             "homeplus", package_name="homeplus_moveit_config"  # Update to your robot/group/package
         )
-        .robot_description(file_path=urdf_path)
+        .robot_description(file_path=xacro_path)
         .trajectory_execution(file_path="config/moveit_controllers.yaml")
         .planning_scene_monitor(
             publish_robot_description=True, publish_robot_description_semantic=True

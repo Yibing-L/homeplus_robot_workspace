@@ -25,7 +25,7 @@
   <depend>rviz2</depend>
   <depend>xacro</depend>
   <depend>urdf</depend>
-  <depend>homeplus_urdf</depend>
+  <depend>homeplus_urdf_description</depend>
 
   <export>
     <build_type>ament_cmake</build_type>
