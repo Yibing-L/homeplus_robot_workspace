@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 
 from launch import LaunchDescription
-from launch.actions import DeclareLaunchArgument, IncludeLaunchDescription
+from launch.actions import DeclareLaunchArgument, ExecuteProcess, IncludeLaunchDescription
 from launch.conditions import IfCondition
 from launch.launch_description_sources import PythonLaunchDescriptionSource
 from launch.substitutions import LaunchConfiguration, PathJoinSubstitution
@@ -18,7 +18,7 @@ def generate_launch_description():
 
     enable_moveit_planning_arg = DeclareLaunchArgument(
         "enable_moveit_planning",
-        default_value="false",
+        default_value="true",
         description="If true, the motion executor also sends MoveIt planning requests",
     )
 
@@ -52,6 +52,18 @@ def generate_launch_description():
             [FindPackageShare("homeplus_moveit_config"), "config", "gesture_execution_map.yaml"]
         ),
         description="Path to command-to-motion execution map",
+    )
+
+    run_arduino_arg = DeclareLaunchArgument(
+        "run_arduino",
+        default_value="true",
+        description="Launch the Arduino serial bridge node",
+    )
+
+    arduino_port_arg = DeclareLaunchArgument(
+        "arduino_port",
+        default_value="/dev/ttyUSB0",
+        description="Serial port for Arduino",
     )
 
     moveit_launch = IncludeLaunchDescription(
@@ -92,6 +104,19 @@ def generate_launch_description():
         output="screen",
     )
 
+    arduino_bridge_node = ExecuteProcess(
+        cmd=[
+            "python3",
+            PathJoinSubstitution(
+                [FindPackageShare("homeplus_moveit_config"), "scripts", "arduino_reader.py"]
+            ),
+            "--port", LaunchConfiguration("arduino_port"),
+            "--baud", "9600",
+        ],
+        output="screen",
+        condition=IfCondition(LaunchConfiguration("run_arduino")),
+    )
+
     return LaunchDescription(
         [
             launch_moveit_arg,
@@ -100,8 +125,11 @@ def generate_launch_description():
             behavior_map_path_arg,
             executor_config_file_arg,
             execution_map_path_arg,
+            run_arduino_arg,
+            arduino_port_arg,
             moveit_launch,
             behavior_node,
             executor_node,
+            arduino_bridge_node,
         ]
     )

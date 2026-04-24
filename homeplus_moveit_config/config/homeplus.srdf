@@ -1,7 +1,7 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <robot name="homeplus_urdf">
     <group name="arm">
-        <chain base_link="base" tip_link="Hand"/>
+        <chain base_link="base_link" tip_link="palm_1"/>
     </group>
 
 
@@ -9,39 +9,32 @@
         <joint name="base_x"/>
         <joint name="base_y"/>
         <joint name="base_theta"/>
-        <joint name="JointFrame"/>
-        <joint name="JointTelescope"/>
-        <joint name="JointArm1"/>
-        <joint name="JointArm2"/>
-        <joint name="JointWrist"/>
-        <joint name="JointHand"/>
+        <joint name="joint_shoulder"/>
+        <joint name="joint_elbow"/>
+        <joint name="joint_wrist"/>
+        <joint name="joint_hand"/>
     </group>
     
     <group name="gripper">
-        <joint name="JointFingerL"/>
-        <joint name="JointFingerR"/>
+        <joint name="joint_grip_L"/>
     </group>
 
-    <end_effector name="gripper" parent_link="Hand" group="gripper"/>
+    <end_effector name="gripper" parent_link="palm_1" group="gripper"/>
     
     <group_state name="home" group="arm">
-        <joint name="JointFrame" value="0"/>
-        <joint name="JointTelescope" value="0"/>
-        <joint name="JointArm1" value="0"/>
-        <joint name="JointArm2" value="0"/>
-        <joint name="JointWrist" value="0"/>
-        <joint name="JointHand" value="0"/>
+        <joint name="joint_shoulder" value="0"/>
+        <joint name="joint_elbow" value="0"/>
+        <joint name="joint_wrist" value="0"/>
+        <joint name="joint_hand" value="0"/>
     </group_state>
 
-    <disable_collisions link1="base" link2="Frame" reason="Adjacent"/>
-    <disable_collisions link1="Frame" link2="Telescope" reason="Adjacent"/>
-    <disable_collisions link1="Telescope" link2="Arm1" reason="Adjacent"/>
-    <disable_collisions link1="Arm1" link2="Arm2" reason="Adjacent"/>
-    <disable_collisions link1="Arm2" link2="Wrist" reason="Adjacent"/>
-    <disable_collisions link1="Wrist" link2="Hand" reason="Adjacent"/>
-    <disable_collisions link1="Hand" link2="FingerL" reason="Adjacent"/>
-    <disable_collisions link1="Hand" link2="FingerR" reason="Adjacent"/>
-    <disable_collisions link1="FingerL" link2="FingerR" reason="Never"/>
-    <virtual_joint name="world_joint" type="fixed" parent_frame="world" child_link="base" />
+    <disable_collisions link1="base_link" link2="upper_arm_1" reason="Adjacent"/>
+    <disable_collisions link1="upper_arm_1" link2="forearm_1" reason="Adjacent"/>
+    <disable_collisions link1="forearm_1" link2="wrist_1" reason="Adjacent"/>
+    <disable_collisions link1="wrist_1" link2="palm_1" reason="Adjacent"/>
+    <disable_collisions link1="palm_1" link2="FingerL_new_1" reason="Adjacent"/>
+    <disable_collisions link1="palm_1" link2="FingerR_new_1" reason="Adjacent"/>
+    <disable_collisions link1="FingerL_new_1" link2="FingerR_new_1" reason="Never"/>
+    <virtual_joint name="world_joint" type="fixed" parent_frame="world" child_link="base_link" />
 
 </robot>

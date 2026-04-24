@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-set -euo pipefail
+set -eo pipefail
 
 if [[ $# -lt 1 ]]; then
   echo "Usage: bash scripts/run_gesture.sh /absolute/path/to/checkpoint.pt [label_map.json]" >&2
@@ -14,14 +14,16 @@ LABEL_MAP_PATH="${2:-}"
 
 source /opt/ros/humble/setup.bash
 source install/setup.bash
+set -u
 
 CMD=(
-  ros2 launch homeplus_vision gesture_pipeline.launch.py
-  "checkpoint_path:=${CHECKPOINT_PATH}"
+  ros2 run homeplus_vision gesture_recognizer.py
+  --ros-args
+  "-p" "checkpoint_path:=${CHECKPOINT_PATH}"
 )
 
 if [[ -n "$LABEL_MAP_PATH" ]]; then
-  CMD+=("label_map_path:=${LABEL_MAP_PATH}")
+  CMD+=("-p" "label_map_path:=${LABEL_MAP_PATH}")
 fi
 
 "${CMD[@]}"

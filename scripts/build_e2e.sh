@@ -1,10 +1,11 @@
 #!/usr/bin/env bash
-set -euo pipefail
+set -eo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT"
 
 source /opt/ros/humble/setup.bash
+set -u
 
 colcon build --symlink-install --packages-select \
   homeplus_interfaces \

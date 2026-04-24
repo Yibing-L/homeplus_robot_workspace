@@ -4,8 +4,9 @@ behaviors:
     command_type: joint_state
 
   - gesture_id: 1
-    command_name: reach_forward
-    command_type: pose
+    command_name: pick_up_coffee
+    command_type: sequence
+    min_confidence: 0.70
 
   - gesture_id: 2
     command_name: reach_left

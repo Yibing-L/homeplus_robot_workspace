@@ -106,33 +106,46 @@ class CloudBuilder(Node):
             import cv2
             mask_for_depth = cv2.resize(self.mask, (w, h), interpolation=cv2.INTER_NEAREST)
 
-        full_points = []
-        object_points = []
-
         step = 4
 
-        for v in range(0, h, step):
-            for u in range(0, w, step):
+        # Downsample depth (and mask) by step
+        depth_ds = depth[::step, ::step]
+        if depth_ds.dtype == np.uint16:
+            z = depth_ds.astype(np.float32) / 1000.0
+        else:
+            z = depth_ds.astype(np.float32)
 
-                if depth.dtype == np.uint16:
-                    z = depth[v, u] / 1000.0
-                else:
-                    z = float(depth[v, u])
-                if not np.isfinite(z) or z <= 0.0 or z > 5.0:
-                    continue
+        # Build pixel coordinate grids
+        v_indices, u_indices = np.mgrid[0:h:step, 0:w:step].astype(np.float32)
 
-                x = (u - self.cx) * z / self.fx
-                y = (v - self.cy) * z / self.fy
+        # Validity mask: finite, positive, within range
+        valid = np.isfinite(z) & (z > 0.0) & (z <= 5.0)
 
-                full_points.append([x, y, z])
+        z_valid = z[valid]
+        u_valid = u_indices[valid]
+        v_valid = v_indices[valid]
 
-                # SAM2 mask (optional)
-                if mask_for_depth is not None and mask_for_depth[v, u] > 0:
-                    object_points.append([x, y, z])
+        x_valid = (u_valid - self.cx) * z_valid / self.fx
+        y_valid = (v_valid - self.cy) * z_valid / self.fy
+
+        full_points = np.column_stack([x_valid, y_valid, z_valid])
+
+        # SAM2 mask (optional)
+        object_points = np.empty((0, 3), dtype=np.float32)
+        if mask_for_depth is not None:
+            mask_ds = mask_for_depth[::step, ::step]
+            obj_mask = valid & (mask_ds > 0)
+            if np.any(obj_mask):
+                z_obj = z[obj_mask]
+                u_obj = u_indices[obj_mask]
+                v_obj = v_indices[obj_mask]
+                x_obj = (u_obj - self.cx) * z_obj / self.fx
+                y_obj = (v_obj - self.cy) * z_obj / self.fy
+                object_points = np.column_stack([x_obj, y_obj, z_obj])
 
         if transform is not None:
             full_points = self._transform_points(full_points, transform)
-            if object_points:
+            if len(object_points) > 0:
                 object_points = self._transform_points(object_points, transform)
 
         header = msg.header
@@ -143,11 +156,11 @@ class CloudBuilder(Node):
             header.frame_id = 'camera_depth_optical_frame'
 
         # publish clouds
-        full_cloud = pc2.create_cloud_xyz32(header, full_points)
+        full_cloud = pc2.create_cloud_xyz32(header, full_points.tolist())
         self.full_pub.publish(full_cloud)
 
         if len(object_points) > 0:
-            object_cloud = pc2.create_cloud_xyz32(header, object_points)
+            object_cloud = pc2.create_cloud_xyz32(header, object_points.tolist())
             self.object_pub.publish(object_cloud)
 
     def _lookup_transform(self, target_frame, source_frame, stamp_msg):
@@ -167,7 +180,7 @@ class CloudBuilder(Node):
             return None
 
     def _transform_points(self, points, transform):
-        if not points:
+        if len(points) == 0:
             return points
 
         tx = transform.transform.translation.x
@@ -186,8 +199,7 @@ class CloudBuilder(Node):
         translation = np.array([tx, ty, tz], dtype=np.float32)
 
         pts = np.asarray(points, dtype=np.float32)
-        transformed = pts @ rotation.T + translation
-        return transformed.tolist()
+        return pts @ rotation.T + translation
 
 def main():
     rclpy.init()

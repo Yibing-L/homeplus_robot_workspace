@@ -58,12 +58,12 @@ Visualization Manager:
       Enabled: true
       Links:
         All Links Enabled: true
-        Arm1:
+        FingerL_new_1:
           Alpha: 1
           Show Axes: false
           Show Trail: false
           Value: true
-        Arm2:
+        FingerR_new_1:
           Alpha: 1
           Show Axes: false
           Show Trail: false
@@ -71,58 +71,73 @@ Visualization Manager:
         Expand Joint Details: false
         Expand Link Details: false
         Expand Tree: false
-        FingerL:
+        base_link:
           Alpha: 1
           Show Axes: false
           Show Trail: false
           Value: true
-        FingerR:
+        camera_color_optical_frame:
           Alpha: 1
           Show Axes: false
           Show Trail: false
           Value: true
-        Frame:
+        camera_depth_optical_frame:
           Alpha: 1
           Show Axes: false
           Show Trail: false
           Value: true
-        Hand:
+        camera_link:
           Alpha: 1
           Show Axes: false
           Show Trail: false
           Value: true
         Link Tree Style: Links in Alphabetic Order
-        Telescope:
+        forearm_1:
           Alpha: 1
           Show Axes: false
           Show Trail: false
           Value: true
-        WheelBL:
+        hand_camera_link_1:
           Alpha: 1
           Show Axes: false
           Show Trail: false
           Value: true
-        WheelBR:
+        hand_camera_optical_frame_1:
           Alpha: 1
           Show Axes: false
           Show Trail: false
           Value: true
-        WheelFL:
+        palm_1:
           Alpha: 1
           Show Axes: false
           Show Trail: false
           Value: true
-        WheelFR:
+        upper_arm_1:
           Alpha: 1
           Show Axes: false
           Show Trail: false
           Value: true
-        Wrist:
+        wheel_FL_1:
           Alpha: 1
           Show Axes: false
           Show Trail: false
           Value: true
-        base:
+        wheel_FR_1:
+          Alpha: 1
+          Show Axes: false
+          Show Trail: false
+          Value: true
+        wheel_RL_1:
+          Alpha: 1
+          Show Axes: false
+          Show Trail: false
+          Value: true
+        wheel_RR_1:
+          Alpha: 1
+          Show Axes: false
+          Show Trail: false
+          Value: true
+        wrist_1:
           Alpha: 1
           Show Axes: false
           Show Trail: false
@@ -152,31 +167,37 @@ Visualization Manager:
       Frame Timeout: 15
       Frames:
         All Enabled: true
-        Arm1:
+        FingerL_new_1:
           Value: true
-        Arm2:
+        FingerR_new_1:
           Value: true
-        FingerL:
+        base_link:
           Value: true
-        FingerR:
+        camera_color_optical_frame:
           Value: true
-        Frame:
+        camera_depth_optical_frame:
           Value: true
-        Hand:
+        camera_link:
           Value: true
-        Telescope:
+        forearm_1:
           Value: true
-        WheelBL:
+        hand_camera_link_1:
           Value: true
-        WheelBR:
+        hand_camera_optical_frame_1:
           Value: true
-        WheelFL:
+        palm_1:
           Value: true
-        WheelFR:
+        upper_arm_1:
           Value: true
-        Wrist:
+        wheel_FL_1:
           Value: true
-        base:
+        wheel_FR_1:
+          Value: true
+        wheel_RL_1:
+          Value: true
+        wheel_RR_1:
+          Value: true
+        wrist_1:
           Value: true
         base_x_link:
           Value: true
@@ -193,24 +214,30 @@ Visualization Manager:
         world:
           base_x_link:
             base_y_link:
-              base:
-                Frame:
-                  Telescope:
-                    Arm1:
-                      Arm2:
-                        Wrist:
-                          Hand:
-                            FingerL:
+              base_link:
+                upper_arm_1:
+                  forearm_1:
+                    wrist_1:
+                      palm_1:
+                        FingerL_new_1:
+                          {}
+                        FingerR_new_1:
+                          {}
+                        hand_camera_link_1:
+                          hand_camera_optical_frame_1:
+                            camera_color_optical_frame:
                               {}
-                            FingerR:
+                            camera_depth_optical_frame:
                               {}
-                WheelBL:
+                        camera_link:
+                          {}
+                wheel_RL_1:
                   {}
-                WheelBR:
+                wheel_RR_1:
                   {}
-                WheelFL:
+                wheel_FL_1:
                   {}
-                WheelFR:
+                wheel_FR_1:
                   {}
       Update Interval: 0
       Value: true
@@ -243,12 +270,12 @@ Visualization Manager:
         Interrupt Display: false
         Links:
           All Links Enabled: true
-          Arm1:
+          FingerL_new_1:
             Alpha: 1
             Show Axes: false
             Show Trail: false
             Value: true
-          Arm2:
+          FingerR_new_1:
             Alpha: 1
             Show Axes: false
             Show Trail: false
@@ -256,58 +283,73 @@ Visualization Manager:
           Expand Joint Details: false
           Expand Link Details: false
           Expand Tree: false
-          FingerL:
+          base_link:
             Alpha: 1
             Show Axes: false
             Show Trail: false
             Value: true
-          FingerR:
+          camera_color_optical_frame:
             Alpha: 1
             Show Axes: false
             Show Trail: false
             Value: true
-          Frame:
+          camera_depth_optical_frame:
             Alpha: 1
             Show Axes: false
             Show Trail: false
             Value: true
-          Hand:
+          camera_link:
             Alpha: 1
             Show Axes: false
             Show Trail: false
             Value: true
           Link Tree Style: Links in Alphabetic Order
-          Telescope:
+          forearm_1:
             Alpha: 1
             Show Axes: false
             Show Trail: false
             Value: true
-          WheelBL:
+          hand_camera_link_1:
             Alpha: 1
             Show Axes: false
             Show Trail: false
             Value: true
-          WheelBR:
+          hand_camera_optical_frame_1:
             Alpha: 1
             Show Axes: false
             Show Trail: false
             Value: true
-          WheelFL:
+          palm_1:
             Alpha: 1
             Show Axes: false
             Show Trail: false
             Value: true
-          WheelFR:
+          upper_arm_1:
             Alpha: 1
             Show Axes: false
             Show Trail: false
             Value: true
-          Wrist:
+          wheel_FL_1:
             Alpha: 1
             Show Axes: false
             Show Trail: false
             Value: true
-          base:
+          wheel_FR_1:
+            Alpha: 1
+            Show Axes: false
+            Show Trail: false
+            Value: true
+          wheel_RL_1:
+            Alpha: 1
+            Show Axes: false
+            Show Trail: false
+            Value: true
+          wheel_RR_1:
+            Alpha: 1
+            Show Axes: false
+            Show Trail: false
+            Value: true
+          wrist_1:
             Alpha: 1
             Show Axes: false
             Show Trail: false
@@ -366,12 +408,12 @@ Visualization Manager:
         Attached Body Color: 150; 50; 150
         Links:
           All Links Enabled: true
-          Arm1:
+          FingerL_new_1:
             Alpha: 1
             Show Axes: false
             Show Trail: false
             Value: true
-          Arm2:
+          FingerR_new_1:
             Alpha: 1
             Show Axes: false
             Show Trail: false
@@ -379,58 +421,73 @@ Visualization Manager:
           Expand Joint Details: false
           Expand Link Details: false
           Expand Tree: false
-          FingerL:
+          base_link:
             Alpha: 1
             Show Axes: false
             Show Trail: false
             Value: true
-          FingerR:
+          camera_color_optical_frame:
             Alpha: 1
             Show Axes: false
             Show Trail: false
             Value: true
-          Frame:
+          camera_depth_optical_frame:
             Alpha: 1
             Show Axes: false
             Show Trail: false
             Value: true
-          Hand:
+          camera_link:
             Alpha: 1
             Show Axes: false
             Show Trail: false
             Value: true
           Link Tree Style: Links in Alphabetic Order
-          Telescope:
+          forearm_1:
             Alpha: 1
             Show Axes: false
             Show Trail: false
             Value: true
-          WheelBL:
+          hand_camera_link_1:
             Alpha: 1
             Show Axes: false
             Show Trail: false
             Value: true
-          WheelBR:
+          hand_camera_optical_frame_1:
             Alpha: 1
             Show Axes: false
             Show Trail: false
             Value: true
-          WheelFL:
+          palm_1:
             Alpha: 1
             Show Axes: false
             Show Trail: false
             Value: true
-          WheelFR:
+          upper_arm_1:
             Alpha: 1
             Show Axes: false
             Show Trail: false
             Value: true
-          Wrist:
+          wheel_FL_1:
             Alpha: 1
             Show Axes: false
             Show Trail: false
             Value: true
-          base:
+          wheel_FR_1:
+            Alpha: 1
+            Show Axes: false
+            Show Trail: false
+            Value: true
+          wheel_RL_1:
+            Alpha: 1
+            Show Axes: false
+            Show Trail: false
+            Value: true
+          wheel_RR_1:
+            Alpha: 1
+            Show Axes: false
+            Show Trail: false
+            Value: true
+          wrist_1:
             Alpha: 1
             Show Axes: false
             Show Trail: false

@@ -19,28 +19,24 @@ moveit_simple_controller_manager:
       - base_x
       - base_y
       - base_theta
-      - JointFrame
-      - JointTelescope
-      - JointArm1
-      - JointArm2
-      - JointWrist
-      - JointHand
+      - joint_shoulder
+      - joint_elbow
+      - joint_wrist
+      - joint_hand
 
   arm_controller:
     type: FollowJointTrajectory
     action_ns: follow_joint_trajectory
     default: false
     joints:
-      - JointArm1
-      - JointArm2
-      - JointHand
-      - JointTelescope
-      - JointWrist
+      - joint_shoulder
+      - joint_elbow
+      - joint_wrist
+      - joint_hand
 
   gripper_controller:
     type: GripperCommand
     action_ns: gripper_cmd
     default: false
     joints:
-      - JointFingerL
-      - JointFingerR
+      - joint_grip_L

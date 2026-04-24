@@ -8,10 +8,10 @@ gesture_motion_executor:
     gripper_target_topic: "/gesture_control/gripper_target"
     joint_states_topic: "/joint_states"
 
-    enable_moveit_planning: false
+    enable_moveit_planning: true
     move_group_action_name: "/move_action"
     default_group_name: "arm"
-    end_effector_link: "Hand"
+    end_effector_link: "palm_1"
     base_frame: "world"
     planner_id: "BiTRRTkConfigDefault"
     plan_only: true

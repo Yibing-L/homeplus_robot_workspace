@@ -18,59 +18,45 @@ joint_limits:
       has_velocity_limits: true
       max_velocity: 1
       has_acceleration_limits: false
-    JointFrame:
+    joint_shoulder:
+      has_position_limits: true
+      min_position: -0.523599
+      max_position: 2.617994
+      has_velocity_limits: true
+      max_velocity: 1
+      has_acceleration_limits: false
+    joint_elbow:
+      has_position_limits: true
+      min_position: -0.610865
+      max_position: 2.530727
+      has_velocity_limits: true
+      max_velocity: 1
+      has_acceleration_limits: false
+    joint_wrist:
+      has_position_limits: true
+      min_position: -1.570796
+      max_position: 1.570796
+      has_velocity_limits: true
+      max_velocity: 1
+      has_acceleration_limits: false
+    joint_hand:
+      has_position_limits: true
+      min_position: -1.22173
+      max_position: 1.396263
+      has_velocity_limits: true
+      max_velocity: 1
+      has_acceleration_limits: false
+    joint_grip_L:
+      has_position_limits: true
+      min_position: -1.570796
+      max_position: 0.0
+      has_velocity_limits: true
+      max_velocity: 1
+      has_acceleration_limits: false
+    joint_grip_R:
       has_position_limits: true
       min_position: 0.0
-      max_position: 0.15
-      has_velocity_limits: true
-      max_velocity: 1
-      has_acceleration_limits: false
-    JointTelescope:
-      has_position_limits: true
-      min_position: 0.0
-      max_position: 0.43
-      has_velocity_limits: true
-      max_velocity: 1
-      has_acceleration_limits: false
-    JointArm1:
-      has_position_limits: true
-      min_position: -0.7854
-      max_position: 2.4435
-      has_velocity_limits: true
-      max_velocity: 1
-      has_acceleration_limits: false
-    JointArm2:
-      has_position_limits: true
-      min_position: -1.274
-      max_position: 2.932
-      has_velocity_limits: true
-      max_velocity: 1
-      has_acceleration_limits: false
-    JointWrist:
-      has_position_limits: true
-      min_position: -1.396
-      max_position: 1.396
-      has_velocity_limits: true
-      max_velocity: 1
-      has_acceleration_limits: false
-    JointHand:
-      has_position_limits: true
-      min_position: -1.571
-      max_position: 1.309
-      has_velocity_limits: true
-      max_velocity: 1
-      has_acceleration_limits: false
-    JointFingerL:
-      has_position_limits: true
-      min_position: 0.0
-      max_position: 1.5708
-      has_velocity_limits: true
-      max_velocity: 1
-      has_acceleration_limits: false
-    JointFingerR:
-      has_position_limits: true
-      min_position: 0.0
-      max_position: 1.5708
+      max_position: 1.570796
       has_velocity_limits: true
       max_velocity: 1
       has_acceleration_limits: false

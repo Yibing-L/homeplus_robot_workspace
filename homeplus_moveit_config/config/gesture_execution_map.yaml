@@ -3,12 +3,10 @@ commands:
     type: joint_state
     group_name: arm
     joints:
-      JointFrame: 0.0
-      JointTelescope: 0.0
-      JointArm1: 0.0
-      JointArm2: 0.0
-      JointWrist: 0.0
-      JointHand: 0.0
+      joint_shoulder: 0.0
+      joint_elbow: 0.0
+      joint_wrist: 0.0
+      joint_hand: 0.0
 
   reach_forward:
     type: pose
@@ -40,8 +38,41 @@ commands:
 
   gripper_open:
     type: gripper
-    value: 0.0
+    value: 90.0
 
   gripper_close:
     type: gripper
-    value: 100.0
+    value: 0.0
+
+  pick_up_coffee:
+    type: sequence
+    detection_topic: /gdino_pose_world
+    detection_timeout_sec: 5.0
+    steps:
+      - name: open_gripper
+        type: gripper
+        value: 90.0
+
+      - name: move_to_target
+        type: pose
+        frame_id: world
+        group_name: arm
+        target: detected
+        offset_z: 0.0
+        rpy_deg: [0.0, 0.0, 0.0]
+        allowed_planning_time: 10.0
+        num_planning_attempts: 5
+
+      - name: close_gripper
+        type: gripper
+        value: 0.0
+
+      - name: lift
+        type: pose
+        frame_id: world
+        group_name: arm
+        target: detected
+        offset_z: 0.20
+        rpy_deg: [0.0, 0.0, 0.0]
+        allowed_planning_time: 10.0
+        num_planning_attempts: 5
