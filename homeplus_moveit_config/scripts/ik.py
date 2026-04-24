@@ -111,20 +111,8 @@ class HomePlusIKPipeline(Node):
 
     def build_start_state(self) -> RobotState:
         robot_state = RobotState()
-        joint_state = JointState()
-        joint_state.header.stamp = self.get_clock().now().to_msg()
-        joint_state.name = list(TRAJECTORY_JOINT_ORDER)
-
-        positions = []
-        latest_positions = {}
         if self.latest_joint_state is not None:
-            latest_positions = dict(zip(self.latest_joint_state.name, self.latest_joint_state.position))
-
-        for joint_name in TRAJECTORY_JOINT_ORDER:
-            positions.append(float(latest_positions.get(joint_name, DEFAULT_START_STATE[joint_name])))
-
-        joint_state.position = positions
-        robot_state.joint_state = joint_state
+            robot_state.joint_state = self.latest_joint_state
         return robot_state
 
     def publish_goal_marker(self) -> None:
