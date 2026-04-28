@@ -63,7 +63,7 @@ def generate_launch_description():
         DeclareLaunchArgument('camera_info_topic', default_value='/camera/camera/depth/camera_info'),
         DeclareLaunchArgument('mask_topic', default_value='/object_mask'),
         DeclareLaunchArgument('output_frame', default_value=''),
-        DeclareLaunchArgument('octomap_frame', default_value='camera_depth_optical_frame'),
+        DeclareLaunchArgument('octomap_frame', default_value='hand_camera_link_1'),
         DeclareLaunchArgument('octomap_input_topic', default_value='/object_cloud'),
         cloud_builder_node,
         octomap_node,

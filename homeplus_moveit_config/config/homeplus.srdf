@@ -28,6 +28,10 @@
         <joint name="joint_hand" value="0"/>
     </group_state>
 
+    <disable_collisions link1="base_link" link2="wheel_RR_1" reason="Adjacent"/>
+    <disable_collisions link1="base_link" link2="wheel_RL_1" reason="Adjacent"/>
+    <disable_collisions link1="base_link" link2="wheel_FL_1" reason="Adjacent"/>
+    <disable_collisions link1="base_link" link2="wheel_FR_1" reason="Adjacent"/>
     <disable_collisions link1="base_link" link2="upper_arm_1" reason="Adjacent"/>
     <disable_collisions link1="upper_arm_1" link2="forearm_1" reason="Adjacent"/>
     <disable_collisions link1="forearm_1" link2="wrist_1" reason="Adjacent"/>
@@ -35,6 +39,9 @@
     <disable_collisions link1="palm_1" link2="FingerL_new_1" reason="Adjacent"/>
     <disable_collisions link1="palm_1" link2="FingerR_new_1" reason="Adjacent"/>
     <disable_collisions link1="FingerL_new_1" link2="FingerR_new_1" reason="Never"/>
+    <disable_collisions link1="palm_1" link2="hand_camera_link_1" reason="Adjacent"/>
+    <disable_collisions link1="base_link" link2="front_camera_link_1" reason="Adjacent"/>
+    <disable_collisions link1="base_link" link2="rear_camera_link_1" reason="Adjacent"/>
     <virtual_joint name="world_joint" type="fixed" parent_frame="world" child_link="base_link" />
 
 </robot>

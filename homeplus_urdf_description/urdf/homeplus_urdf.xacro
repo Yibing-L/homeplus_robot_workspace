@@ -37,9 +37,9 @@
 
 <link name="base_link">
   <inertial>
-    <origin xyz="0.00041305276955943664 0.00022365100039778606 0.228379766827485" rpy="0 0 0"/>
-    <mass value="608.392751255125"/>
-    <inertia ixx="19.850428" iyy="19.865375" izz="17.066258" ixy="-0.011119" iyz="-0.05416" ixz="-0.100026"/>
+    <origin xyz="0.0004146557429806276 0.00022451894424340232 0.22818176772484203" rpy="0 0 0"/>
+    <mass value="606.0408305922668"/>
+    <inertia ixx="19.841105" iyy="19.772146" izz="16.976923" ixy="-0.011119" iyz="-0.054187" ixz="-0.100076"/>
   </inertial>
   <visual>
     <origin xyz="0 0 0" rpy="0 0 0"/>
@@ -287,23 +287,44 @@
   </collision>
 </link>
 
-<link name="hand_camera_optical_frame_1">
+<link name="front_camera_link_1">
   <inertial>
-    <origin xyz="-1.0944575066213535 -0.40802394470576675 0.3377781997637882" rpy="0 0 0"/>
-    <mass value="6.165375582669365e-06"/>
-    <inertia ixx="0.0" iyy="0.0" izz="0.0" ixy="0.0" iyz="-0.0" ixz="0.0"/>
+    <origin xyz="0.012699999999999906 2.4025276021235843e-17 5.551115123125783e-16" rpy="0 0 0"/>
+    <mass value="1.1143784679008808"/>
+    <inertia ixx="0.001453" iyy="0.000263" izz="0.00131" ixy="0.0" iyz="-0.0" ixz="-0.0"/>
   </inertial>
   <visual>
-    <origin xyz="-1.502951 -0.464943 -0.806461" rpy="0 0 0"/>
+    <origin xyz="-0.17907 -0.0 -0.2794" rpy="0 0 0"/>
     <geometry>
-      <mesh filename="package://homeplus_urdf_description/meshes/hand_camera_optical_frame_1.stl" scale="0.001 0.001 0.001"/>
+      <mesh filename="package://homeplus_urdf_description/meshes/front_camera_link_1.stl" scale="0.001 0.001 0.001"/>
     </geometry>
     <material name="silver"/>
   </visual>
   <collision>
-    <origin xyz="-1.502951 -0.464943 -0.806461" rpy="0 0 0"/>
+    <origin xyz="-0.17907 -0.0 -0.2794" rpy="0 0 0"/>
     <geometry>
-      <mesh filename="package://homeplus_urdf_description/meshes/hand_camera_optical_frame_1.stl" scale="0.001 0.001 0.001"/>
+      <mesh filename="package://homeplus_urdf_description/meshes/front_camera_link_1.stl" scale="0.001 0.001 0.001"/>
+    </geometry>
+  </collision>
+</link>
+
+<link name="rear_camera_link_1">
+  <inertial>
+    <origin xyz="-0.012699999999999906 3.2033701361647914e-17 6.106226635438361e-16" rpy="0 0 0"/>
+    <mass value="1.1143784679008768"/>
+    <inertia ixx="0.001453" iyy="0.000263" izz="0.00131" ixy="0.0" iyz="0.0" ixz="0.0"/>
+  </inertial>
+  <visual>
+    <origin xyz="0.17907 -0.0 -0.2794" rpy="0 0 0"/>
+    <geometry>
+      <mesh filename="package://homeplus_urdf_description/meshes/rear_camera_link_1.stl" scale="0.001 0.001 0.001"/>
+    </geometry>
+    <material name="silver"/>
+  </visual>
+  <collision>
+    <origin xyz="0.17907 -0.0 -0.2794" rpy="0 0 0"/>
+    <geometry>
+      <mesh filename="package://homeplus_urdf_description/meshes/rear_camera_link_1.stl" scale="0.001 0.001 0.001"/>
     </geometry>
   </collision>
 </link>
@@ -361,20 +382,20 @@
 </joint>
 
 <joint name="joint_grip_L" type="revolute">
-  <origin xyz="0.079967 -0.0145 -0.002501" rpy="0 0 0"/>
-  <parent link="palm_1"/>
-  <child link="FingerL_new_1"/>
-  <axis xyz="0.34202 0.0 0.939693"/>
-  <limit upper="0.0" lower="-1.570796" effort="100" velocity="100"/>
+  <origin xyz="0.079967 -0.0145 -0.002501" rpy="0 0 0"/>
+  <parent link="palm_1"/>
+  <child link="FingerL_new_1"/>
+  <axis xyz="-0.34202 0.0 -0.939693"/>
+  <limit upper="1.570796" lower="0.0" effort="100" velocity="100"/>
 </joint>
 
 <joint name="joint_grip_R" type="revolute">
-  <origin xyz="0.079967 -0.0375 -0.002501" rpy="0 0 0"/>
-  <parent link="palm_1"/>
-  <child link="FingerR_new_1"/>
-  <axis xyz="0.34202 0.0 0.939693"/>
-  <limit upper="1.570796" lower="0.0" effort="100" velocity="100"/>
-  <mimic joint="joint_grip_L" multiplier="-1" offset="0"/>
+  <origin xyz="0.079967 -0.0375 -0.002501" rpy="0 0 0"/>
+  <parent link="palm_1"/>
+  <child link="FingerR_new_1"/>
+  <axis xyz="0.34202 0.0 0.939693"/>
+  <limit upper="1.570796" lower="0.0" effort="100" velocity="100"/>
+  <mimic joint="joint_grip_L" multiplier="1" offset="0"/>
 </joint>
 
 <joint name="joint_elbow" type="revolute">
@@ -385,37 +406,22 @@
   <limit upper="2.530727" lower="-0.610865" effort="100" velocity="100"/>
 </joint>
 
-<joint name="Rigid 18" type="fixed">
+<joint name="hand_camera_to_lampshade" type="fixed">
   <origin xyz="0.083516 -0.025721 0.006955" rpy="0 0 0"/>
   <parent link="palm_1"/>
   <child link="hand_camera_link_1"/>
 </joint>
 
-<joint name="Rigid 19" type="fixed">
-  <origin xyz="1.11581 0.408024 -0.323202" rpy="0 0 0"/>
-  <parent link="hand_camera_link_1"/>
-  <child link="hand_camera_optical_frame_1"/>
+<joint name="front_camera_to_base" type="fixed">
+  <origin xyz="0.17907 0.0 0.2794" rpy="0 0 0"/>
+  <parent link="base_link"/>
+  <child link="front_camera_link_1"/>
 </joint>
 
-<link name="camera_link"/>
-<joint name="camera_link_alias" type="fixed">
-  <origin xyz="0 0 0" rpy="0 0 0"/>
-  <parent link="hand_camera_link_1"/>
-  <child link="camera_link"/>
-</joint>
-
-<link name="camera_depth_optical_frame"/>
-<joint name="camera_depth_optical_frame_alias" type="fixed">
-  <origin xyz="0 0 0" rpy="0 0 0"/>
-  <parent link="hand_camera_optical_frame_1"/>
-  <child link="camera_depth_optical_frame"/>
-</joint>
-
-<link name="camera_color_optical_frame"/>
-<joint name="camera_color_optical_frame_alias" type="fixed">
-  <origin xyz="0 0 0" rpy="0 0 0"/>
-  <parent link="hand_camera_optical_frame_1"/>
-  <child link="camera_color_optical_frame"/>
+<joint name="rear_camera_to_base" type="fixed">
+  <origin xyz="-0.17907 0.0 0.2794" rpy="0 0 0"/>
+  <parent link="base_link"/>
+  <child link="rear_camera_link_1"/>
 </joint>
 
 </robot>

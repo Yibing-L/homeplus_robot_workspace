@@ -85,6 +85,11 @@ def generate_launch_description():
         default_value='false',
         description='If true, start the Arduino serial reader node (reads /dev/ttyUSB0)'
     )
+    declare_use_joint_gui = DeclareLaunchArgument(
+        'use_joint_gui',
+        default_value='true',
+        description='Launch joint state publisher GUI (disable when using gesture pipeline)'
+    )
     declare_run_rebuild_map = DeclareLaunchArgument(
         'run_rebuild_map',
         default_value='false',
@@ -97,6 +102,7 @@ def generate_launch_description():
     declare_use_octomap,
     declare_auto_start_test_cmd,
     declare_run_arduino_reader,
+    declare_use_joint_gui,
     declare_run_rebuild_map,
 
     # Robot State Publisher
@@ -125,13 +131,15 @@ def generate_launch_description():
             condition=IfCondition(run_rebuild_map)
         ),
 
-        # Joint State Publisher GUI
+
+        # Joint State Publisher GUI (disabled during gesture pipeline)
         Node(
             package='joint_state_publisher_gui',
             executable='joint_state_publisher_gui',
             name='joint_state_publisher_gui',
             output='screen',
             parameters=[{'use_sim_time': False}],
+            condition=IfCondition(LaunchConfiguration('use_joint_gui')),
         ),
 
         Node(

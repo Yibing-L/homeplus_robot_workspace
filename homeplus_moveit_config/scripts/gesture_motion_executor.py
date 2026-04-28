@@ -22,7 +22,7 @@ from moveit_msgs.msg import (
     RobotState,
 )
 from rclpy.action import ActionClient
-from rclpy.callback_group import ReentrantCallbackGroup
+from rclpy.callback_groups import ReentrantCallbackGroup
 from rclpy.node import Node
 from sensor_msgs.msg import JointState
 from shape_msgs.msg import SolidPrimitive
@@ -126,6 +126,9 @@ class GestureMotionExecutor(Node):
         self.arduino_cmd_pub = self.create_publisher(
             String, "/arduino/command_queue", 10
         )
+        self.joint_state_pub = self.create_publisher(
+            JointState, "/joint_states", 10
+        )
 
         self.cb_group = ReentrantCallbackGroup()
         self.create_subscription(
@@ -155,6 +158,16 @@ class GestureMotionExecutor(Node):
         self._detection_pose: Optional[PoseStamped] = None
         self._detection_lock = threading.Lock()
         self._detection_subs: Dict[str, object] = {}  # topic -> subscription
+
+        # Arduino execution tracking — wait for "DONE" ack
+        self._arduino_done_event = threading.Event()
+        self.create_subscription(
+            String,
+            "/arduino/ack",
+            self._arduino_ack_callback,
+            10,
+            callback_group=self.cb_group,
+        )
 
         self.move_group_client = None
         if self.enable_moveit_planning:
@@ -228,6 +241,21 @@ class GestureMotionExecutor(Node):
             detected.pose.position.z + oz,
         ]
         return resolved
+
+    # ------------------------------------------------------------------
+    # Arduino execution tracking
+    # ------------------------------------------------------------------
+    def _arduino_ack_callback(self, msg: String) -> None:
+        if msg.data.strip().upper() == "DONE":
+            self._arduino_done_event.set()
+
+    def _wait_for_arduino_done(self, timeout_sec: float) -> bool:
+        """Block until Arduino sends DONE, or timeout."""
+        self._arduino_done_event.clear()
+        success = self._arduino_done_event.wait(timeout=timeout_sec)
+        if not success:
+            self.get_logger().warn(f"Arduino did not send DONE within {timeout_sec}s")
+        return success
 
     # ------------------------------------------------------------------
     # Config loading
@@ -371,9 +399,10 @@ class GestureMotionExecutor(Node):
             if step_type == "gripper":
                 grip_val = float(effective_step["value"])
                 self.gripper_target_pub.publish(Float32(data=grip_val))
-                # Send as a full waypoint with current joint positions + new grip value
                 self._send_gripper_to_arduino(grip_val)
-                time.sleep(self.gripper_settle_sec)
+                # Wait for Arduino to finish gripper movement
+                self.get_logger().info(f"  Waiting for Arduino to finish gripper...")
+                self._wait_for_arduino_done(timeout_sec=15.0)
 
             elif step_type == "pose":
                 if not self.enable_moveit_planning or self.move_group_client is None:
@@ -392,6 +421,10 @@ class GestureMotionExecutor(Node):
                     self._abort_sequence(sequence_name, step_name, "planning/execution failed")
                     return
 
+                # Wait for Arduino to finish executing trajectory
+                self.get_logger().info(f"  Waiting for Arduino to finish trajectory...")
+                self._wait_for_arduino_done(timeout_sec=60.0)
+
             elif step_type == "joint_state":
                 if not self.enable_moveit_planning or self.move_group_client is None:
                     self._abort_sequence(sequence_name, step_name, "MoveIt not enabled")
@@ -408,6 +441,10 @@ class GestureMotionExecutor(Node):
                 if not self._plan_success:
                     self._abort_sequence(sequence_name, step_name, "planning/execution failed")
                     return
+
+                # Wait for Arduino to finish executing trajectory
+                self.get_logger().info(f"  Waiting for Arduino to finish trajectory...")
+                self._wait_for_arduino_done(timeout_sec=60.0)
             else:
                 self.get_logger().warn(f"Unknown step type '{step_type}' in {step_name}")
 
@@ -476,20 +513,70 @@ class GestureMotionExecutor(Node):
 
         joint_indices = {jn: idx for idx, jn in enumerate(jt.joint_names)}
 
+        # Log raw MoveIt joint names and trajectory info
+        self.get_logger().info(f"  MoveIt joints: {jt.joint_names}")
+        self.get_logger().info(f"  Trajectory has {len(jt.points)} waypoints")
+
         arduino_waypoints = []
+        raw_waypoints = []
         for point in jt.points:
             values = []
             for joint_name in TRAJECTORY_JOINT_ORDER:
                 idx = joint_indices.get(joint_name)
                 values.append(point.positions[idx] if idx is not None else 0.0)
+            raw_waypoints.append(list(values))
             arduino_waypoints.append(self._format_waypoint_for_arduino(values))
 
-        # Send as comma-separated queue (same format the old ik.py used)
+        # Log first and last waypoint (raw radians/meters and Arduino format)
+        self.get_logger().info(f"  Raw first: {raw_waypoints[0]}")
+        self.get_logger().info(f"  Raw last:  {raw_waypoints[-1]}")
+        self.get_logger().info(f"  Arduino first: {arduino_waypoints[0]}")
+        self.get_logger().info(f"  Arduino last:  {arduino_waypoints[-1]}")
+
+        # Save trajectory to CSV
+        self._save_trajectory_csv(name, jt, raw_waypoints, arduino_waypoints)
+
+        # Send as comma-separated queue
         command_queue = ",".join(arduino_waypoints)
         self.arduino_cmd_pub.publish(String(data=command_queue))
         self.get_logger().info(
             f"Sent {len(arduino_waypoints)} waypoints to Arduino for {name}"
         )
+
+        # Update joint state to the final waypoint so the next step plans from here
+        self._publish_joint_state(raw_waypoints[-1])
+
+    def _save_trajectory_csv(self, name: str, jt, raw_waypoints, arduino_waypoints) -> None:
+        """Save planned trajectory to CSV for debugging."""
+        import csv
+        from datetime import datetime
+        from pathlib import Path
+
+        log_dir = Path("/mnt/c/users/easha/arl/homeplus_robot_workspace/trajectory_logs")
+        log_dir.mkdir(parents=True, exist_ok=True)
+
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        csv_path = log_dir / f"traj_{name}_{timestamp}.csv"
+
+        try:
+            with csv_path.open("w", newline="", encoding="utf-8") as f:
+                writer = csv.writer(f)
+                # Header
+                raw_header = [f"raw_{j}" for j in TRAJECTORY_JOINT_ORDER]
+                arduino_header = ["arduino_x_cm", "arduino_y_cm", "arduino_theta_deg",
+                                  "arduino_grip", "arduino_hand_deg", "arduino_wrist_deg",
+                                  "arduino_elbow_deg", "arduino_shoulder_deg",
+                                  "arduino_la", "arduino_frame"]
+                writer.writerow(["waypoint", "time_from_start"] + raw_header + arduino_header)
+
+                for i, point in enumerate(jt.points):
+                    t = point.time_from_start.sec + point.time_from_start.nanosec / 1e9
+                    arduino_vals = arduino_waypoints[i].split()
+                    writer.writerow([i, f"{t:.3f}"] + [f"{v:.6f}" for v in raw_waypoints[i]] + arduino_vals)
+
+            self.get_logger().info(f"  Trajectory saved: {csv_path}")
+        except Exception as e:
+            self.get_logger().warn(f"  Failed to save trajectory CSV: {e}")
 
     @staticmethod
     def _format_waypoint_for_arduino(values: List[float]) -> str:
@@ -514,6 +601,16 @@ class GestureMotionExecutor(Node):
             f"{elbow_deg:.1f} {shoulder_deg:.1f} {la:.1f} {frame:.1f}"
         )
 
+    def _publish_joint_state(self, positions: List[float]) -> None:
+        """Publish joint positions so MoveIt knows where the arm is after a trajectory."""
+        js = JointState()
+        js.header.stamp = self.get_clock().now().to_msg()
+        js.name = list(TRAJECTORY_JOINT_ORDER)
+        js.position = list(positions)
+        self.joint_state_pub.publish(js)
+        # Also update our own cached state
+        self.latest_joint_state = js
+
     def _send_gripper_to_arduino(self, grip_value: float) -> None:
         """Send a full 10-value waypoint to Arduino with current joint positions and updated grip."""
         if self.latest_joint_state is None:
@@ -531,6 +628,9 @@ class GestureMotionExecutor(Node):
         waypoint = self._format_waypoint_for_arduino(values)
         self.arduino_cmd_pub.publish(String(data=waypoint))
         self.get_logger().info(f"Sent gripper waypoint to Arduino: {waypoint}")
+
+        # Update joint state with the new grip value
+        self._publish_joint_state(values)
 
     # ------------------------------------------------------------------
     # Gripper value note: 0 = closed, 90 = fully open
