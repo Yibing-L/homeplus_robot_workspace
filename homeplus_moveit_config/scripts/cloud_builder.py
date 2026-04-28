@@ -86,7 +86,7 @@ class CloudBuilder(Node):
             return
 
         depth = self.bridge.imgmsg_to_cv2(msg)
-        source_frame = msg.header.frame_id or 'camera_depth_optical_frame'
+        source_frame = msg.header.frame_id or 'hand_camera_link_1'
         transform = None
         if self.output_frame and self.output_frame != source_frame:
             transform = self._lookup_transform(self.output_frame, source_frame, msg.header.stamp)
@@ -153,7 +153,7 @@ class CloudBuilder(Node):
         if self.output_frame:
             header.frame_id = self.output_frame
         elif not header.frame_id:
-            header.frame_id = 'camera_depth_optical_frame'
+            header.frame_id = 'hand_camera_link_1'
 
         # publish clouds
         full_cloud = pc2.create_cloud_xyz32(header, full_points.tolist())

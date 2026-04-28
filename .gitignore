@@ -70,3 +70,6 @@ Pipfile.lock
 
 # others
 .python-version
+
+# Robot runtime logs
+trajectory_logs/

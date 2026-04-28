@@ -56,12 +56,12 @@ commands:
       - name: move_to_target
         type: pose
         frame_id: world
-        group_name: arm
+        group_name: base_arm
         target: detected
         offset_z: 0.0
         rpy_deg: [0.0, 0.0, 0.0]
-        allowed_planning_time: 10.0
-        num_planning_attempts: 5
+        allowed_planning_time: 15.0
+        num_planning_attempts: 10
 
       - name: close_gripper
         type: gripper
@@ -70,9 +70,9 @@ commands:
       - name: lift
         type: pose
         frame_id: world
-        group_name: arm
+        group_name: base_arm
         target: detected
         offset_z: 0.20
         rpy_deg: [0.0, 0.0, 0.0]
-        allowed_planning_time: 10.0
-        num_planning_attempts: 5
+        allowed_planning_time: 15.0
+        num_planning_attempts: 10
