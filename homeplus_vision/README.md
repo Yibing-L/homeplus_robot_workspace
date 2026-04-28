@@ -1,17 +1,5 @@
 # homeplus_vision
 
-A ROS2 package for ArUco marker detection and pose estimation using Intel RealSense cameras.
-
-## Features
-
-- Real-time ArUco marker detection
-- 6-DOF pose estimation (XYZ position + RPY orientation)
-- TF2 transforms for coordinate frame management
-- Integration with RealSense D400 series cameras
-- Configurable marker sizes and dictionary types
-- Debug visualization
-- Real-time gesture recognition from aligned RGB-D streams
-
 ## Dependencies
 
 Make sure you have the following packages installed:
@@ -45,45 +33,10 @@ Important notes:
 - Use `pip --python /usr/bin/python3 ...` so packages land in the same Python
   interpreter that `ros2` uses.
 
-## Package Structure
-
-```
-homeplus_vision/
-├── CMakeLists.txt
-├── package.xml
-├── README.md
-├── config/
-│   ├── aruco_params.yaml          # ArUco detection parameters
-│   └── camera_calibration.yaml    # Camera calibration template
-├── launch/
-│   ├── vision_pipeline.launch.py  # Complete vision pipeline
-│   ├── camera_only.launch.py      # RealSense camera only
-│   └── aruco_only.launch.py       # ArUco detection only
-└── scripts/
-    ├── aruco_detector.py           # Main ArUco detection node
-    └── aruco_pose_publisher.py     # Pose transformation node
-    └── gesture_recognizer.py       # Real-time gesture classifier node
-```
 
 ## Usage
 
-### 1. Complete Vision Pipeline (Recommended)
-
-Launch the complete pipeline with RealSense camera and ArUco detection:
-
-```bash
-ros2 launch homeplus_vision vision_pipeline.launch.py
-```
-
-Optional parameters:
-```bash
-ros2 launch homeplus_vision vision_pipeline.launch.py \
-    marker_size:=0.05 \
-    aruco_dict_type:=0 \
-    target_marker_id:=0
-```
-
-### 2. Camera Only
+### 1. Camera Only
 
 Launch just the RealSense camera:
 
@@ -103,15 +56,7 @@ ros2 launch realsense2_camera rs_launch.py \
 The older `camera_only.launch.py` in this package still uses legacy RealSense
 argument names and may warn or fail on newer `realsense2_camera` versions.
 
-### 3. ArUco Detection Only
-
-If you have another camera source running:
-
-```bash
-ros2 launch homeplus_vision aruco_only.launch.py
-```
-
-### 4. Gesture Recognition Pipeline
+### 2. Gesture Recognition Pipeline
 
 Launch RealSense plus the gesture recognizer:
 
@@ -132,7 +77,7 @@ The gesture node consumes aligned depth from `/camera/camera/aligned_depth_to_co
 and camera intrinsics from `/camera/camera/color/camera_info`, mirroring the `landmark_with_xyz.py`
 feature layout and the `online_recognizer_xyz.py` runtime logic.
 
-### 5. Grounding DINO
+### 3. Grounding DINO
 
 This node was brought up against a local checkout of `Grounded-SAM-2` placed at:
 
@@ -151,7 +96,7 @@ The current `grounding_dino_node.py` supports this local layout through the
 export PYTHONPATH="/mnt/c/users/easha/arl/homeplus_robot_workspace/Grounded-SAM-2:/mnt/c/users/easha/arl/homeplus_robot_workspace/Grounded-SAM-2/grounding_dino:${PYTHONPATH}"
 ```
 
-Quick launch path:
+Quick launch path (recommended):
 
 ```bash
 ros2 launch homeplus_vision dino_pipeline.launch.py
@@ -288,25 +233,6 @@ The system uses a clean parameter hierarchy to avoid confusion:
 2. **Runtime overrides**: Launch arguments - Use for testing different values
 3. **No hardcoded defaults** - All values must be explicitly set
 
-### ArUco Parameters
-
-**IMPORTANT**: Edit `config/aruco_params.yaml` for your physical setup:
-
-```yaml
-aruco_detector:
-  ros__parameters:
-    aruco_dict_type: 0        # Match your printed markers
-    marker_size: 0.05         # MEASURE your actual marker size!
-    camera_frame: "camera_color_optical_frame"
-    base_frame: "base_link"
-```
-
-**Runtime override example:**
-```bash
-ros2 launch homeplus_vision vision_pipeline.launch.py \
-    marker_size:=0.08 \
-    aruco_dict_type:=4
-```
 
 ### Camera Calibration
 
@@ -335,9 +261,6 @@ Adjust the static transforms in `vision_pipeline.launch.py` based on your camera
 
 ### Published Topics
 
-- `/aruco_pose` (geometry_msgs/PoseStamped): Raw ArUco pose in camera frame
-- `/aruco_pose_base_link` (geometry_msgs/PoseStamped): Transformed pose in robot frame
-- `/aruco_debug_image` (sensor_msgs/Image): Debug visualization
 - `/gesture_recognition/label` (std_msgs/String): Stable gesture label or `idle`
 - `/gesture_recognition/class_id` (std_msgs/Int32): Predicted class index, `-1` when idle
 - `/gesture_recognition/confidence` (std_msgs/Float32): EMA confidence of the current label
@@ -359,15 +282,9 @@ Adjust the static transforms in `vision_pipeline.launch.py` based on your camera
 - `/camera/camera/depth/image_rect_raw` (sensor_msgs/Image): Default Grounding DINO depth topic
 - `/camera/camera/aligned_depth_to_color/image_raw` (sensor_msgs/Image): Preferred Grounding DINO depth topic for target poses
 
-## TF Frames
-
-The package publishes transforms for detected markers:
-- `aruco_0`, `aruco_1`, etc. (one for each detected marker)
-
 ## Coordinate Systems
 
 - **Camera Frame**: Standard ROS camera frame (Z-forward, Y-down, X-right)
-- **ArUco Frame**: Z-axis pointing up from marker, X-axis along marker edge
 - **Robot Frame**: Your robot's base_link frame
 
 ## Example Output
@@ -425,26 +342,3 @@ pip --python /usr/bin/python3 install --user --force-reinstall \
 ### Camera not found
 - Check RealSense connection: `rs-enumerate-devices`
 - Install RealSense SDK if needed
-
-## Integration with Motion Planning
-
-To use detected poses for motion planning:
-
-```python
-# In your motion planning node
-from geometry_msgs.msg import PoseStamped
-
-def aruco_pose_callback(self, msg):
-    # msg contains the ArUco pose in base_link frame
-    target_pose = msg.pose
-    # Use this pose for IK or motion planning
-    self.move_to_pose(target_pose)
-
-# Subscribe to transformed poses
-self.pose_sub = self.create_subscription(
-    PoseStamped,
-    '/aruco_pose_base_link',
-    self.aruco_pose_callback,
-    10
-)
-```
