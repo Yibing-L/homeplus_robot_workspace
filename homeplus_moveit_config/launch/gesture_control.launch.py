@@ -74,6 +74,7 @@ def generate_launch_description():
                 )
             ]
         ),
+        launch_arguments={"use_joint_gui": "false"}.items(),
         condition=IfCondition(LaunchConfiguration("launch_moveit")),
     )
 

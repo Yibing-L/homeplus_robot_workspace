@@ -95,7 +95,7 @@ Visualization Manager:
   Enabled: true
   Global Options:
     Background Color: 48; 48; 48
-    Fixed Frame: camera_depth_optical_frame
+    Fixed Frame: hand_camera_link_1
     Frame Rate: 30
   Name: root
   Tools:

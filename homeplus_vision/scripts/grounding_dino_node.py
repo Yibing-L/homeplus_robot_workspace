@@ -263,6 +263,10 @@ class GroundingDinoNode(Node):
 
     def camera_info_callback(self, msg: CameraInfo):
         self.camera_info = msg
+        # Match inference resolution to actual camera resolution
+        if msg.width > 0 and msg.height > 0:
+            self.target_w = msg.width
+            self.target_h = msg.height
 
     def detect_loop(self):
         if self.latest_color is None or self.camera_info is None:
@@ -371,11 +375,9 @@ class GroundingDinoNode(Node):
     def _transform_pose_to_world(self, pose_cam: PoseStamped) -> Optional[PoseStamped]:
         src_frame = pose_cam.header.frame_id
         try:
-            stamp = pose_cam.header.stamp
-            if stamp.sec == 0 and stamp.nanosec == 0:
-                t = Time()
-            else:
-                t = Time.from_msg(stamp)
+            # Use latest available transform (Time()) rather than image timestamp
+            # to avoid "extrapolation into the future" errors when TF rate < camera rate
+            t = Time()
             tf_msg = self.tf_buffer.lookup_transform(
                 self.world_frame,
                 src_frame,
