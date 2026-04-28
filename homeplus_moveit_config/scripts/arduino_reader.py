@@ -16,6 +16,7 @@ import serial
 from rclpy.node import Node
 from sensor_msgs.msg import JointState
 from std_msgs.msg import String
+from std_msgs.msg import Bool
 
 
 JOINT_NAMES = [
@@ -47,6 +48,7 @@ class ArduinoBridge(Node):
         # --- Publishers ---
         self.joint_state_pub = self.create_publisher(JointState, "/joint_states", 10)
         self.ack_pub = self.create_publisher(String, "/arduino/ack", 10)
+        self.status_pub = self.create_publisher(String, "/arduino/status", 10)
 
         # --- Subscribers ---
         self.create_subscription(
@@ -100,13 +102,21 @@ class ArduinoBridge(Node):
                 return
 
             # Status/ack lines from Arduino — not joint data
-            if (line.lower().startswith("proceed")
-                    or line.lower().startswith("timeout")
-                    or line.lower().startswith("ack")
-                    or line.lower().startswith("ok")
-                    or line.lower().startswith("done")
-                    or line.lower().startswith("error")
-                    or line.lower().startswith("usb serial")):
+            lower = line.lower()
+            if lower.startswith("done"):
+                # Publish that Arduino has reached finished state
+                self.ack_pub.publish(String(data=line))
+                done_msg = Bool(data=True)
+                self.status_pub.publish(done_msg)
+                self.get_logger().info(f"Arduino status: {line}")
+                return
+            if (lower.startswith("proceed")
+                    or lower.startswith("timeout")
+                    or lower.startswith("ack")
+                    or lower.startswith("ok")
+                    or lower.startswith("done")
+                    or lower.startswith("error")
+                    or lower.startswith("usb serial")):
                 self.ack_pub.publish(String(data=line))
                 self.get_logger().info(f"Arduino: {line}")
                 return

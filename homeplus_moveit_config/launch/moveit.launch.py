@@ -67,6 +67,7 @@ def generate_launch_description():
     # Create launch arguments
     auto_start_test = LaunchConfiguration('auto_start_test')
     run_arduino_reader = LaunchConfiguration('run_arduino_reader')
+    run_rebuild_map = LaunchConfiguration('run_rebuild_map')
 
     # Declare launch arguments
     declare_use_octomap = DeclareLaunchArgument(
@@ -84,6 +85,11 @@ def generate_launch_description():
         default_value='false',
         description='If true, start the Arduino serial reader node (reads /dev/ttyUSB0)'
     )
+    declare_run_rebuild_map = DeclareLaunchArgument(
+        'run_rebuild_map',
+        default_value='false',
+        description='If true, start the map rebuilding node that listens for Arduino status and repopulates OctoMap'
+    )
 
     # Create and return launch description
     return LaunchDescription([
@@ -91,6 +97,7 @@ def generate_launch_description():
     declare_use_octomap,
     declare_auto_start_test_cmd,
     declare_run_arduino_reader,
+    declare_run_rebuild_map,
 
     # Robot State Publisher
         Node(
@@ -109,6 +116,13 @@ def generate_launch_description():
             cmd=['python3', os.path.join(homeplus_moveit_pkg, 'scripts', 'arduino_reader.py'), '--port', '/dev/ttyUSB0', '--baud', '9600'],
             output='screen',
             condition=IfCondition(run_arduino_reader)
+        ),
+
+        # Launch map rebuilding node
+        ExecuteProcess(
+            cmd=['python3', os.path.join(homeplus_moveit_pkg, 'scripts', 'rebuild_map.py')],
+            output='screen',
+            condition=IfCondition(run_rebuild_map)
         ),
 
         # Joint State Publisher GUI
