@@ -4,7 +4,7 @@ octomap_server:
     point_cloud_topic: '/full_cloud'
 
     # Frame for the octomap (typically 'map' or the fixed world frame in your setup)
-    frame_id: 'hand_camera_link_1'
+    frame_id: 'hand_camera_depth_optical_frame'
 
     # OctoMap resolution (meters)
     resolution: 0.05

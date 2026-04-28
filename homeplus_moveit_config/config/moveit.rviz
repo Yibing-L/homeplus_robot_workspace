@@ -76,17 +76,17 @@ Visualization Manager:
           Show Axes: false
           Show Trail: false
           Value: true
-        camera_color_optical_frame:
+        hand_camera_color_optical_frame:
           Alpha: 1
           Show Axes: false
           Show Trail: false
           Value: true
-        camera_depth_optical_frame:
+        hand_camera_depth_optical_frame:
           Alpha: 1
           Show Axes: false
           Show Trail: false
           Value: true
-        camera_link:
+        hand_camera_link:
           Alpha: 1
           Show Axes: false
           Show Trail: false
@@ -173,11 +173,11 @@ Visualization Manager:
           Value: true
         base_link:
           Value: true
-        camera_color_optical_frame:
+        hand_camera_color_optical_frame:
           Value: true
-        camera_depth_optical_frame:
+        hand_camera_depth_optical_frame:
           Value: true
-        camera_link:
+        hand_camera_link:
           Value: true
         forearm_1:
           Value: true
@@ -225,11 +225,11 @@ Visualization Manager:
                           {}
                         hand_camera_link_1:
                           hand_camera_optical_frame_1:
-                            camera_color_optical_frame:
+                            hand_camera_color_optical_frame:
                               {}
-                            camera_depth_optical_frame:
+                            hand_camera_depth_optical_frame:
                               {}
-                        camera_link:
+                        hand_camera_link:
                           {}
                 wheel_RL_1:
                   {}
@@ -288,17 +288,17 @@ Visualization Manager:
             Show Axes: false
             Show Trail: false
             Value: true
-          camera_color_optical_frame:
+          hand_camera_color_optical_frame:
             Alpha: 1
             Show Axes: false
             Show Trail: false
             Value: true
-          camera_depth_optical_frame:
+          hand_camera_depth_optical_frame:
             Alpha: 1
             Show Axes: false
             Show Trail: false
             Value: true
-          camera_link:
+          hand_camera_link:
             Alpha: 1
             Show Axes: false
             Show Trail: false
@@ -426,17 +426,17 @@ Visualization Manager:
             Show Axes: false
             Show Trail: false
             Value: true
-          camera_color_optical_frame:
+          hand_camera_color_optical_frame:
             Alpha: 1
             Show Axes: false
             Show Trail: false
             Value: true
-          camera_depth_optical_frame:
+          hand_camera_depth_optical_frame:
             Alpha: 1
             Show Axes: false
             Show Trail: false
             Value: true
-          camera_link:
+          hand_camera_link:
             Alpha: 1
             Show Axes: false
             Show Trail: false

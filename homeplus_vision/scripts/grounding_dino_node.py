@@ -10,6 +10,7 @@ Parameters (declared):
 - image_topic: topic for color images (default: /camera/camera/color/image_raw)
 - depth_topic: topic for aligned depth images (default: /camera/camera/depth/image_rect_raw)
 - camera_info_topic: topic for camera info (default: /camera/camera/color/camera_info)
+- camera_frame: TF frame used for back-projected camera points. If empty, use CameraInfo header.
 - inference_rate: Hz for running inference (default 2.0)
 - task_id: 1-6 to select targets for different parts of the pipeline
 - world_frame: TF parent frame for published poses (default map); use odom, world, base_link, etc. as in your TF tree
@@ -62,6 +63,7 @@ class GroundingDinoNode(Node):
         self.declare_parameter('image_topic', '/camera/camera/color/image_raw')
         self.declare_parameter('depth_topic', '/camera/camera/depth/image_rect_raw')
         self.declare_parameter('camera_info_topic', '/camera/camera/color/camera_info')
+        self.declare_parameter('camera_frame', '')
         self.declare_parameter('inference_rate', 2.0)
         self.declare_parameter('world_frame', 'map')
         self.declare_parameter('tf_lookup_timeout_sec', 0.5)
@@ -73,6 +75,7 @@ class GroundingDinoNode(Node):
         self.image_topic = self.get_parameter('image_topic').value
         self.depth_topic = self.get_parameter('depth_topic').value
         self.camera_info_topic = self.get_parameter('camera_info_topic').value
+        self.camera_frame = str(self.get_parameter('camera_frame').value).strip()
         self.inference_rate = float(self.get_parameter('inference_rate').value)
         self.grounded_sam_root = Path(str(self.get_parameter('grounded_sam_root').value)).expanduser()
         self.enable_segmentation = False
@@ -263,10 +266,6 @@ class GroundingDinoNode(Node):
 
     def camera_info_callback(self, msg: CameraInfo):
         self.camera_info = msg
-        # Match inference resolution to actual camera resolution
-        if msg.width > 0 and msg.height > 0:
-            self.target_w = msg.width
-            self.target_h = msg.height
 
     def detect_loop(self):
         if self.latest_color is None or self.camera_info is None:
@@ -332,7 +331,7 @@ class GroundingDinoNode(Node):
 
             if self.publish_poses and z_center is not None:
                 X, Y, Z = self._backproject_pixel_to_3d(center_u, center_v, z_center, self.camera_info)
-                camera_frame = self.camera_info.header.frame_id
+                camera_frame = self.camera_frame or self.camera_info.header.frame_id
 
                 pose_cam = PoseStamped()
                 pose_cam.header = header
@@ -375,13 +374,13 @@ class GroundingDinoNode(Node):
     def _transform_pose_to_world(self, pose_cam: PoseStamped) -> Optional[PoseStamped]:
         src_frame = pose_cam.header.frame_id
         try:
-            # Use latest available transform (Time()) rather than image timestamp
-            # to avoid "extrapolation into the future" errors when TF rate < camera rate
-            t = Time()
+            # CPU inference can lag camera stamps by several seconds, while this
+            # robot's TF tree is effectively static unless joint states change.
+            # Use the latest available transform to avoid extrapolation errors.
             tf_msg = self.tf_buffer.lookup_transform(
                 self.world_frame,
                 src_frame,
-                t,
+                Time(),
                 timeout=self._tf_timeout,
             )
         except Exception as e:

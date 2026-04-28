@@ -382,20 +382,20 @@
 </joint>
 
 <joint name="joint_grip_L" type="revolute">
-  <origin xyz="0.079967 -0.0145 -0.002501" rpy="0 0 0"/>
-  <parent link="palm_1"/>
-  <child link="FingerL_new_1"/>
-  <axis xyz="-0.34202 0.0 -0.939693"/>
-  <limit upper="1.570796" lower="0.0" effort="100" velocity="100"/>
+  <origin xyz="0.079967 -0.0145 -0.002501" rpy="0 0 0"/>
+  <parent link="palm_1"/>
+  <child link="FingerL_new_1"/>
+  <axis xyz="-0.34202 0.0 -0.939693"/>
+  <limit upper="1.570796" lower="0.0" effort="100" velocity="100"/>
 </joint>
 
 <joint name="joint_grip_R" type="revolute">
-  <origin xyz="0.079967 -0.0375 -0.002501" rpy="0 0 0"/>
-  <parent link="palm_1"/>
-  <child link="FingerR_new_1"/>
-  <axis xyz="0.34202 0.0 0.939693"/>
-  <limit upper="1.570796" lower="0.0" effort="100" velocity="100"/>
-  <mimic joint="joint_grip_L" multiplier="1" offset="0"/>
+  <origin xyz="0.079967 -0.0375 -0.002501" rpy="0 0 0"/>
+  <parent link="palm_1"/>
+  <child link="FingerR_new_1"/>
+  <axis xyz="0.34202 0.0 0.939693"/>
+  <limit upper="1.570796" lower="0.0" effort="100" velocity="100"/>
+  <mimic joint="joint_grip_L" multiplier="1" offset="0"/>
 </joint>
 
 <joint name="joint_elbow" type="revolute">
@@ -412,16 +412,79 @@
   <child link="hand_camera_link_1"/>
 </joint>
 
+<link name="hand_camera_link"/>
+<joint name="hand_camera_link_alias" type="fixed">
+  <origin xyz="0 0 0" rpy="0 0.354 0"/>
+  <parent link="hand_camera_link_1"/>
+  <child link="hand_camera_link"/>
+</joint>
+
+<link name="hand_camera_color_optical_frame"/>
+<joint name="hand_camera_color_optical_frame_alias" type="fixed">
+  <origin xyz="0 0 0" rpy="-1.570796 0 -1.570796"/>
+  <parent link="hand_camera_link"/>
+  <child link="hand_camera_color_optical_frame"/>
+</joint>
+
+<link name="hand_camera_depth_optical_frame"/>
+<joint name="hand_camera_depth_optical_frame_alias" type="fixed">
+  <origin xyz="0 0 0" rpy="-1.570796 0 -1.570796"/>
+  <parent link="hand_camera_link"/>
+  <child link="hand_camera_depth_optical_frame"/>
+</joint>
+
 <joint name="front_camera_to_base" type="fixed">
   <origin xyz="0.17907 0.0 0.2794" rpy="0 0 0"/>
   <parent link="base_link"/>
   <child link="front_camera_link_1"/>
 </joint>
 
+<link name="front_camera_link"/>
+<joint name="front_camera_link_alias" type="fixed">
+  <origin xyz="0 0 0" rpy="0 0 0"/>
+  <parent link="front_camera_link_1"/>
+  <child link="front_camera_link"/>
+</joint>
+
+<link name="front_camera_color_optical_frame"/>
+<joint name="front_camera_color_optical_frame_alias" type="fixed">
+  <origin xyz="0 0 0" rpy="-1.570796 0 -1.570796"/>
+  <parent link="front_camera_link"/>
+  <child link="front_camera_color_optical_frame"/>
+</joint>
+
+<link name="front_camera_depth_optical_frame"/>
+<joint name="front_camera_depth_optical_frame_alias" type="fixed">
+  <origin xyz="0 0 0" rpy="-1.570796 0 -1.570796"/>
+  <parent link="front_camera_link"/>
+  <child link="front_camera_depth_optical_frame"/>
+</joint>
+
 <joint name="rear_camera_to_base" type="fixed">
   <origin xyz="-0.17907 0.0 0.2794" rpy="0 0 0"/>
   <parent link="base_link"/>
   <child link="rear_camera_link_1"/>
+</joint>
+
+<link name="rear_camera_link"/>
+<joint name="rear_camera_link_alias" type="fixed">
+  <origin xyz="0 0 0" rpy="0 0 3.141592653589793"/>
+  <parent link="rear_camera_link_1"/>
+  <child link="rear_camera_link"/>
+</joint>
+
+<link name="rear_camera_color_optical_frame"/>
+<joint name="rear_camera_color_optical_frame_alias" type="fixed">
+  <origin xyz="0 0 0" rpy="-1.570796 0 -1.570796"/>
+  <parent link="rear_camera_link"/>
+  <child link="rear_camera_color_optical_frame"/>
+</joint>
+
+<link name="rear_camera_depth_optical_frame"/>
+<joint name="rear_camera_depth_optical_frame_alias" type="fixed">
+  <origin xyz="0 0 0" rpy="-1.570796 0 -1.570796"/>
+  <parent link="rear_camera_link"/>
+  <child link="rear_camera_depth_optical_frame"/>
 </joint>
 
 </robot>

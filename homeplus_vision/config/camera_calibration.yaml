@@ -30,12 +30,12 @@ camera_calibration:
 # Transform from camera mount to camera optical frame
 # Adjust these values based on your camera mounting
 camera_transforms:
-  # Transform from base_link to camera_link (physical mounting position)
+  # Transform from base_link to hand_camera_link (physical mounting position)
   base_to_camera:
     translation: [0.3, 0.0, 0.5]  # 30cm forward, 50cm up
     rotation: [0.0, 0.0, 0.0, 1.0]  # No rotation (quaternion: x, y, z, w)
   
-  # Transform from camera_link to camera_color_optical_frame (ROS standard)
+  # Transform from hand_camera_link to hand_camera_color_optical_frame (ROS standard)
   camera_to_optical:
     translation: [0.0, 0.0, 0.0]
     rotation: [-0.5, 0.5, -0.5, 0.5]  # 90° rotations to align with optical frame

@@ -73,7 +73,7 @@ def generate_launch_description():
             LaunchConfiguration("camera_qz"),
             LaunchConfiguration("camera_qw"),
             LaunchConfiguration("world_frame"),
-            "camera_link", 
+            "hand_camera_link", 
         ],
     )
 

@@ -14,7 +14,7 @@ Parameters:
 - --count: number of frames to publish (default 10). Use 0 for infinite.
 - --image-topic: topic to publish the color image (default: /camera/camera/color/image_raw)
 - --camera-info-topic: topic to publish CameraInfo (default: /camera/camera/color/camera_info)
-- --frame-id: camera frame id to set in headers (default: camera_color_optical_frame)
+- --frame-id: camera frame id to set in headers (default: hand_camera_color_optical_frame)
 
 It publishes sensor_msgs/Image and sensor_msgs/CameraInfo messages using CvBridge.
 """
@@ -29,7 +29,7 @@ import cv2
 
 
 class StaticImagePublisher(Node):
-    def __init__(self, image_path, rate_hz=1.0, count=10, image_topic='/camera/camera/color/image_raw', camera_info_topic='/camera/camera/color/camera_info', frame_id='camera_color_optical_frame'):
+    def __init__(self, image_path, rate_hz=1.0, count=10, image_topic='/camera/camera/color/image_raw', camera_info_topic='/camera/camera/color/camera_info', frame_id='hand_camera_color_optical_frame'):
         super().__init__('gdino_test_publisher')
         self.bridge = CvBridge()
         self.image = cv2.imread(image_path)
@@ -86,7 +86,7 @@ def main():
     parser.add_argument('--count', type=int, default=10, help='Number of frames to publish (0 = infinite)')
     parser.add_argument('--image-topic', default='/camera/camera/color/image_raw')
     parser.add_argument('--camera-info-topic', default='/camera/camera/color/camera_info')
-    parser.add_argument('--frame-id', default='camera_color_optical_frame')
+    parser.add_argument('--frame-id', default='hand_camera_color_optical_frame')
 
     args = parser.parse_args()
 

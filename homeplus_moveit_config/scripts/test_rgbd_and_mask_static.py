@@ -35,7 +35,7 @@ class StaticRGBDPublisher(Node):
                  depth_info_topic='/camera/camera/depth/camera_info',
                  color_topic='/camera/camera/color/image_raw',
                  color_info_topic='/camera/camera/color/camera_info',
-                 mask_topic='/object_mask', frame_id='camera_depth_optical_frame'):
+                 mask_topic='/object_mask', frame_id='hand_camera_depth_optical_frame'):
         super().__init__('rgbd_test_publisher')
         self.bridge = CvBridge()
         self.color = None
@@ -157,7 +157,7 @@ def main():
     parser.add_argument('--mask', default=None)
     parser.add_argument('--rate', type=float, default=1.0)
     parser.add_argument('--count', type=int, default=0)
-    parser.add_argument('--frame-id', default='camera_color_optical_frame')
+    parser.add_argument('--frame-id', default='hand_camera_color_optical_frame')
     args = parser.parse_args()
 
     rclpy.init()
