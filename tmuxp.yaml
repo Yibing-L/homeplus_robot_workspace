@@ -1,0 +1,69 @@
+# HomePlus Robot Workspace — tmuxp session
+# ---------------------------------------------------------------------------
+# Install (one-time):
+#   sudo apt install tmux
+#   pip install --user tmuxp
+#
+# Launch:
+#   cd ~/homeplus_robot_workspace
+#   tmuxp load tmuxp.yaml
+#
+# Optional: pre-set the gesture checkpoint paths (otherwise pane 4 has a
+# placeholder you'll edit before pressing Enter):
+#   GESTURE_CHECKPOINT=/abs/path/checkpoint.pt \
+#   GESTURE_LABEL_MAP=/abs/path/label_map.json \
+#   tmuxp load tmuxp.yaml
+#
+# Tmux keybindings (prefix is Ctrl-b):
+#   Ctrl-b  arrows   move between panes
+#   Ctrl-b  z        zoom current pane (toggle fullscreen)
+#   Ctrl-b  [        scrollback mode (q to exit, / to search)
+#   Ctrl-b  d        detach (system keeps running in background)
+#   tmux attach -t homeplus    reattach later
+#   tmuxp kill homeplus        tear down everything
+#
+# Restart a single pane:
+#   1. Click into the pane
+#   2. Ctrl-C to stop the running command
+#   3. Up-arrow + Enter to re-run
+#   If the process crashed, panes stay open (remain-on-exit) so you can read
+#   the error. Press Enter to respawn, or `Ctrl-b :respawn-pane` then Enter.
+# ---------------------------------------------------------------------------
+
+session_name: homeplus
+start_directory: ./
+
+windows:
+  - window_name: homeplus
+    layout: tiled
+    options:
+      remain-on-exit: 'on'
+    shell_command_before:
+      - source /opt/ros/humble/setup.bash
+      - source install/setup.bash
+      - clear
+    panes:
+      # ----- Pane 1: Robot TF + RealSense camera -----
+      - shell_command:
+          - echo '=== [T1] Robot TF + RealSense ==='
+          - bash scripts/run_robot_tf.sh &
+          - sleep 3
+          - bash scripts/run_realsense.sh
+
+      # ----- Pane 2: GroundingDINO (object detection) -----
+      - shell_command:
+          - echo '=== [T2] GroundingDINO (task_id=1) ==='
+          - WORLD_FRAME=world bash scripts/run_dino.sh 1
+
+      # ----- Pane 3: MoveIt + gesture executor + Arduino bridge -----
+      - shell_command:
+          - echo '=== [T3] MoveIt + gesture executor + Arduino ==='
+          - ros2 launch homeplus_moveit_config gesture_control.launch.py arduino_port:=/dev/ttyUSB0
+
+      # ----- Pane 4: Gesture recognizer (pre-typed, NOT auto-run) -----
+      # Edit the paths below or set GESTURE_CHECKPOINT / GESTURE_LABEL_MAP
+      # in your shell before launching. Press Enter to start.
+      - shell_command:
+          - echo '=== [T4] Gesture recognizer (edit paths, then press Enter) ==='
+          - cmd: 'bash scripts/run_gesture.sh "${GESTURE_CHECKPOINT:-/abs/path/to/checkpoint.pt}" "${GESTURE_LABEL_MAP:-/abs/path/to/label_map.json}"'
+            enter: false

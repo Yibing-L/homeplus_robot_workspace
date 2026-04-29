@@ -146,7 +146,13 @@ class GestureMotionExecutor(Node):
             callback_group=self.cb_group,
         )
 
-        self.latest_joint_state: Optional[JointState] = None
+        # Seed with all joints at zero so the very first sequence has a
+        # well-defined fallback for joints outside the planning group (e.g.
+        # joint_grip_L when planning with the base_arm group).
+        initial_state = JointState()
+        initial_state.name = list(TRAJECTORY_JOINT_ORDER)
+        initial_state.position = [0.0] * len(TRAJECTORY_JOINT_ORDER)
+        self.latest_joint_state: Optional[JointState] = initial_state
         self._busy = False
         self._busy_lock = threading.Lock()
 
@@ -250,8 +256,12 @@ class GestureMotionExecutor(Node):
             self._arduino_done_event.set()
 
     def _wait_for_arduino_done(self, timeout_sec: float) -> bool:
-        """Block until Arduino sends DONE, or timeout."""
-        self._arduino_done_event.clear()
+        """Block until Arduino sends DONE, or timeout.
+
+        The event MUST be cleared by the caller before publishing the command
+        queue — otherwise a fast DONE that arrives before this wait starts will
+        be wiped out by a clear() here.
+        """
         success = self._arduino_done_event.wait(timeout=timeout_sec)
         if not success:
             self.get_logger().warn(f"Arduino did not send DONE within {timeout_sec}s")
@@ -269,6 +279,12 @@ class GestureMotionExecutor(Node):
         return commands
 
     def joint_states_callback(self, msg: JointState) -> None:
+        # Only accept feedback whose joint set matches our trajectory model
+        # (i.e. arduino_reader.py or our own publishes). joint_state_publisher
+        # publishes a superset of URDF joints with default zeros — accepting it
+        # would clobber latest_joint_state between sequence steps.
+        if set(msg.name) != set(TRAJECTORY_JOINT_ORDER):
+            return
         self.latest_joint_state = msg
 
     # ------------------------------------------------------------------
@@ -517,13 +533,23 @@ class GestureMotionExecutor(Node):
         self.get_logger().info(f"  MoveIt joints: {jt.joint_names}")
         self.get_logger().info(f"  Trajectory has {len(jt.points)} waypoints")
 
+        # Joints that aren't part of the planning group (e.g. joint_grip_L for
+        # the base_arm group) must hold their last commanded value, not 0.
+        held = (
+            dict(zip(self.latest_joint_state.name, self.latest_joint_state.position))
+            if self.latest_joint_state is not None else {}
+        )
+
         arduino_waypoints = []
         raw_waypoints = []
         for point in jt.points:
             values = []
             for joint_name in TRAJECTORY_JOINT_ORDER:
                 idx = joint_indices.get(joint_name)
-                values.append(point.positions[idx] if idx is not None else 0.0)
+                if idx is not None:
+                    values.append(point.positions[idx])
+                else:
+                    values.append(held.get(joint_name, 0.0))
             raw_waypoints.append(list(values))
             arduino_waypoints.append(self._format_waypoint_for_arduino(values))
 
@@ -536,8 +562,10 @@ class GestureMotionExecutor(Node):
         # Save trajectory to CSV
         self._save_trajectory_csv(name, jt, raw_waypoints, arduino_waypoints)
 
-        # Send as comma-separated queue
+        # Send as comma-separated queue. Arm the DONE event BEFORE publishing so
+        # we don't lose a fast DONE that might arrive before _wait_for_arduino_done.
         command_queue = ",".join(arduino_waypoints)
+        self._arduino_done_event.clear()
         self.arduino_cmd_pub.publish(String(data=command_queue))
         self.get_logger().info(
             f"Sent {len(arduino_waypoints)} waypoints to Arduino for {name}"
@@ -626,6 +654,8 @@ class GestureMotionExecutor(Node):
                 values.append(current.get(joint_name, 0.0))
 
         waypoint = self._format_waypoint_for_arduino(values)
+        # Arm the DONE event BEFORE publishing — see _wait_for_arduino_done.
+        self._arduino_done_event.clear()
         self.arduino_cmd_pub.publish(String(data=waypoint))
         self.get_logger().info(f"Sent gripper waypoint to Arduino: {waypoint}")
 
