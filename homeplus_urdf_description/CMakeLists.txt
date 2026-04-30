@@ -1,0 +1,14 @@
+cmake_minimum_required(VERSION 3.8)
+project(homeplus_urdf_description)
+
+find_package(ament_cmake REQUIRED)
+
+# Install robot description and launch assets into the package share directory.
+install(DIRECTORY
+  launch
+  urdf
+  meshes
+  DESTINATION share/${PROJECT_NAME}
+)
+
+ament_package()

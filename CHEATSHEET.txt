@@ -1,0 +1,447 @@
+================================================================================
+  HOMEPLUS ROBOT WORKSPACE — COMMAND CHEATSHEET
+  Path: ~/homeplus_robot_workspace
+  ROS 2 distro: humble
+================================================================================
+
+--------------------------------------------------------------------------------
+  0. ONE-TIME / EVERY-SHELL SETUP
+--------------------------------------------------------------------------------
+# Source ROS 2 + workspace overlay (do this in EVERY new terminal)
+source /opt/ros/humble/setup.bash
+source ~/homeplus_robot_workspace/install/setup.bash
+
+# Optional: add to ~/.bashrc so it auto-loads
+echo 'source /opt/ros/humble/setup.bash' >> ~/.bashrc
+echo 'source ~/homeplus_robot_workspace/install/setup.bash' >> ~/.bashrc
+
+
+--------------------------------------------------------------------------------
+  1. BUILD
+--------------------------------------------------------------------------------
+cd ~/homeplus_robot_workspace
+
+# Full build (all packages)
+colcon build --symlink-install
+
+# Build only one package (faster while iterating)
+colcon build --packages-select homeplus_moveit_config --symlink-install
+colcon build --packages-select homeplus_vision           --symlink-install
+colcon build --packages-select homeplus_urdf_description --symlink-install
+colcon build --packages-select homeplus_interfaces       --symlink-install
+
+# Convenience: builds all four packages
+bash scripts/build_e2e.sh
+
+# Clean wipe
+rm -rf build/ install/ log/
+
+# After every build:
+source install/setup.bash
+
+
+--------------------------------------------------------------------------------
+  2. RUN THE FULL SYSTEM (4 TERMINALS — recommended)
+--------------------------------------------------------------------------------
+Open 4 terminals. Run setup (section 0) in each. Then:
+
+# --- Terminal 1: Robot TF + RealSense camera
+cd ~/homeplus_robot_workspace
+bash scripts/run_robot_tf.sh &
+sleep 3
+bash scripts/run_realsense.sh
+
+# --- Terminal 2: GroundingDINO (object detection -> /gdino_pose_world)
+cd ~/homeplus_robot_workspace
+WORLD_FRAME=world bash scripts/run_dino.sh 1
+# task_id arg: 1 = pick_up_coffee preset
+
+# --- Terminal 3: MoveIt + gesture executor + Arduino bridge
+cd ~/homeplus_robot_workspace
+ros2 launch homeplus_moveit_config gesture_control.launch.py \
+    arduino_port:=/dev/ttyUSB0
+# add use_octomap:=true to enable OctoMap collision avoidance
+
+# --- Terminal 4: Gesture recognizer (vision -> /gesture_control/command)
+cd ~/homeplus_robot_workspace
+bash scripts/run_gesture.sh /absolute/path/to/checkpoint.pt /absolute/path/to/label_map.json
+
+
+--------------------------------------------------------------------------------
+  2b. RUN VIA TMUX (recommended — one command, 4 panes)
+--------------------------------------------------------------------------------
+# One-time install
+sudo apt install tmux
+pip install --user tmuxp
+
+# Launch the whole system in a 2x2 tmux grid
+cd ~/homeplus_robot_workspace
+tmuxp load tmuxp.yaml
+
+# Optional: pre-set gesture paths (otherwise edit pane 4 before hitting Enter)
+GESTURE_CHECKPOINT=/abs/checkpoint.pt \
+GESTURE_LABEL_MAP=/abs/label_map.json \
+tmuxp load tmuxp.yaml
+
+# In-session keybindings (prefix is Ctrl-b):
+#   Ctrl-b  arrows   move between panes
+#   Ctrl-b  z        zoom current pane fullscreen (toggle)
+#   Ctrl-b  [        scrollback mode (q to exit, / to search)
+#   Ctrl-b  d        detach (system keeps running)
+
+# Session management (tmuxp has no `kill` — use plain tmux):
+tmux ls                           # list running sessions
+tmux attach -t homeplus           # reattach after detaching
+tmux kill-session -t homeplus     # tear down the session
+tmux kill-server                  # kill ALL tmux sessions
+
+# Restart one component: click into its pane, Ctrl-C, up-arrow, Enter.
+# If a pane's process crashed, it stays open (remain-on-exit: on) so you can
+# read the error. Press Enter to respawn it.
+
+
+--------------------------------------------------------------------------------
+  3. RUN-ALL HELPER (single terminal, backgrounded children)
+--------------------------------------------------------------------------------
+# All-in-one launcher (handles TF, RealSense, occ-map, optional dino+gesture)
+bash scripts/run_system.sh \
+    --with-dino \
+    --task-id 1 \
+    --gesture-checkpoint /abs/path/checkpoint.pt \
+    --gesture-label-map /abs/path/label_map.json
+
+# Flags:
+#   --no-occ-map               disable octomap pipeline
+#   --with-dino                enable GroundingDINO
+#   --task-id N                dino preset id (default 1)
+#   --gesture-checkpoint PATH  enable gesture recognizer
+#   --gesture-label-map  PATH  optional label map
+#   --use-gui                  show joint_state_publisher GUI
+
+# End-to-end occupancy map only (TF + RealSense + cloud_to_octomap)
+bash scripts/run_e2e_occ_map.sh
+
+
+--------------------------------------------------------------------------------
+  4. INDIVIDUAL COMPONENT COMMANDS
+--------------------------------------------------------------------------------
+# RealSense camera only
+bash scripts/run_realsense.sh
+# or:
+ros2 launch homeplus_vision camera_only.launch.py
+
+# Robot URDF + TF (state publisher + camera_link bridge)
+bash scripts/run_robot_tf.sh
+# with the joint-state GUI:
+USE_GUI=true bash scripts/run_robot_tf.sh
+
+# RViz only (display URDF)
+ros2 launch homeplus_urdf_description display.launch.py
+
+# MoveIt 2 stack alone
+ros2 launch homeplus_moveit_config moveit.launch.py
+# variants:
+ros2 launch homeplus_moveit_config moveit.launch.py use_octomap:=true
+ros2 launch homeplus_moveit_config moveit.launch.py run_arduino_reader:=true
+ros2 launch homeplus_moveit_config moveit.launch.py use_joint_gui:=false
+
+# OctoMap from depth cloud
+bash scripts/run_occ_map.sh
+# or:
+ros2 launch homeplus_moveit_config cloud_to_octomap.launch.py \
+    octomap_input_topic:=/full_cloud \
+    depth_topic:=/camera/camera/depth/image_rect_raw \
+    camera_info_topic:=/camera/camera/depth/camera_info \
+    output_frame:=base_link \
+    octomap_frame:=base_link
+
+# GroundingDINO node directly
+ros2 run homeplus_vision grounding_dino_node.py --ros-args \
+    -p task_id:=1 -p world_frame:=world \
+    -p image_topic:=/camera/camera/color/image_raw \
+    -p depth_topic:=/camera/camera/aligned_depth_to_color/image_raw \
+    -p camera_info_topic:=/camera/camera/color/camera_info
+
+# Gesture recognizer node directly
+ros2 run homeplus_vision gesture_recognizer.py --ros-args \
+    -p checkpoint_path:=/abs/path/checkpoint.pt \
+    -p label_map_path:=/abs/path/label_map.json
+
+# Arduino serial reader directly
+python3 ~/homeplus_robot_workspace/homeplus_moveit_config/scripts/arduino_reader.py \
+    --port /dev/ttyUSB0 --baud 9600
+
+# Other moveit_config python utilities
+ros2 run homeplus_moveit_config ik.py
+ros2 run homeplus_moveit_config gesture_behavior.py
+ros2 run homeplus_moveit_config gesture_motion_executor.py
+
+
+--------------------------------------------------------------------------------
+  5. LAUNCH-ARG REFERENCE  (gesture_control.launch.py)
+--------------------------------------------------------------------------------
+| arg                      | default          | description                          |
+|--------------------------|------------------|--------------------------------------|
+| arduino_port             | /dev/ttyUSB0     | serial port for Arduino              |
+| run_arduino              | true             | launch arduino bridge                |
+| use_octomap              | false            | enable OctoMap in MoveIt             |
+| enable_moveit_planning   | true             | enable MoveIt planning in executor   |
+| launch_moveit            | true             | launch the MoveIt stack              |
+| behavior_config_file     | (config yaml)    | gesture behavior params              |
+| behavior_map_path        | (config yaml)    | gesture -> command map               |
+| executor_config_file     | (config yaml)    | motion executor params               |
+| execution_map_path       | (config yaml)    | command -> motion map                |
+
+
+--------------------------------------------------------------------------------
+  6. VERIFY / DEBUG (run while system is up)
+--------------------------------------------------------------------------------
+# Confirm Arduino is acking commands
+ros2 topic echo /arduino/ack
+
+# Confirm DINO is detecting an object (place coffee cup in view)
+ros2 topic echo /gdino_pose_world
+
+# Confirm gesture pipeline is publishing
+ros2 topic echo /gesture/recognition
+ros2 topic echo /gesture_control/command
+
+# Camera streams
+ros2 topic echo /camera/camera/color/image_raw --no-arr
+ros2 topic hz   /camera/camera/color/image_raw
+ros2 topic hz   /camera/camera/aligned_depth_to_color/image_raw
+
+# General introspection
+ros2 node list
+ros2 topic list
+ros2 topic info /gdino_pose_world
+ros2 topic hz   /joint_states
+ros2 service list
+ros2 param list
+ros2 param get /gesture_recognizer checkpoint_path
+
+# TF tree (writes frames.pdf to cwd)
+ros2 run tf2_tools view_frames
+ros2 run tf2_ros tf2_echo world hand_camera_link_1
+
+# Bag a topic for offline debug
+ros2 bag record -o /tmp/dino_bag /gdino_pose_world /camera/camera/color/image_raw
+ros2 bag play /tmp/dino_bag
+
+
+--------------------------------------------------------------------------------
+  6b. RVIZ — MOTION PLANNING / OCTOMAP VIEWING
+--------------------------------------------------------------------------------
+RViz auto-launches when you run gesture_control.launch.py or moveit.launch.py.
+It comes up loaded with config/moveit.rviz (already configured for planning).
+
+If you don't see the planning panel:
+  Top menu: Panels -> Add New Panel -> MotionPlanning  (under moveit_ros_visualization)
+
+Key displays in the left "Displays" tree (toggle visibility with their checkboxes):
+  RobotModel               current robot pose
+  PlanningScene            collision world MoveIt sees
+  MotionPlanning           the planning panel widget
+  TF                       transform frames (turn off if cluttered)
+  Trajectory               the planned path animation
+  MarkerArray              detection markers (DINO etc.)
+  OccupancyMap / OctoMap   voxel grid (only when use_octomap:=true)
+
+How to PLAN A MOTION manually in RViz:
+  1. In Displays, expand "MotionPlanning" -> Planning Request:
+       - Planning Group: arm   (or whatever group is set in homeplus.srdf)
+  2. Drag the orange interactive ball (end-effector goal marker) to where you
+     want the gripper to go. The robot ghost shows the goal pose.
+  3. Bottom panel "Motion Planning" -> "Planning" tab:
+       Plan          compute a trajectory (does NOT execute)
+       Execute       send the planned trajectory to the controller
+       Plan & Execute  do both
+  4. If "Plan" fails, check the "Status:" line at the bottom — usually
+     "No motion plan found" (try a closer goal) or a collision message.
+
+Useful checkboxes inside MotionPlanning panel:
+  Allow Approximate IK Solutions    relax IK if exact pose unreachable
+  Allow Replanning                  retry on failure
+  Use Cartesian Path                straight-line interpolation
+  Show Workspace                    visualize planning bounds
+
+To view OctoMap collisions in RViz:
+  ros2 launch homeplus_moveit_config gesture_control.launch.py use_octomap:=true
+  In RViz: Add -> By topic -> /octomap_full -> OccupancyGrid (or OcTree)
+  Alternative pre-built config:
+       rviz2 -d homeplus_moveit_config/config/octomap.rviz
+
+To save a tweaked RViz layout:
+  File -> Save Config As ...   (overwrite moveit.rviz to make it persistent)
+
+
+--------------------------------------------------------------------------------
+  7. MANUAL TRIGGERS  (test without a real gesture)
+--------------------------------------------------------------------------------
+# Fire a "pick up coffee" command (gesture_id 1)
+ros2 topic pub --once /gesture_control/command \
+  homeplus_interfaces/msg/GestureCommand \
+  "{gesture_id: 1, gesture_label: 'test', confidence: 0.9, \
+    command_name: 'pick_up_coffee', command_type: 'sequence'}"
+
+# Other behaviors (from gesture_behavior_map.yaml)
+#   0 home              joint_state
+#   1 pick_up_coffee    sequence
+#   2 reach_left        pose
+#   3 reach_right       pose
+#   4 lift_up           pose
+#   5 gripper_open      gripper
+#   6 gripper_close     gripper
+
+# Example: gripper open
+ros2 topic pub --once /gesture_control/command \
+  homeplus_interfaces/msg/GestureCommand \
+  "{gesture_id: 5, gesture_label: 'open', confidence: 1.0, \
+    command_name: 'gripper_open', command_type: 'gripper'}"
+
+
+--------------------------------------------------------------------------------
+  7b. FAKE-A-COFFEE-PICK END-TO-END (watch planning + motion in RViz)
+--------------------------------------------------------------------------------
+This lets you watch a full pick_up_coffee sequence in RViz WITHOUT a camera,
+gesture model, or coffee cup — fake both the detection AND the gesture command.
+
+PREP (one time, in RViz):
+  In the Displays tree, expand:  MotionPlanning -> Planned Path
+  Make sure these are ON (checkboxes):
+      Show Robot Visual      (translucent ghost shows the planned path)
+      Show Trail             (leaves the path visible)
+      Loop Animation         (replay the animation)
+  Trajectory Topic:  /display_planned_path   (default; should already be set)
+  Also make sure these top-level Displays are ON:
+      RobotModel             live robot (follows controller as it executes)
+      PlanningScene          collision world
+
+REQUIRED RUNNING:
+  At minimum the MoveIt stack + gesture executor must be up:
+      ros2 launch homeplus_moveit_config gesture_control.launch.py \
+          launch_moveit:=true run_arduino:=false
+  (run_arduino:=false avoids needing /dev/ttyUSB0 plugged in)
+  TF must also be publishing — easiest is to also start scripts/run_robot_tf.sh
+  Or just bring up the whole tmux session (T1 + T3 panes are enough).
+
+STEP 1 — fake the coffee detection (sequence reads /gdino_pose_world):
+  ros2 topic pub --rate 5 /gdino_pose_world geometry_msgs/msg/PoseStamped \
+    "{header: {frame_id: 'world'},
+      pose: {position: {x: 0.4, y: 0.0, z: 0.3},
+             orientation: {x: 0.0, y: 0.0, z: 0.0, w: 1.0}}}"
+  # leave this running in its own terminal — the executor needs an active stream
+  # adjust x/y/z to a pose that is reachable for the arm
+
+STEP 2 — fire the fake gesture (in another terminal):
+  ros2 topic pub --once /gesture_control/command \
+    homeplus_interfaces/msg/GestureCommand \
+    "{gesture_id: 1, gesture_label: 'fake_coffee', confidence: 0.99,
+      command_name: 'pick_up_coffee', command_type: 'sequence'}"
+
+WHAT YOU SHOULD SEE IN RVIZ:
+  1. The translucent ghost robot animates each waypoint of the sequence
+     (approach, descend, grasp, lift, retreat) — that is /display_planned_path.
+  2. The opaque RobotModel then physically moves to follow each plan,
+     because the executor sends the trajectory to the controllers.
+  3. Console of the gesture_motion_executor pane prints:
+       "  approach: resolved target -> [0.400, 0.000, 0.300]"
+       "  Plan succeeded for arm group"
+       "  Executing trajectory ..."
+
+WATCH THE TRAJECTORIES TOPIC DIRECTLY:
+  ros2 topic echo /display_planned_path moveit_msgs/msg/DisplayTrajectory --no-arr
+  ros2 topic hz   /display_planned_path
+
+REPLAY a saved trajectory in RViz:
+  ros2 run homeplus_moveit_config replay_trajectory.py
+  (look in trajectory_logs/ for what gets recorded)
+
+TROUBLESHOOTING:
+  Nothing happens after STEP 2:
+      Check executor saw the command:  ros2 topic echo /gesture_control/command
+      Check it's seeing the fake pose: ros2 topic echo /gdino_pose_world
+      Confirm move_group is up:        ros2 node list | grep move_group
+  Plan fails ("No motion plan found"):
+      Pick a more reachable x/y/z; default arm reach is roughly within 0.5m
+  Ghost moves but live robot doesn't:
+      Trajectory is planning OK but execution failed — check controller status:
+          ros2 control list_controllers
+      Or set enable_moveit_planning:=false on the launch to bypass MoveIt exec.
+
+
+--------------------------------------------------------------------------------
+  8. RESTART / KILL HELPERS
+--------------------------------------------------------------------------------
+# Kill every ROS-launched process on this machine (nuke option)
+pkill -f ros2
+pkill -f rviz2
+pkill -f move_group
+pkill -f realsense
+pkill -f grounding_dino
+pkill -f gesture_recognizer
+pkill -f arduino_reader
+
+# One-liner: stop everything ROS-related
+pkill -f 'ros2|rviz2|move_group|realsense|grounding_dino|gesture_recognizer|arduino_reader'
+
+# Find and kill by port (e.g. if VNC 6080 is stuck)
+sudo lsof -i :6080
+sudo fuser -k 6080/tcp
+
+# Reset Arduino USB device
+ls -l /dev/ttyUSB*
+sudo chmod 666 /dev/ttyUSB0
+
+
+--------------------------------------------------------------------------------
+  9. DOCKER (browser-based GUI via noVNC)
+--------------------------------------------------------------------------------
+cd ~/homeplus_robot_workspace
+
+# Build + start container
+docker compose up --build
+docker compose up -d            # detached
+docker compose down             # stop + remove
+
+# Open in browser:
+#   http://localhost:6080/vnc.html
+
+# Shell into the running container
+docker exec -it homeplus_ros2 bash
+
+# Inside the container the workspace is at:
+#   /ros2_ws/src/homeplus_robot_workspace
+# (already sourced via ~/.bashrc)
+
+
+--------------------------------------------------------------------------------
+ 10. KEY TOPICS / FRAMES (cheat-cheat)
+--------------------------------------------------------------------------------
+Topics
+  /camera/camera/color/image_raw                 RGB stream
+  /camera/camera/aligned_depth_to_color/image_raw  depth aligned to color
+  /camera/camera/depth/image_rect_raw            raw depth
+  /camera/camera/color/camera_info               intrinsics
+  /joint_states                                  robot joints
+  /gdino_pose_world                              detected object pose
+  /gesture/recognition                           raw gesture inference
+  /gesture_control/command                       command to execute
+  /arduino/ack                                   gripper / hardware ack
+  /full_cloud                                    point cloud -> octomap
+
+Frames
+  world  ->  base_link  ->  hand_camera_link_1  ->  camera_link  ->  *_optical_frame
+
+
+--------------------------------------------------------------------------------
+ 11. TYPICAL FAILURES & FIRST CHECKS
+--------------------------------------------------------------------------------
+RViz black / no robot         source install/setup.bash; rebuild urdf pkg
+"package not found"           you forgot `source install/setup.bash`
+camera frames missing         `ros2 topic hz /camera/camera/color/image_raw`
+no /gdino_pose_world          DINO needs WORLD_FRAME=world AND camera publishing
+gripper not reacting          `ros2 topic echo /arduino/ack`; check /dev/ttyUSB0 perms
+TF errors                     `ros2 run tf2_ros tf2_echo world camera_link`
+MoveIt plan fails             toggle use_octomap off to isolate; check /joint_states
+================================================================================

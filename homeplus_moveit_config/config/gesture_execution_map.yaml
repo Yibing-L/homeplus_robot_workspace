@@ -38,11 +38,11 @@ commands:
 
   gripper_open:
     type: gripper
-    value: 90.0
+    value: 0.0
 
   gripper_close:
     type: gripper
-    value: 0.0
+    value: 90.0
 
   pick_up_coffee:
     type: sequence
@@ -51,7 +51,7 @@ commands:
     steps:
       - name: open_gripper
         type: gripper
-        value: 90.0
+        value: 0.0
 
       - name: move_to_target
         type: pose
@@ -65,7 +65,7 @@ commands:
 
       - name: close_gripper
         type: gripper
-        value: 0.0
+        value: 90.0
 
       - name: lift
         type: pose

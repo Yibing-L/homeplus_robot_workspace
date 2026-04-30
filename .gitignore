@@ -35,10 +35,12 @@ Grounded-SAM-2
 *.tmp
 
 *.jpg
-*.pdf
 *.JPG
-*.txt
 *.png
+*.pdf
+
+# NOTE: a blanket *.txt rule would accidentally ignore CMakeLists.txt,
+# requirements.txt, CHEATSHEET.txt, etc. Don't add it back.
 
 # Coverage / pytest
 .coverage

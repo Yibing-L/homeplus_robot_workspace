@@ -1,0 +1,5 @@
+pyserial
+numpy
+opencv-python
+PyYAML
+transforms3d

@@ -42,6 +42,45 @@
     <disable_collisions link1="palm_1" link2="hand_camera_link_1" reason="Adjacent"/>
     <disable_collisions link1="base_link" link2="front_camera_link_1" reason="Adjacent"/>
     <disable_collisions link1="base_link" link2="rear_camera_link_1" reason="Adjacent"/>
+
+    <!-- Cameras are sensor frames with no real collision geometry; disable
+         collision checks vs every other link to prevent false positives. -->
+    <disable_collisions link1="front_camera_link_1" link2="wheel_FL_1"        reason="Never"/>
+    <disable_collisions link1="front_camera_link_1" link2="wheel_FR_1"        reason="Never"/>
+    <disable_collisions link1="front_camera_link_1" link2="wheel_RL_1"        reason="Never"/>
+    <disable_collisions link1="front_camera_link_1" link2="wheel_RR_1"        reason="Never"/>
+    <disable_collisions link1="front_camera_link_1" link2="upper_arm_1"       reason="Never"/>
+    <disable_collisions link1="front_camera_link_1" link2="forearm_1"         reason="Never"/>
+    <disable_collisions link1="front_camera_link_1" link2="wrist_1"           reason="Never"/>
+    <disable_collisions link1="front_camera_link_1" link2="palm_1"            reason="Never"/>
+    <disable_collisions link1="front_camera_link_1" link2="FingerL_new_1"     reason="Never"/>
+    <disable_collisions link1="front_camera_link_1" link2="FingerR_new_1"     reason="Never"/>
+    <disable_collisions link1="front_camera_link_1" link2="hand_camera_link_1" reason="Never"/>
+    <disable_collisions link1="front_camera_link_1" link2="rear_camera_link_1" reason="Never"/>
+
+    <disable_collisions link1="rear_camera_link_1"  link2="wheel_FL_1"        reason="Never"/>
+    <disable_collisions link1="rear_camera_link_1"  link2="wheel_FR_1"        reason="Never"/>
+    <disable_collisions link1="rear_camera_link_1"  link2="wheel_RL_1"        reason="Never"/>
+    <disable_collisions link1="rear_camera_link_1"  link2="wheel_RR_1"        reason="Never"/>
+    <disable_collisions link1="rear_camera_link_1"  link2="upper_arm_1"       reason="Never"/>
+    <disable_collisions link1="rear_camera_link_1"  link2="forearm_1"         reason="Never"/>
+    <disable_collisions link1="rear_camera_link_1"  link2="wrist_1"           reason="Never"/>
+    <disable_collisions link1="rear_camera_link_1"  link2="palm_1"            reason="Never"/>
+    <disable_collisions link1="rear_camera_link_1"  link2="FingerL_new_1"     reason="Never"/>
+    <disable_collisions link1="rear_camera_link_1"  link2="FingerR_new_1"     reason="Never"/>
+    <disable_collisions link1="rear_camera_link_1"  link2="hand_camera_link_1" reason="Never"/>
+
+    <disable_collisions link1="hand_camera_link_1"  link2="base_link"         reason="Never"/>
+    <disable_collisions link1="hand_camera_link_1"  link2="wheel_FL_1"        reason="Never"/>
+    <disable_collisions link1="hand_camera_link_1"  link2="wheel_FR_1"        reason="Never"/>
+    <disable_collisions link1="hand_camera_link_1"  link2="wheel_RL_1"        reason="Never"/>
+    <disable_collisions link1="hand_camera_link_1"  link2="wheel_RR_1"        reason="Never"/>
+    <disable_collisions link1="hand_camera_link_1"  link2="upper_arm_1"       reason="Never"/>
+    <disable_collisions link1="hand_camera_link_1"  link2="forearm_1"         reason="Never"/>
+    <disable_collisions link1="hand_camera_link_1"  link2="wrist_1"           reason="Never"/>
+    <disable_collisions link1="hand_camera_link_1"  link2="FingerL_new_1"     reason="Never"/>
+    <disable_collisions link1="hand_camera_link_1"  link2="FingerR_new_1"     reason="Never"/>
+
     <virtual_joint name="world_joint" type="fixed" parent_frame="world" child_link="base_link" />
 
 </robot>

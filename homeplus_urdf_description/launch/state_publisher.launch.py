@@ -33,8 +33,12 @@ def generate_launch_description():
         ),
         DeclareLaunchArgument(
             'publish_joint_states',
-            default_value='true',
-            description='Publish default joint states so the arm/hand TF chain exists'
+            default_value='false',
+            description=(
+                'Launch joint_state_publisher (default zeros). Off by default '
+                'because the gesture_motion_executor owns /joint_states; turning '
+                'this on races and clobbers latest_joint_state between phases.'
+            )
         ),
         LogInfo(msg=['Loading Xacro from: ', xacro_file]),
         Node(

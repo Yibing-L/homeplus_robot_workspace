@@ -1,0 +1,52 @@
+# Force LF line endings for files that Linux tools require to be LF.
+# This overrides per-user core.autocrlf settings.
+# Without this, files checked out on Windows get CRLF and bash / python
+# fail with "/usr/bin/env: 'python3\r': No such file" when run from WSL.
+
+# --- Source code ---
+*.sh        text eol=lf
+*.py        text eol=lf
+*.cmake     text eol=lf
+CMakeLists.txt text eol=lf
+Makefile    text eol=lf
+
+# --- ROS / robot description ---
+*.xml       text eol=lf
+*.launch    text eol=lf
+*.xacro     text eol=lf
+*.urdf      text eol=lf
+*.srdf      text eol=lf
+*.rviz      text eol=lf
+
+# --- Config ---
+*.yaml      text eol=lf
+*.yml       text eol=lf
+*.json      text eol=lf
+*.toml      text eol=lf
+
+# --- Docs / data ---
+*.md        text
+*.txt       text
+*.csv       text
+
+# --- Binary (don't touch) ---
+*.pt        binary
+*.pth       binary
+*.ckpt      binary
+*.pkl       binary
+*.npz       binary
+*.npy       binary
+*.png       binary
+*.jpg       binary
+*.jpeg      binary
+*.gif       binary
+*.bag       binary
+*.db3       binary
+*.stl       binary
+*.dae       binary
+*.mesh      binary
+*.obj       binary
+*.zip       binary
+*.tar       binary
+*.gz        binary
+*.so        binary
