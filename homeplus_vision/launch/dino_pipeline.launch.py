@@ -11,7 +11,7 @@ from launch_ros.substitutions import FindPackageShare
 def generate_launch_description():
     world_frame_arg = DeclareLaunchArgument(
         "world_frame",
-        default_value="map",
+        default_value="base_link",
         description="World frame used by grounding_dino_node pose output",
     )
 

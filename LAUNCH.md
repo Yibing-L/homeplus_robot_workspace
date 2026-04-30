@@ -20,12 +20,23 @@ sleep 3
 bash scripts/run_realsense.sh
 ```
 
+If you are testing DINO without Terminal 3, publish default arm joint states so
+the hand camera is connected to `base_link` in TF:
+
+```bash
+cd ~/homeplus_robot_workspace
+source install/setup.bash
+PUBLISH_JOINT_STATES=true bash scripts/run_robot_tf.sh &
+sleep 3
+bash scripts/run_realsense.sh
+```
+
 ### Terminal 2 — Grounding DINO (target detection)
 
 ```bash
 cd ~/homeplus_robot_workspace
 source install/setup.bash
-WORLD_FRAME=world bash scripts/run_dino.sh 1
+WORLD_FRAME=base_link bash scripts/run_dino.sh 1
 ```
 
 ### Terminal 3 — MoveIt + Gesture Control + Arduino
@@ -33,13 +44,13 @@ WORLD_FRAME=world bash scripts/run_dino.sh 1
 ```bash
 cd ~/homeplus_robot_workspace
 source install/setup.bash
-ros2 launch homeplus_moveit_config gesture_control.launch.py arduino_port:=/dev/ttyUSB0
+ros2 launch homeplus_moveit_config gesture_control.launch.py arduino_port:=/dev/ttyACM0
 ```
 
 To enable OctoMap collision avoidance:
 
 ```bash
-ros2 launch homeplus_moveit_config gesture_control.launch.py arduino_port:=/dev/ttyUSB0 use_octomap:=true
+ros2 launch homeplus_moveit_config gesture_control.launch.py arduino_port:=/dev/ttyACM0 use_octomap:=true
 ```
 
 ### Terminal 4 — Gesture Recognizer
@@ -75,7 +86,7 @@ ros2 topic pub --once /gesture_control/command homeplus_interfaces/msg/GestureCo
 
 | Argument | Default | Description |
 |----------|---------|-------------|
-| `arduino_port` | `/dev/ttyUSB0` | Serial port for Arduino |
+| `arduino_port` | `/dev/ttyACM0` | Serial port for Arduino |
 | `run_arduino` | `true` | Launch Arduino serial bridge |
 | `use_octomap` | `false` | Enable OctoMap collision avoidance |
 | `enable_moveit_planning` | `true` | Enable MoveIt planning in executor |

@@ -9,6 +9,10 @@ source install/setup.bash
 set -u
 
 USE_GUI="${USE_GUI:-false}"
+# Default OFF: arduino_reader publishes /joint_states once it's connected.
+# Set PUBLISH_JOINT_STATES=true if running without the Arduino bridge
+# (e.g. visualization-only tests in RViz).
+PUBLISH_JOINT_STATES="${PUBLISH_JOINT_STATES:-false}"
 
 # Bridge robot TF tree to RealSense TF tree
 # Only publish hand_camera_link_1 → camera_link; RealSense driver handles camera_link → optical frames
@@ -16,4 +20,4 @@ ros2 run tf2_ros static_transform_publisher --frame-id hand_camera_link_1 --chil
 
 ros2 launch homeplus_urdf_description state_publisher.launch.py \
   use_gui:="$USE_GUI" \
-  publish_joint_states:=true
+  publish_joint_states:="$PUBLISH_JOINT_STATES"

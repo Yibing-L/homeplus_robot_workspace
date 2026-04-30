@@ -13,7 +13,7 @@ Parameters (declared):
 - camera_frame: TF frame used for back-projected camera points. If empty, use CameraInfo header.
 - inference_rate: Hz for running inference (default 2.0)
 - task_id: 1-6 to select targets for different parts of the pipeline
-- world_frame: TF parent frame for published poses (default map); use odom, world, base_link, etc. as in your TF tree
+- world_frame: TF parent frame for published poses (default base_link); use odom, world, base_link, etc. as in your TF tree
 - tf_lookup_timeout_sec: max wait for each TF lookup (default 0.5)
 
 Outputs:
@@ -27,6 +27,7 @@ import rclpy
 from rclpy.node import Node
 from rclpy.duration import Duration
 from rclpy.time import Time
+from rclpy.qos import qos_profile_sensor_data
 from sensor_msgs.msg import Image, CameraInfo
 from geometry_msgs.msg import PoseStamped
 from std_msgs.msg import String
@@ -65,7 +66,7 @@ class GroundingDinoNode(Node):
         self.declare_parameter('camera_info_topic', '/camera/camera/color/camera_info')
         self.declare_parameter('camera_frame', '')
         self.declare_parameter('inference_rate', 2.0)
-        self.declare_parameter('world_frame', 'map')
+        self.declare_parameter('world_frame', 'base_link')
         self.declare_parameter('tf_lookup_timeout_sec', 0.5)
 
         self.device = self.get_parameter('device').value
@@ -105,10 +106,16 @@ class GroundingDinoNode(Node):
         self.latest_color_header = None
         self.latest_depth = None
         self.camera_info = None
+        self._have_logged_color = False
+        self._have_logged_depth = False
+        self._have_logged_camera_info = False
 
-        self.create_subscription(Image, self.image_topic, self.image_callback, 5)
-        self.create_subscription(Image, self.depth_topic, self.depth_callback, 5)
-        self.create_subscription(CameraInfo, self.camera_info_topic, self.camera_info_callback, 5)
+        # RealSense image/depth/camera-info topics are sensor streams and usually
+        # publish with best-effort QoS. Match that profile so subscriptions
+        # connect reliably instead of silently receiving nothing.
+        self.create_subscription(Image, self.image_topic, self.image_callback, qos_profile_sensor_data)
+        self.create_subscription(Image, self.depth_topic, self.depth_callback, qos_profile_sensor_data)
+        self.create_subscription(CameraInfo, self.camera_info_topic, self.camera_info_callback, qos_profile_sensor_data)
 
         # targets for different tasks (needed before model setup)
         self.tasks = {
@@ -260,15 +267,34 @@ class GroundingDinoNode(Node):
     def image_callback(self, msg: Image):
         self.latest_color = self.bridge.imgmsg_to_cv2(msg, desired_encoding='bgr8')
         self.latest_color_header = msg.header
+        if not self._have_logged_color:
+            self.get_logger().info(f"Received first color frame on {self.image_topic}")
+            self._have_logged_color = True
 
     def depth_callback(self, msg: Image):
         self.latest_depth = msg
+        if not self._have_logged_depth:
+            self.get_logger().info(f"Received first depth frame on {self.depth_topic}")
+            self._have_logged_depth = True
 
     def camera_info_callback(self, msg: CameraInfo):
         self.camera_info = msg
+        if not self._have_logged_camera_info:
+            self.get_logger().info(f"Received first camera info on {self.camera_info_topic}")
+            self._have_logged_camera_info = True
 
     def detect_loop(self):
         if self.latest_color is None or self.camera_info is None:
+            if self.latest_color is None:
+                self.get_logger().warn(
+                    f"Waiting for color image on {self.image_topic}",
+                    throttle_duration_sec=5.0,
+                )
+            if self.camera_info is None:
+                self.get_logger().warn(
+                    f"Waiting for camera info on {self.camera_info_topic}",
+                    throttle_duration_sec=5.0,
+                )
             return
         self.get_logger().info("Running detection loop")
         # 1. Resize Color for Inference
@@ -342,6 +368,11 @@ class GroundingDinoNode(Node):
                 pose_cam.pose.orientation.w = 1.0
 
                 mask_center_payload["point_3d_camera"] = {"x": X, "y": Y, "z": Z}
+                self.get_logger().info(
+                    f"Target {d['label']} in {camera_frame}: "
+                    f"x={X:.2f}m, y={Y:.2f}m, z={Z:.2f}m "
+                    f"(pixel=({center_u}, {center_v}), score={d['score']:.2f})"
+                )
 
                 pose_world = self._transform_pose_to_world(pose_cam)
                 if pose_world is not None:
@@ -352,6 +383,16 @@ class GroundingDinoNode(Node):
                         f"Target {d['label']} in {self.world_frame}: "
                         f"x={pw.x:.2f}m, y={pw.y:.2f}m, z={pw.z:.2f}m"
                     )
+            elif self.publish_poses:
+                self.get_logger().info(
+                    f"Target {d['label']} detected at pixel=({center_u}, {center_v}), "
+                    f"score={d['score']:.2f}, but no valid depth was available"
+                )
+            else:
+                self.get_logger().info(
+                    f"Target {d['label']} detected at pixel=({center_u}, {center_v}), "
+                    f"score={d['score']:.2f}"
+                )
 
             self.mask_center_pub.publish(String(data=json.dumps(mask_center_payload)))
 
@@ -385,7 +426,10 @@ class GroundingDinoNode(Node):
             )
         except Exception as e:
             self.get_logger().warn(
-                f'Could not transform pose from {src_frame} to {self.world_frame}: {e}',
+                f'Could not transform pose from {src_frame} to {self.world_frame}: {e}. '
+                f'2D detections still work. For hand_camera_* frames, make sure the robot TF chain '
+                f'is connected by publishing /joint_states (for example via the Arduino bridge or '
+                f'PUBLISH_JOINT_STATES=true bash scripts/run_robot_tf.sh).',
                 throttle_duration_sec=2.0,
             )
             return None

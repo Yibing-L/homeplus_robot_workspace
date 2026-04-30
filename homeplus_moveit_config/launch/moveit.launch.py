@@ -83,7 +83,7 @@ def generate_launch_description():
     declare_run_arduino_reader = DeclareLaunchArgument(
         'run_arduino_reader',
         default_value='false',
-        description='If true, start the Arduino serial reader node (reads /dev/ttyUSB0)'
+        description='If true, start the Arduino serial reader node (reads /dev/ttyACM0)'
     )
     declare_use_joint_gui = DeclareLaunchArgument(
         'use_joint_gui',
@@ -95,6 +95,11 @@ def generate_launch_description():
         default_value='false',
         description='If true, start the map rebuilding node that listens for Arduino status and repopulates OctoMap'
     )
+    declare_launch_robot_state_publisher = DeclareLaunchArgument(
+        'launch_robot_state_publisher',
+        default_value='true',
+        description='If true, start robot_state_publisher here. Set false when another launch (e.g. state_publisher.launch.py in pane 1) already owns it.'
+    )
 
     # Create and return launch description
     return LaunchDescription([
@@ -104,8 +109,9 @@ def generate_launch_description():
     declare_run_arduino_reader,
     declare_use_joint_gui,
     declare_run_rebuild_map,
+    declare_launch_robot_state_publisher,
 
-    # Robot State Publisher
+    # Robot State Publisher (skipped if pane 1 already owns it)
         Node(
             package='robot_state_publisher',
             executable='robot_state_publisher',
@@ -115,11 +121,12 @@ def generate_launch_description():
                 'robot_description': robot_description,
                 'use_sim_time': False
             }],
+            condition=IfCondition(LaunchConfiguration('launch_robot_state_publisher')),
         ),
 
         # Launch Arduino serial reader 
         ExecuteProcess(
-            cmd=['python3', os.path.join(homeplus_moveit_pkg, 'scripts', 'arduino_reader.py'), '--port', '/dev/ttyUSB0', '--baud', '9600'],
+            cmd=['python3', os.path.join(homeplus_moveit_pkg, 'scripts', 'arduino_reader.py'), '--port', '/dev/ttyACM0', '--baud', '9600'],
             output='screen',
             condition=IfCondition(run_arduino_reader)
         ),

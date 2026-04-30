@@ -4,7 +4,7 @@ Bidirectional Arduino bridge: reads joint states from serial → /joint_states,
 and writes commands from /arduino/command_queue → serial.
 
 To run manually:
-  python3 arduino_reader.py --port /dev/ttyUSB0 --baud 9600 --rate 20
+  python3 arduino_reader.py --port /dev/ttyACM0 --baud 9600 --rate 20
 """
 
 import argparse
@@ -34,7 +34,7 @@ JOINT_NAMES = [
 class ArduinoBridge(Node):
     def __init__(
         self,
-        port: str = "/dev/ttyUSB0",
+        port: str = "/dev/ttyACM0",
         baud: int = 9600,
         joint_names: Optional[List[str]] = None,
         read_hz: float = 20.0,
@@ -170,7 +170,7 @@ class ArduinoBridge(Node):
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(add_help=False)
-    parser.add_argument("--port", default="/dev/ttyUSB0")
+    parser.add_argument("--port", default="/dev/ttyACM0")
     parser.add_argument("--baud", default="9600")
     parser.add_argument("--rate", default="20")
     parser.add_argument("--joint-names", default="")

@@ -62,7 +62,7 @@ def generate_launch_description():
 
     arduino_port_arg = DeclareLaunchArgument(
         "arduino_port",
-        default_value="/dev/ttyUSB0",
+        default_value="/dev/ttyACM0",
         description="Serial port for Arduino",
     )
 
@@ -74,7 +74,12 @@ def generate_launch_description():
                 )
             ]
         ),
-        launch_arguments={"use_joint_gui": "false"}.items(),
+        launch_arguments={
+            "use_joint_gui": "false",
+            # pane 1's state_publisher.launch.py already owns robot_state_publisher;
+            # avoid spawning a duplicate that fights /tf and /robot_description.
+            "launch_robot_state_publisher": "false",
+        }.items(),
         condition=IfCondition(LaunchConfiguration("launch_moveit")),
     )
 

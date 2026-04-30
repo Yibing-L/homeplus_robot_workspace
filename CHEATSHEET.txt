@@ -53,13 +53,13 @@ bash scripts/run_realsense.sh
 
 # --- Terminal 2: GroundingDINO (object detection -> /gdino_pose_world)
 cd ~/homeplus_robot_workspace
-WORLD_FRAME=world bash scripts/run_dino.sh 1
+WORLD_FRAME=base_link bash scripts/run_dino.sh 1
 # task_id arg: 1 = pick_up_coffee preset
 
 # --- Terminal 3: MoveIt + gesture executor + Arduino bridge
 cd ~/homeplus_robot_workspace
 ros2 launch homeplus_moveit_config gesture_control.launch.py \
-    arduino_port:=/dev/ttyUSB0
+    arduino_port:=/dev/ttyACM0
 # add use_octomap:=true to enable OctoMap collision avoidance
 
 # --- Terminal 4: Gesture recognizer (vision -> /gesture_control/command)
@@ -157,7 +157,7 @@ ros2 launch homeplus_moveit_config cloud_to_octomap.launch.py \
 
 # GroundingDINO node directly
 ros2 run homeplus_vision grounding_dino_node.py --ros-args \
-    -p task_id:=1 -p world_frame:=world \
+    -p task_id:=1 -p world_frame:=base_link \
     -p image_topic:=/camera/camera/color/image_raw \
     -p depth_topic:=/camera/camera/aligned_depth_to_color/image_raw \
     -p camera_info_topic:=/camera/camera/color/camera_info
@@ -169,7 +169,7 @@ ros2 run homeplus_vision gesture_recognizer.py --ros-args \
 
 # Arduino serial reader directly
 python3 ~/homeplus_robot_workspace/homeplus_moveit_config/scripts/arduino_reader.py \
-    --port /dev/ttyUSB0 --baud 9600
+    --port /dev/ttyACM0 --baud 9600
 
 # Other moveit_config python utilities
 ros2 run homeplus_moveit_config ik.py
@@ -182,7 +182,7 @@ ros2 run homeplus_moveit_config gesture_motion_executor.py
 --------------------------------------------------------------------------------
 | arg                      | default          | description                          |
 |--------------------------|------------------|--------------------------------------|
-| arduino_port             | /dev/ttyUSB0     | serial port for Arduino              |
+| arduino_port             | /dev/ttyACM0     | serial port for Arduino              |
 | run_arduino              | true             | launch arduino bridge                |
 | use_octomap              | false            | enable OctoMap in MoveIt             |
 | enable_moveit_planning   | true             | enable MoveIt planning in executor   |
@@ -321,7 +321,7 @@ REQUIRED RUNNING:
   At minimum the MoveIt stack + gesture executor must be up:
       ros2 launch homeplus_moveit_config gesture_control.launch.py \
           launch_moveit:=true run_arduino:=false
-  (run_arduino:=false avoids needing /dev/ttyUSB0 plugged in)
+  (run_arduino:=false avoids needing /dev/ttyACM0 plugged in)
   TF must also be publishing — easiest is to also start scripts/run_robot_tf.sh
   Or just bring up the whole tmux session (T1 + T3 panes are enough).
 
@@ -391,7 +391,7 @@ sudo fuser -k 6080/tcp
 
 # Reset Arduino USB device
 ls -l /dev/ttyUSB*
-sudo chmod 666 /dev/ttyUSB0
+sudo chmod 666 /dev/ttyACM0
 
 
 --------------------------------------------------------------------------------
@@ -440,8 +440,8 @@ Frames
 RViz black / no robot         source install/setup.bash; rebuild urdf pkg
 "package not found"           you forgot `source install/setup.bash`
 camera frames missing         `ros2 topic hz /camera/camera/color/image_raw`
-no /gdino_pose_world          DINO needs WORLD_FRAME=world AND camera publishing
-gripper not reacting          `ros2 topic echo /arduino/ack`; check /dev/ttyUSB0 perms
+no /gdino_pose_world          DINO needs a valid TF target frame (use WORLD_FRAME=base_link) and camera publishing
+gripper not reacting          `ros2 topic echo /arduino/ack`; check /dev/ttyACM0 perms
 TF errors                     `ros2 run tf2_ros tf2_echo world camera_link`
 MoveIt plan fails             toggle use_octomap off to isolate; check /joint_states
 ================================================================================

@@ -1,8 +1,11 @@
 #!/usr/bin/env bash
 set -eo pipefail
 
-# Default to the trained ds_group64 model if no arg passed.
-DEFAULT_CHECKPOINT="/mnt/c/users/easha/arl/homeplus_gesture/runs/ds_group64/model_7.pt"
+# Default to the trained ds_group64 model (numpy-1.x-compatible re-save).
+# The original model_7.pt was pickled under numpy 2.x; cv_bridge (compiled
+# against numpy 1.x) segfaults if numpy 2.x is forced via PYTHONPATH, so we
+# converted the checkpoint with scripts/convert_checkpoint_np_compat.py.
+DEFAULT_CHECKPOINT="/mnt/c/users/easha/arl/homeplus_gesture/runs/ds_group64/model_7_np1compat.pt"
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT"
@@ -19,18 +22,6 @@ echo "Using checkpoint: $CHECKPOINT_PATH"
 
 source /opt/ros/humble/setup.bash
 source install/setup.bash
-
-# Prepend isolated numpy 2.x (needed to unpickle checkpoints saved under
-# numpy 2.x; system numpy stays at 1.x for ROS / scipy / etc.)
-GESTURE_NUMPY_DIR="${GESTURE_NUMPY_DIR:-$HOME/.local/homeplus_gesture_pkgs}"
-if [[ -d "$GESTURE_NUMPY_DIR" ]]; then
-  export PYTHONPATH="$GESTURE_NUMPY_DIR:${PYTHONPATH:-}"
-else
-  echo "Warning: $GESTURE_NUMPY_DIR not found." >&2
-  echo "  Re-run setup:" >&2
-  echo "    python3 -m pip install --target $GESTURE_NUMPY_DIR --upgrade 'numpy>=2.0,<2.3'" >&2
-fi
-
 set -u
 
 CMD=(

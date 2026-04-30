@@ -67,7 +67,7 @@ class HomePlusIKPipeline(Node):
         self.target_point: Optional[List[float]] = None
         self.target_rpy: Optional[List[float]] = None
 
-        self.arduino_port = "/dev/ttyUSB0"
+        self.arduino_port = "/dev/ttyACM0"
         self.arduino_baud = 9600
         self.arduino_serial = None
 
@@ -80,7 +80,7 @@ class HomePlusIKPipeline(Node):
     def joint_state_callback(self, msg: JointState) -> None:
         self.latest_joint_state = msg
 
-    def configure_arduino(self, port: str = "/dev/ttyUSB0", baud: int = 9600) -> None:
+    def configure_arduino(self, port: str = "/dev/ttyACM0", baud: int = 9600) -> None:
         self.arduino_port = port
         self.arduino_baud = int(baud)
         self.get_logger().info(f"Arduino configured: port={self.arduino_port}, baud={self.arduino_baud}")
@@ -325,7 +325,7 @@ def parse_args(argv: Sequence[str]) -> argparse.Namespace:
     parser.add_argument("--roll", type=float, default=None)
     parser.add_argument("--pitch", type=float, default=None)
     parser.add_argument("--yaw", type=float, default=None)
-    parser.add_argument("--arduino-port", default="/dev/ttyUSB0")
+    parser.add_argument("--arduino-port", default="/dev/ttyACM0")
     parser.add_argument("--arduino-baud", type=int, default=9600)
     return parser.parse_args(argv)
 
