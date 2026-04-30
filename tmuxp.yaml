@@ -50,7 +50,7 @@ windows:
       # ----- Pane 1: Robot TF + RealSense camera -----
       - shell_command:
           - echo '=== [T1] Robot TF + RealSense ==='
-          - bash scripts/run_robot_tf.sh &
+          - PUBLISH_JOINT_STATES=true bash scripts/run_robot_tf.sh &
           - sleep 3
           - bash scripts/run_realsense.sh
 

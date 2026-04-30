@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 
 from launch import LaunchDescription
-from launch.actions import DeclareLaunchArgument, ExecuteProcess, IncludeLaunchDescription
+from launch.actions import DeclareLaunchArgument, IncludeLaunchDescription
 from launch.conditions import IfCondition
 from launch.launch_description_sources import PythonLaunchDescriptionSource
 from launch.substitutions import LaunchConfiguration, PathJoinSubstitution
@@ -110,12 +110,11 @@ def generate_launch_description():
         output="screen",
     )
 
-    arduino_bridge_node = ExecuteProcess(
-        cmd=[
-            "python3",
-            PathJoinSubstitution(
-                [FindPackageShare("homeplus_moveit_config"), "scripts", "arduino_reader.py"]
-            ),
+    arduino_bridge_node = Node(
+        package="homeplus_moveit_config",
+        executable="arduino_reader.py",
+        name="arduino_bridge",
+        arguments=[
             "--port", LaunchConfiguration("arduino_port"),
             "--baud", "9600",
         ],

@@ -24,6 +24,7 @@ install(
     scripts/gesture_behavior.py
     scripts/gesture_motion_executor.py
     scripts/cloud_builder.py
+    scripts/arduino_reader.py
   DESTINATION lib/${PROJECT_NAME}
 )
 

@@ -252,7 +252,7 @@ class GestureMotionExecutor(Node):
     # Arduino execution tracking
     # ------------------------------------------------------------------
     def _arduino_ack_callback(self, msg: String) -> None:
-        if msg.data.strip().upper() == "DONE":
+        if msg.data.strip().upper().startswith("DONE"):
             self._arduino_done_event.set()
 
     def _wait_for_arduino_done(self, timeout_sec: float) -> bool:
@@ -418,7 +418,9 @@ class GestureMotionExecutor(Node):
                 self._send_gripper_to_arduino(grip_val)
                 # Wait for Arduino to finish gripper movement
                 self.get_logger().info(f"  Waiting for Arduino to finish gripper...")
-                self._wait_for_arduino_done(timeout_sec=15.0)
+                if not self._wait_for_arduino_done(timeout_sec=15.0):
+                    self._abort_sequence(sequence_name, step_name, "Arduino did not confirm gripper movement")
+                    return
 
             elif step_type == "pose":
                 if not self.enable_moveit_planning or self.move_group_client is None:
@@ -439,7 +441,9 @@ class GestureMotionExecutor(Node):
 
                 # Wait for Arduino to finish executing trajectory
                 self.get_logger().info(f"  Waiting for Arduino to finish trajectory...")
-                self._wait_for_arduino_done(timeout_sec=60.0)
+                if not self._wait_for_arduino_done(timeout_sec=60.0):
+                    self._abort_sequence(sequence_name, step_name, "Arduino did not confirm trajectory execution")
+                    return
 
             elif step_type == "joint_state":
                 if not self.enable_moveit_planning or self.move_group_client is None:
@@ -460,7 +464,9 @@ class GestureMotionExecutor(Node):
 
                 # Wait for Arduino to finish executing trajectory
                 self.get_logger().info(f"  Waiting for Arduino to finish trajectory...")
-                self._wait_for_arduino_done(timeout_sec=60.0)
+                if not self._wait_for_arduino_done(timeout_sec=60.0):
+                    self._abort_sequence(sequence_name, step_name, "Arduino did not confirm trajectory execution")
+                    return
             else:
                 self.get_logger().warn(f"Unknown step type '{step_type}' in {step_name}")
 
