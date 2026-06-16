@@ -10,14 +10,24 @@ gesture_motion_executor:
 
     enable_moveit_planning: true
     move_group_action_name: "/move_action"
-    default_group_name: "arm"
+    default_group_name: "base_arm"
     end_effector_link: "palm_1"
     base_frame: "world"
     planner_id: "BiTRRTkConfigDefault"
     plan_only: true
     allowed_planning_time: 5.0
     num_planning_attempts: 3
+    wait_for_gripper_ack: true
+    wait_for_trajectory_ack: true
+    stream_trajectory_waypoints: true
+    pretty_print_trajectory_waypoints: true
+    arduino_wait_progress_sec: 2.0
+    display_planned_path_topic: "/display_planned_path"
+    require_trajectory_approval: true
+    trajectory_approval_topic: "/gesture_control/approve_planned_path"
+    trajectory_approval_timeout_sec: 25.0
     position_tolerance_m: 0.05
+    use_orientation_constraint: false
     orientation_tolerance_rad: 0.25
     joint_tolerance: 0.02
     workspace_bounds: [-2.0, -2.0, -1.0, 2.0, 2.0, 2.0]

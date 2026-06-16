@@ -31,7 +31,7 @@ from visualization_msgs.msg import Marker
 
 BASE_FRAME = "world"
 END_EFFECTOR_LINK = "palm_1"
-MOVE_GROUP_NAME = "arm"
+MOVE_GROUP_NAME = "base_arm"
 PLANNER_ID = "BiTRRTkConfigDefault"
 TRAJECTORY_JOINT_ORDER = [
     "base_x",
@@ -53,7 +53,7 @@ DEFAULT_START_STATE = {
     "joint_elbow": 0.0,
     "joint_shoulder": 0.0,
 }
-CSV_OUTPUT_DIR = Path("/mnt/c/users/easha/arl/homeplus_robot_workspace/trajectory_logs")
+CSV_OUTPUT_DIR = Path("~/ros2_ws/homeplus_robot_workspace/trajectory_logs").expanduser()
 
 
 class HomePlusIKPipeline(Node):
@@ -210,9 +210,9 @@ class HomePlusIKPipeline(Node):
             orientation_constraint.orientation.y = quat[1]
             orientation_constraint.orientation.z = quat[2]
             orientation_constraint.orientation.w = quat[3]
-            orientation_constraint.absolute_x_axis_tolerance = 0.1
-            orientation_constraint.absolute_y_axis_tolerance = 0.1
-            orientation_constraint.absolute_z_axis_tolerance = 0.1
+            orientation_constraint.absolute_x_axis_tolerance = 0.05
+            orientation_constraint.absolute_y_axis_tolerance = 0.05
+            orientation_constraint.absolute_z_axis_tolerance = 0.05
             orientation_constraint.weight = 1.0
 
         constraints.orientation_constraints.append(orientation_constraint)

@@ -5,7 +5,7 @@ set -eo pipefail
 # The original model_7.pt was pickled under numpy 2.x; cv_bridge (compiled
 # against numpy 1.x) segfaults if numpy 2.x is forced via PYTHONPATH, so we
 # converted the checkpoint with scripts/convert_checkpoint_np_compat.py.
-DEFAULT_CHECKPOINT="/mnt/c/users/easha/arl/homeplus_gesture/runs/ds_group64/model_7_np1compat.pt"
+DEFAULT_CHECKPOINT="$HOME/ros2_ws/homeplus_gesture/runs/ds_group64/model_7_np1compat.pt"
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT"

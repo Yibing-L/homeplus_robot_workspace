@@ -98,7 +98,7 @@ Grounded-SAM-2/gdino_checkpoints/groundingdino_swint_ogc.pth
 The normal project entrypoint is:
 
 ```bash
-cd /home/yibing/ros2_ws/homeplus_robot_workspace-occ-map
+cd ~/ros2_ws/homeplus_robot_workspace-occ-map
 source install/setup.bash
 bash scripts/run_system.sh --with-dino --no-occ-map --task-id 1
 ```

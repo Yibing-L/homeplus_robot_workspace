@@ -24,8 +24,6 @@ ament_python_install_package(${PROJECT_NAME})
 
 # Install Python scripts
 install(PROGRAMS
-  scripts/aruco_detector.py
-  scripts/aruco_pose_publisher.py
   scripts/gesture_recognizer.py
   scripts/grounding_dino_node.py
   scripts/test_grounding_dino_static.py

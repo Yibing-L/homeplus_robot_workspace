@@ -53,7 +53,7 @@ bash scripts/run_realsense.sh
 
 # --- Terminal 2: GroundingDINO (object detection -> /gdino_pose_world)
 cd ~/homeplus_robot_workspace
-WORLD_FRAME=base_link bash scripts/run_dino.sh 1
+WORLD_FRAME=world bash scripts/run_dino.sh 1
 # task_id arg: 1 = pick_up_coffee preset
 
 # --- Terminal 3: MoveIt + gesture executor + Arduino bridge
@@ -284,6 +284,16 @@ ros2 topic pub --once /gesture_control/command \
   "{gesture_id: 1, gesture_label: 'test', confidence: 0.9, \
     command_name: 'pick_up_coffee', command_type: 'sequence'}"
 
+# After each planned path appears in RViz, approve it:
+ros2 topic pub --once /gesture_control/approve_planned_path \
+  std_msgs/msg/Bool "{data: true}"
+
+# Reject the currently displayed path without sending it to Arduino:
+ros2 topic pub --once /gesture_control/approve_planned_path \
+  std_msgs/msg/Bool "{data: false}"
+
+# pick_up_coffee has multiple planned pose steps, so approve each RViz path.
+
 # Other behaviors (from gesture_behavior_map.yaml)
 #   0 home              joint_state
 #   1 pick_up_coffee    sequence
@@ -338,6 +348,11 @@ STEP 2 — fire the fake gesture (in another terminal):
     homeplus_interfaces/msg/GestureCommand \
     "{gesture_id: 1, gesture_label: 'fake_coffee', confidence: 0.99,
       command_name: 'pick_up_coffee', command_type: 'sequence'}"
+
+STEP 3 — approve each displayed plan after inspecting it in RViz:
+  ros2 topic pub --once /gesture_control/approve_planned_path \
+    std_msgs/msg/Bool "{data: true}"
+  # publish data: false to reject the current path
 
 WHAT YOU SHOULD SEE IN RVIZ:
   1. The translucent ghost robot animates each waypoint of the sequence
@@ -440,7 +455,7 @@ Frames
 RViz black / no robot         source install/setup.bash; rebuild urdf pkg
 "package not found"           you forgot `source install/setup.bash`
 camera frames missing         `ros2 topic hz /camera/camera/color/image_raw`
-no /gdino_pose_world          DINO needs a valid TF target frame (use WORLD_FRAME=base_link) and camera publishing
+no /gdino_pose_world          DINO needs a valid TF target frame (use WORLD_FRAME=world for base_arm planning) and camera publishing
 gripper not reacting          `ros2 topic echo /arduino/ack`; check /dev/ttyACM0 perms
 TF errors                     `ros2 run tf2_ros tf2_echo world camera_link`
 MoveIt plan fails             toggle use_octomap off to isolate; check /joint_states

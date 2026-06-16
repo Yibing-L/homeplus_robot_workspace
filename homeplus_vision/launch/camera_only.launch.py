@@ -21,10 +21,10 @@ def generate_launch_description():
         launch_arguments={
             'enable_color': 'true',
             'enable_depth': 'true',
-            'color_width': '640',
+            'color_width': '848',
             'color_height': '480',
             'color_fps': '30.0',
-            'depth_width': '640',
+            'depth_width': '848',
             'depth_height': '480',
             'depth_fps': '30.0',
             'enable_sync': 'true',

@@ -1,8 +1,11 @@
 commands:
   home:
     type: joint_state
-    group_name: arm
+    group_name: base_arm
     joints:
+      base_x: 0.0
+      base_y: 0.0
+      base_theta: 0.0
       joint_shoulder: 0.0
       joint_elbow: 0.0
       joint_wrist: 0.0
@@ -11,28 +14,28 @@ commands:
   reach_forward:
     type: pose
     frame_id: world
-    group_name: arm
+    group_name: base_arm
     position: [0.80, 0.00, 0.85]
     rpy_deg: [0.0, 0.0, 0.0]
 
   reach_left:
     type: pose
     frame_id: world
-    group_name: arm
+    group_name: base_arm
     position: [0.80, 0.20, 0.85]
     rpy_deg: [0.0, 0.0, 0.0]
 
   reach_right:
     type: pose
     frame_id: world
-    group_name: arm
+    group_name: base_arm
     position: [0.80, -0.20, 0.85]
     rpy_deg: [0.0, 0.0, 0.0]
 
   lift_up:
     type: pose
     frame_id: world
-    group_name: arm
+    group_name: base_arm
     position: [0.72, 0.00, 1.00]
     rpy_deg: [0.0, 0.0, 0.0]
 
@@ -58,6 +61,21 @@ commands:
         frame_id: world
         group_name: base_arm
         target: detected
+        offset_x: -0.50
+        offset_z: 0.0
+        rpy_deg: [0.0, 0.0, 0.0]
+        allowed_planning_time: 15.0
+        num_planning_attempts: 10
+
+      - name: refresh_detection
+        type: detect
+
+      - name: move_to_target_final
+        type: pose
+        frame_id: world
+        group_name: base_arm
+        target: detected
+        offset_x: 0.0
         offset_z: 0.0
         rpy_deg: [0.0, 0.0, 0.0]
         allowed_planning_time: 15.0

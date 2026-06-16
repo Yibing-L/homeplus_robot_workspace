@@ -3,7 +3,7 @@
 <package format="3">
   <name>homeplus_vision</name>
   <version>0.0.1</version>
-  <description>Vision package for Aruco tag detection and pose estimation using RealSense camera</description>
+  <description>Vision package for and pose estimation using RealSense camera</description>
   <maintainer email="your.email@example.com">Your Name</maintainer>
   <license>MIT</license>
 

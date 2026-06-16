@@ -84,7 +84,7 @@ class GroundingDinoNode(Node):
         self._tf_timeout = Duration(seconds=float(self.get_parameter('tf_lookup_timeout_sec').value))
 
         # Target resolution for inference
-        self.target_w = 640
+        self.target_w = 848
         self.target_h = 480
 
         self.declare_parameter('task_id', 1)
@@ -240,6 +240,7 @@ class GroundingDinoNode(Node):
         sam2_config = self._resolve_path(
             "sam2_config_path",
             [
+                self.grounded_sam_root / "sam2/configs/sam2.1/sam2.1_hiera_t.yaml",
                 self.grounded_sam_root / "sam2/configs/sam2/sam2_hiera_t.yaml",
                 self.grounded_sam_root / "sam2/sam2_hiera_t.yaml",
             ],
@@ -256,11 +257,19 @@ class GroundingDinoNode(Node):
 
         if sam2_config is None or sam2_checkpoint is None:
             self.get_logger().warn(
-                "SAM2 config/checkpoint not found; running detections without segmentation or 3D pose output."
+                "SAM2 config/checkpoint not found; running detections without mask segmentation. "
+                "3D pose output can still use detection bbox center plus depth."
             )
             return
 
-        sam2_model = build_sam2(str(sam2_config), str(sam2_checkpoint), device=self.device)
+        sam2_config_name = str(sam2_config)
+        sam2_package_root = self.grounded_sam_root / "sam2"
+        try:
+            sam2_config_name = sam2_config.relative_to(sam2_package_root).as_posix()
+        except ValueError:
+            pass
+
+        sam2_model = build_sam2(sam2_config_name, str(sam2_checkpoint), device=self.device)
         self.sam2_model = SAM2ImagePredictor(sam2_model)
         self.enable_segmentation = True
 

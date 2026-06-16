@@ -36,7 +36,7 @@ bash scripts/run_realsense.sh
 ```bash
 cd ~/homeplus_robot_workspace
 source install/setup.bash
-WORLD_FRAME=base_link bash scripts/run_dino.sh 1
+WORLD_FRAME=world bash scripts/run_dino.sh 1
 ```
 
 ### Terminal 3 — MoveIt + Gesture Control + Arduino
@@ -81,6 +81,22 @@ ros2 topic echo /gdino_pose_world
 ros2 topic pub --once /gesture_control/command homeplus_interfaces/msg/GestureCommand \
   "{gesture_id: 1, gesture_label: 'test', confidence: 0.9, command_name: 'pick_up_coffee', command_type: 'sequence'}"
 ```
+
+After each MoveIt plan appears in RViz, approve it before the executor sends it
+to Arduino:
+
+```bash
+ros2 topic pub --once /gesture_control/approve_planned_path std_msgs/msg/Bool "{data: true}"
+```
+
+Reject the displayed plan without sending it:
+
+```bash
+ros2 topic pub --once /gesture_control/approve_planned_path std_msgs/msg/Bool "{data: false}"
+```
+
+`pick_up_coffee` contains multiple planned pose steps, so expect to approve each
+displayed path in RViz.
 
 ## Launch Arguments
 

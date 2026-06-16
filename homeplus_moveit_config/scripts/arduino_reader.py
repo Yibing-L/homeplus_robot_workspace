@@ -48,7 +48,7 @@ class ArduinoBridge(Node):
         # --- Publishers ---
         self.joint_state_pub = self.create_publisher(JointState, "/joint_states", 10)
         self.ack_pub = self.create_publisher(String, "/arduino/ack", 10)
-        self.status_pub = self.create_publisher(String, "/arduino/status", 10)
+        self.status_pub = self.create_publisher(Bool, "/arduino/status", 10)
 
         # --- Subscribers ---
         self.create_subscription(
@@ -148,6 +148,15 @@ class ArduinoBridge(Node):
     # ------------------------------------------------------------------
     # Write: /arduino/command_queue → Arduino
     # ------------------------------------------------------------------
+    @staticmethod
+    def _split_command_waypoints(command: str) -> List[str]:
+        lines = [line.strip() for line in command.splitlines() if line.strip()]
+        if len(lines) > 1:
+            return lines
+        if len(lines) == 1 and "," in lines[0]:
+            return [part.strip() for part in lines[0].split(",") if part.strip()]
+        return lines or ([command] if command else [])
+
     def _command_queue_callback(self, msg: String) -> None:
         command = msg.data.strip()
         if not command:
@@ -158,9 +167,25 @@ class ArduinoBridge(Node):
             return
 
         try:
-            self.ser.write(f"{command}\n".encode())
+            lines = self._split_command_waypoints(command)
+            if not lines:
+                return
+
             self.get_logger().info(
-                f"Sent to Arduino ({len(command)} chars): {command[:80]}{'...' if len(command) > 80 else ''}"
+                f"Arduino command queue received: {len(lines)} waypoint(s), "
+                f"{len(command)} chars"
+            )
+
+            for index, line in enumerate(lines, start=1):
+                self.get_logger().info(
+                    f"  Arduino send {index}/{len(lines)}: {line}"
+                )
+                self.ser.write(f"{line}\r\n".encode())
+                self.ser.flush()
+                time.sleep(0.02)
+
+            self.get_logger().info(
+                f"Finished writing {len(lines)} waypoint(s) to Arduino serial"
             )
         except serial.SerialException as exc:
             self.get_logger().error(f"Serial write error: {exc}")
