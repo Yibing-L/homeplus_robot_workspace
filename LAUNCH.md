@@ -44,13 +44,14 @@ WORLD_FRAME=world bash scripts/run_dino.sh 1
 ```bash
 cd ~/homeplus_robot_workspace
 source install/setup.bash
-ros2 launch homeplus_moveit_config gesture_control.launch.py arduino_port:=/dev/ttyACM0
+ros2 launch homeplus_moveit_config gesture_control.launch.py
 ```
 
-To enable OctoMap collision avoidance:
+Target-filtered OctoMap collision avoidance is enabled by default. To disable it
+for troubleshooting:
 
 ```bash
-ros2 launch homeplus_moveit_config gesture_control.launch.py arduino_port:=/dev/ttyACM0 use_octomap:=true
+ros2 launch homeplus_moveit_config gesture_control.launch.py use_octomap:=false
 ```
 
 ### Terminal 4 — Gesture Recognizer
@@ -102,8 +103,8 @@ displayed path in RViz.
 
 | Argument | Default | Description |
 |----------|---------|-------------|
-| `arduino_port` | `/dev/ttyACM0` | Serial port for Arduino |
+| `arduino_port` | `auto` | Serial port for Arduino, or auto-detect |
 | `run_arduino` | `true` | Launch Arduino serial bridge |
-| `use_octomap` | `false` | Enable OctoMap collision avoidance |
+| `use_octomap` | `true` | Enable target-filtered OctoMap collision avoidance |
 | `enable_moveit_planning` | `true` | Enable MoveIt planning in executor |
 | `launch_moveit` | `true` | Launch MoveIt stack |

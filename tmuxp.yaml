@@ -50,19 +50,19 @@ windows:
       # ----- Pane 1: Robot TF + RealSense camera -----
       - shell_command:
           - echo '=== [T1] Robot TF + RealSense ==='
-          - PUBLISH_JOINT_STATES=true bash scripts/run_robot_tf.sh &
+          - PUBLISH_JOINT_STATES=false bash scripts/run_robot_tf.sh &
           - sleep 3
           - bash scripts/run_realsense.sh
 
       # ----- Pane 2: GroundingDINO (object detection) -----
       - shell_command:
           - echo '=== [T2] GroundingDINO (task_id=1) ==='
-          - WORLD_FRAME=base_link bash scripts/run_dino.sh 1
+          - WORLD_FRAME=world bash scripts/run_dino.sh 1
 
       # ----- Pane 3: MoveIt + gesture executor + Arduino bridge -----
       - shell_command:
           - echo '=== [T3] MoveIt + gesture executor + Arduino ==='
-          - ros2 launch homeplus_moveit_config gesture_control.launch.py arduino_port:=/dev/ttyACM0
+          - ros2 launch homeplus_moveit_config gesture_control.launch.py
 
       # ----- Pane 4: Gesture recognizer (auto-runs with default checkpoint) -----
       # run_gesture.sh defaults to the ds_group64/model_7.pt checkpoint.

@@ -11,7 +11,7 @@ gesture_motion_executor:
     enable_moveit_planning: true
     move_group_action_name: "/move_action"
     default_group_name: "base_arm"
-    end_effector_link: "palm_1"
+    end_effector_link: "grasp_tcp"
     base_frame: "world"
     planner_id: "BiTRRTkConfigDefault"
     plan_only: true
@@ -25,9 +25,9 @@ gesture_motion_executor:
     display_planned_path_topic: "/display_planned_path"
     require_trajectory_approval: true
     trajectory_approval_topic: "/gesture_control/approve_planned_path"
-    trajectory_approval_timeout_sec: 25.0
+    trajectory_approval_timeout_sec: 60.0
     position_tolerance_m: 0.05
-    use_orientation_constraint: false
-    orientation_tolerance_rad: 0.25
+    use_orientation_constraint: true
+    orientation_tolerance_rad: 0.01
     joint_tolerance: 0.02
     workspace_bounds: [-2.0, -2.0, -1.0, 2.0, 2.0, 2.0]

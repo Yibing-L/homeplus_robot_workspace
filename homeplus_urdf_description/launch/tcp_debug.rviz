@@ -1,47 +1,43 @@
 Panels:
   - Class: rviz_common/Displays
-    Name: Displays
     Help Height: 0
+    Name: Displays
     Property Tree Widget:
       Expanded:
         - /Global Options1
-        - /Grid1
         - /RobotModel1
         - /TF1
       Splitter Ratio: 0.5
-    Tree Height: 600
+    Tree Height: 560
   - Class: rviz_common/Views
-    Name: Views
     Expanded:
       - /Current View1
+    Name: Views
     Splitter Ratio: 0.5
-  - Class: rviz_common/Time
-    Name: Time
-    SyncMode: 0
-    SyncSource: ""
 
 Visualization Manager:
   Class: ""
   Displays:
-    - Alpha: 0.5
-      Cell Size: 1
+    - Alpha: 0.35
+      Cell Size: 0.1
       Class: rviz_default_plugins/Grid
-      Color: 160; 160; 164
+      Color: 120; 120; 120
       Enabled: true
       Line Style:
-        Line Width: 0.03
+        Line Width: 0.015
         Value: Lines
-      Name: Grid
+      Name: Fine Grid
       Normal Cell Count: 0
       Offset:
         X: 0
         Y: 0
         Z: 0
       Plane: XY
-      Plane Cell Count: 20
+      Plane Cell Count: 40
       Reference Frame: <Fixed Frame>
-
-    - Class: rviz_default_plugins/RobotModel
+      Value: true
+    - Alpha: 1
+      Class: rviz_default_plugins/RobotModel
       Collision Enabled: false
       Description File: ""
       Description Source: Topic
@@ -58,31 +54,66 @@ Visualization Manager:
         Expand Link Details: false
         Expand Tree: false
         Link Tree Style: Links in Alphabetic Order
+        grasp_tcp:
+          Alpha: 1
+          Show Axes: true
+          Show Trail: false
+          Value: true
+        hand_camera_link:
+          Alpha: 1
+          Show Axes: true
+          Show Trail: false
+          Value: true
+        hand_camera_link_1:
+          Alpha: 1
+          Show Axes: true
+          Show Trail: false
+          Value: true
+        palm_1:
+          Alpha: 1
+          Show Axes: true
+          Show Trail: false
+          Value: true
+      Mass Properties:
+        Inertia: false
+        Mass: false
       Name: RobotModel
       TF Prefix: ""
       Update Interval: 0
+      Value: true
       Visual Enabled: true
-
     - Class: rviz_default_plugins/TF
       Enabled: true
       Frame Timeout: 15
       Frames:
-        All Enabled: true
-      Marker Scale: 0.08
+        All Enabled: false
+        base_link:
+          Value: true
+        grasp_tcp:
+          Value: true
+        hand_camera_link:
+          Value: true
+        hand_camera_link_1:
+          Value: true
+        palm_1:
+          Value: true
+        world:
+          Value: true
+        wrist_1:
+          Value: true
+      Marker Scale: 0.07
       Name: TF
       Show Arrows: true
       Show Axes: true
       Show Names: true
       Update Interval: 0
       Value: true
-
   Enabled: true
   Global Options:
-    Background Color: 48; 48; 48
+    Background Color: 35; 35; 35
     Fixed Frame: world
     Frame Rate: 30
   Name: root
-
   Tools:
     - Class: rviz_default_plugins/Interact
       Hide Inactive Objects: true
@@ -90,44 +121,28 @@ Visualization Manager:
     - Class: rviz_default_plugins/Select
     - Class: rviz_default_plugins/FocusCamera
     - Class: rviz_default_plugins/Measure
-    - Class: rviz_default_plugins/SetInitialPose
-      Topic:
-        Depth: 5
-        Durability Policy: Volatile
-        History Policy: Keep Last
-        Reliability Policy: Reliable
-        Value: /initialpose
-    - Class: rviz_default_plugins/PublishPoint
-      Single click: true
-      Topic:
-        Depth: 5
-        Durability Policy: Volatile
-        History Policy: Keep Last
-        Reliability Policy: Reliable
-        Value: /clicked_point
-
   Views:
     Current:
       Class: rviz_default_plugins/Orbit
-      Distance: 3
+      Distance: 1.2
       Enable Stereo Rendering:
         Stereo Eye Separation: 0.06
         Stereo Focal Distance: 1
         Swap Stereo Eyes: false
         Value: false
       Focal Point:
-        X: 0
-        Y: 0
-        Z: 0.5
+        X: 0.38
+        Y: 0.06
+        Z: 1.1
       Focal Shape Fixed Size: true
-      Focal Shape Size: 0.05
+      Focal Shape Size: 0.03
       Invert Z Axis: false
       Name: Current View
       Near Clip Distance: 0.01
-      Pitch: 0.7
-      Target Frame: base_link
+      Pitch: 0.45
+      Target Frame: grasp_tcp
       Value: Orbit
-      Yaw: 0.7
+      Yaw: 0.75
 
 Window Geometry:
   Displays:
@@ -135,13 +150,6 @@ Window Geometry:
   Height: 900
   Hide Left Dock: false
   Hide Right Dock: false
-  QMainWindow State: 000000ff00000000fd00000004000000000000023d0000031dfc0200000008fb000000100044006900730070006c0061007900730100000000000001d9000000d200fffffffb0000000a0056006900650077007301000001df000000d0000000a900fffffffb0000001200530065006c0065006300740069006f006e00000000000000000000000000000000fb0000000a0054006f006f006c007301000002b10000006c0000005c00fffffffb0000001200540069006d006500000000000000031d0000012c00ffffff000000010000010f0000031dfc0200000003fb0000000a0056006900650077007301000000000000031d000000a900fffffffb000000100044006900730070006c00610079007301000000000000031d000000d200fffffffb0000000a0054006f006f006c007301000000000000031d0000005c00ffffff000000000000000000000004000000040000000800000008fc00000000
-  Selection:
-    collapsed: false
-  Time:
-    collapsed: false
-  Views:
-    collapsed: false
   Width: 1400
   X: 50
   Y: 50

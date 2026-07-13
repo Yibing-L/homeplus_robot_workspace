@@ -22,6 +22,18 @@ def generate_launch_description():
         description="If true, the motion executor also sends MoveIt planning requests",
     )
 
+    use_octomap_arg = DeclareLaunchArgument(
+        "use_octomap",
+        default_value="true",
+        description="Enable target-filtered OctoMap collision avoidance in MoveIt",
+    )
+
+    use_rviz_arg = DeclareLaunchArgument(
+        "use_rviz",
+        default_value="true",
+        description="Launch RViz through the MoveIt launch file",
+    )
+
     behavior_config_file_arg = DeclareLaunchArgument(
         "behavior_config_file",
         default_value=PathJoinSubstitution(
@@ -62,8 +74,8 @@ def generate_launch_description():
 
     arduino_port_arg = DeclareLaunchArgument(
         "arduino_port",
-        default_value="/dev/ttyACM0",
-        description="Serial port for Arduino",
+        default_value="auto",
+        description="Serial port for Arduino, or 'auto' to detect it",
     )
 
     moveit_launch = IncludeLaunchDescription(
@@ -76,11 +88,32 @@ def generate_launch_description():
         ),
         launch_arguments={
             "use_joint_gui": "false",
+            "use_rviz": LaunchConfiguration("use_rviz"),
+            "use_octomap": LaunchConfiguration("use_octomap"),
             # pane 1's state_publisher.launch.py already owns robot_state_publisher;
             # avoid spawning a duplicate that fights /tf and /robot_description.
             "launch_robot_state_publisher": "false",
         }.items(),
         condition=IfCondition(LaunchConfiguration("launch_moveit")),
+    )
+
+    occupancy_cloud_node = Node(
+        package="homeplus_moveit_config",
+        executable="cloud_builder.py",
+        name="cloud_builder",
+        output="screen",
+        parameters=[
+            {
+                "depth_topic": "/camera/camera/aligned_depth_to_color/image_raw",
+                "camera_info_topic": "/camera/camera/color/camera_info",
+                "mask_topic": "/object_mask",
+                "output_frame": "base_link",
+                "mask_dilation_pixels": 8,
+                "target_padding_m": 0.02,
+                "mask_timeout_sec": 1.0,
+            }
+        ],
+        condition=IfCondition(LaunchConfiguration("use_octomap")),
     )
 
     behavior_node = Node(
@@ -126,6 +159,8 @@ def generate_launch_description():
         [
             launch_moveit_arg,
             enable_moveit_planning_arg,
+            use_octomap_arg,
+            use_rviz_arg,
             behavior_config_file_arg,
             behavior_map_path_arg,
             executor_config_file_arg,
@@ -133,6 +168,7 @@ def generate_launch_description():
             run_arduino_arg,
             arduino_port_arg,
             moveit_launch,
+            occupancy_cloud_node,
             behavior_node,
             executor_node,
             arduino_bridge_node,

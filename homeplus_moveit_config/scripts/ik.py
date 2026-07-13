@@ -2,6 +2,7 @@
 
 import argparse
 import csv
+import glob
 import math
 import os
 import time
@@ -30,7 +31,7 @@ from visualization_msgs.msg import Marker
 
 
 BASE_FRAME = "world"
-END_EFFECTOR_LINK = "palm_1"
+END_EFFECTOR_LINK = "grasp_tcp"
 MOVE_GROUP_NAME = "base_arm"
 PLANNER_ID = "BiTRRTkConfigDefault"
 TRAJECTORY_JOINT_ORDER = [
@@ -56,6 +57,19 @@ DEFAULT_START_STATE = {
 CSV_OUTPUT_DIR = Path("~/ros2_ws/homeplus_robot_workspace/trajectory_logs").expanduser()
 
 
+def candidate_arduino_ports() -> List[str]:
+    by_id = sorted(glob.glob("/dev/serial/by-id/*"))
+    tty_ports = sorted(glob.glob("/dev/ttyACM*")) + sorted(glob.glob("/dev/ttyUSB*"))
+    return list(dict.fromkeys(by_id + tty_ports))
+
+
+def resolve_arduino_port(port: str) -> Optional[str]:
+    if port and port.lower() != "auto":
+        return port
+    candidates = candidate_arduino_ports()
+    return candidates[0] if candidates else None
+
+
 class HomePlusIKPipeline(Node):
     def __init__(self):
         super().__init__("homeplus_ik_pipeline")
@@ -67,7 +81,7 @@ class HomePlusIKPipeline(Node):
         self.target_point: Optional[List[float]] = None
         self.target_rpy: Optional[List[float]] = None
 
-        self.arduino_port = "/dev/ttyACM0"
+        self.arduino_port = "auto"
         self.arduino_baud = 9600
         self.arduino_serial = None
 
@@ -80,16 +94,24 @@ class HomePlusIKPipeline(Node):
     def joint_state_callback(self, msg: JointState) -> None:
         self.latest_joint_state = msg
 
-    def configure_arduino(self, port: str = "/dev/ttyACM0", baud: int = 9600) -> None:
+    def configure_arduino(self, port: str = "auto", baud: int = 9600) -> None:
         self.arduino_port = port
         self.arduino_baud = int(baud)
         self.get_logger().info(f"Arduino configured: port={self.arduino_port}, baud={self.arduino_baud}")
 
     def setup_arduino_connection(self) -> bool:
+        port = resolve_arduino_port(self.arduino_port)
+        if port is None:
+            self.get_logger().error(
+                "No Arduino serial device found. Checked /dev/serial/by-id/*, "
+                "/dev/ttyACM*, and /dev/ttyUSB*."
+            )
+            self.arduino_serial = None
+            return False
         try:
-            self.arduino_serial = serial.Serial(self.arduino_port, self.arduino_baud, timeout=1)
+            self.arduino_serial = serial.Serial(port, self.arduino_baud, timeout=1)
             time.sleep(2.0)
-            self.get_logger().info(f"Arduino connected on {self.arduino_port} at {self.arduino_baud} baud")
+            self.get_logger().info(f"Arduino connected on {port} at {self.arduino_baud} baud")
             return True
         except serial.SerialException as exc:
             self.get_logger().error(f"Failed to connect to Arduino: {exc}")
@@ -210,9 +232,11 @@ class HomePlusIKPipeline(Node):
             orientation_constraint.orientation.y = quat[1]
             orientation_constraint.orientation.z = quat[2]
             orientation_constraint.orientation.w = quat[3]
-            orientation_constraint.absolute_x_axis_tolerance = 0.05
-            orientation_constraint.absolute_y_axis_tolerance = 0.05
-            orientation_constraint.absolute_z_axis_tolerance = 0.05
+            if hasattr(orientation_constraint, "ROTATION_VECTOR"):
+                orientation_constraint.parameterization = OrientationConstraint.ROTATION_VECTOR
+            orientation_constraint.absolute_x_axis_tolerance = 0.01
+            orientation_constraint.absolute_y_axis_tolerance = 0.01
+            orientation_constraint.absolute_z_axis_tolerance = 0.01
             orientation_constraint.weight = 1.0
 
         constraints.orientation_constraints.append(orientation_constraint)
@@ -227,7 +251,12 @@ class HomePlusIKPipeline(Node):
         goal.request.group_name = MOVE_GROUP_NAME
         goal.request.planner_id = PLANNER_ID
         goal.request.start_state = self.build_start_state()
-        goal.request.goal_constraints = [self.build_goal_constraints()]
+        constraints = self.build_goal_constraints()
+        goal.request.goal_constraints = [constraints]
+        if self.target_rpy is not None:
+            path_constraints = Constraints()
+            path_constraints.orientation_constraints = list(constraints.orientation_constraints)
+            goal.request.path_constraints = path_constraints
         goal.request.workspace_parameters.header.frame_id = BASE_FRAME
         goal.request.workspace_parameters.min_corner.x = -2.0
         goal.request.workspace_parameters.min_corner.y = -2.0
@@ -325,7 +354,7 @@ def parse_args(argv: Sequence[str]) -> argparse.Namespace:
     parser.add_argument("--roll", type=float, default=None)
     parser.add_argument("--pitch", type=float, default=None)
     parser.add_argument("--yaw", type=float, default=None)
-    parser.add_argument("--arduino-port", default="/dev/ttyACM0")
+    parser.add_argument("--arduino-port", default="auto")
     parser.add_argument("--arduino-baud", type=int, default=9600)
     return parser.parse_args(argv)
 

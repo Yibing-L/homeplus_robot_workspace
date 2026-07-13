@@ -51,6 +51,11 @@ commands:
     type: sequence
     detection_topic: /gdino_pose_world
     detection_timeout_sec: 5.0
+    # Temporary test override: treat the cup as fixed in world frame.
+    hardcoded_detection_pose:
+      frame_id: world
+      position: [0.90, 0.30, 0.78]
+      rpy_deg: [0.0, 0.0, 0.0]
     steps:
       - name: open_gripper
         type: gripper
@@ -61,27 +66,20 @@ commands:
         frame_id: world
         group_name: base_arm
         target: detected
-        offset_x: -0.50
-        offset_z: 0.0
+        offset_x: -0.03
+        offset_z: -0.03
+        gripper_value: 0.0
         rpy_deg: [0.0, 0.0, 0.0]
+        use_orientation_constraint: true
+        orientation_tolerance_rad: 0.01
+        planner_id: RRTConnectkConfigDefault
         allowed_planning_time: 15.0
         num_planning_attempts: 10
+        # Arduino DONE can arrive before the physical trajectory has settled.
+        # Keep the gripper open and wait before sending the close command.
+        post_delay_sec: 3.0
 
-      - name: refresh_detection
-        type: detect
-
-      - name: move_to_target_final
-        type: pose
-        frame_id: world
-        group_name: base_arm
-        target: detected
-        offset_x: 0.0
-        offset_z: 0.0
-        rpy_deg: [0.0, 0.0, 0.0]
-        allowed_planning_time: 15.0
-        num_planning_attempts: 10
-
-      - name: close_gripper
+      - name: close_gripper_at_target
         type: gripper
         value: 90.0
 
@@ -90,7 +88,11 @@ commands:
         frame_id: world
         group_name: base_arm
         target: detected
+        offset_x: -0.03
         offset_z: 0.20
         rpy_deg: [0.0, 0.0, 0.0]
+        use_orientation_constraint: true
+        orientation_tolerance_rad: 0.01
+        planner_id: RRTConnectkConfigDefault
         allowed_planning_time: 15.0
         num_planning_attempts: 10

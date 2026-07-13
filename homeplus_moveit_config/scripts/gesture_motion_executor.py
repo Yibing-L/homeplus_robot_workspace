@@ -70,7 +70,7 @@ class GestureMotionExecutor(Node):
         self.declare_parameter("enable_moveit_planning", False)
         self.declare_parameter("move_group_action_name", "/move_action")
         self.declare_parameter("default_group_name", "base_arm")
-        self.declare_parameter("end_effector_link", "palm_1")
+        self.declare_parameter("end_effector_link", "grasp_tcp")
         self.declare_parameter("base_frame", "world")
         self.declare_parameter("planner_id", "BiTRRTkConfigDefault")
         self.declare_parameter("plan_only", True)
@@ -84,7 +84,7 @@ class GestureMotionExecutor(Node):
         self.declare_parameter("display_planned_path_topic", "/display_planned_path")
         self.declare_parameter("require_trajectory_approval", True)
         self.declare_parameter("trajectory_approval_topic", "/gesture_control/approve_planned_path")
-        self.declare_parameter("trajectory_approval_timeout_sec", 0.0)
+        self.declare_parameter("trajectory_approval_timeout_sec", 60.0)
         self.declare_parameter("tf_lookup_timeout_sec", 0.5)
         self.declare_parameter("position_tolerance_m", 0.05)
         self.declare_parameter("use_orientation_constraint", False)
@@ -317,6 +317,30 @@ class GestureMotionExecutor(Node):
             f"  Detection acquired: x={p.x:.3f} y={p.y:.3f} z={p.z:.3f}"
         )
         return detected_pose
+
+    def _build_hardcoded_detection_pose(self, sequence_cfg: Dict) -> Optional[PoseStamped]:
+        pose_cfg = sequence_cfg.get("hardcoded_detection_pose")
+        if not pose_cfg:
+            return None
+
+        pose_msg = PoseStamped()
+        pose_msg.header.frame_id = str(pose_cfg.get("frame_id", self.base_frame))
+        pose_msg.header.stamp = self.get_clock().now().to_msg()
+
+        position = pose_cfg.get("position", [0.0, 0.0, 0.0])
+        pose_msg.pose.position.x = float(position[0])
+        pose_msg.pose.position.y = float(position[1])
+        pose_msg.pose.position.z = float(position[2])
+
+        rpy_deg = pose_cfg.get("rpy_deg", [0.0, 0.0, 0.0])
+        roll, pitch, yaw = [math.radians(float(v)) for v in rpy_deg]
+        qx, qy, qz, qw = quaternion_from_euler(roll, pitch, yaw)
+        pose_msg.pose.orientation.x = qx
+        pose_msg.pose.orientation.y = qy
+        pose_msg.pose.orientation.z = qz
+        pose_msg.pose.orientation.w = qw
+
+        return pose_msg
 
     def _resolve_detected_pose(self, step: Dict, detected: PoseStamped) -> Dict:
         """Return a copy of the step config with position filled from detection + offsets."""
@@ -615,7 +639,9 @@ class GestureMotionExecutor(Node):
             if self.enable_moveit_planning:
                 self._plan_joint_state(command_name, joint_msg, command_cfg)
         elif action_type == "gripper":
-            self.gripper_target_pub.publish(Float32(data=float(command_cfg["value"])))
+            grip_val = float(command_cfg["value"])
+            self.gripper_target_pub.publish(Float32(data=grip_val))
+            self._send_gripper_to_arduino(grip_val)
         elif action_type == "command":
             pass
         else:
@@ -639,14 +665,21 @@ class GestureMotionExecutor(Node):
             f"=== Sequence '{sequence_name}' started ({len(steps)} steps) ==="
         )
 
-        # If the sequence uses detection, subscribe and wait for a pose
+        # If the sequence uses detection, subscribe and wait for a pose unless
+        # a temporary hardcoded test pose is configured.
         detection_topic = sequence_cfg.get("detection_topic")
-        detected_pose: Optional[PoseStamped] = None
+        detected_pose: Optional[PoseStamped] = self._build_hardcoded_detection_pose(sequence_cfg)
         needs_detection = detection_topic and any(
             s.get("target") == "detected" for s in steps
         )
 
-        if needs_detection:
+        if detected_pose is not None:
+            p = detected_pose.pose.position
+            self.get_logger().warn(
+                f"[{sequence_name}] Using hardcoded detection pose in "
+                f"{detected_pose.header.frame_id}: x={p.x:.3f} y={p.y:.3f} z={p.z:.3f}"
+            )
+        elif needs_detection:
             timeout = float(sequence_cfg.get("detection_timeout_sec", 5.0))
             detected_pose = self._refresh_detection(sequence_name, detection_topic, timeout)
             if detected_pose is None:
@@ -742,6 +775,13 @@ class GestureMotionExecutor(Node):
                 else:
                     self.get_logger().info("  Continuing without trajectory DONE acknowledgement")
 
+                post_delay_sec = float(effective_step.get("post_delay_sec", 0.0))
+                if post_delay_sec > 0.0:
+                    self.get_logger().info(
+                        f"  Waiting {post_delay_sec:.1f}s after {step_name} before next step"
+                    )
+                    time.sleep(post_delay_sec)
+
             elif step_type == "joint_state":
                 if not self.enable_moveit_planning or self.move_group_client is None:
                     self._abort_sequence(sequence_name, step_name, "MoveIt not enabled")
@@ -832,14 +872,17 @@ class GestureMotionExecutor(Node):
     # ------------------------------------------------------------------
     # Trajectory extraction and Arduino formatting
     # ------------------------------------------------------------------
-    def _extract_and_send_trajectory(self, name: str, planned_trajectory) -> None:
-        """Extract waypoints from a MoveIt planned trajectory and send to Arduino."""
+    def _extract_trajectory_waypoints(self, name: str, planned_trajectory, command_cfg: Optional[Dict] = None):
+        """Extract MoveIt waypoints into raw joint values and Arduino strings."""
+        command_cfg = command_cfg or {}
         jt = planned_trajectory.joint_trajectory
         if not jt.points:
             self.get_logger().warn(f"No waypoints in trajectory for {name}")
-            return
+            return None
 
         joint_indices = {jn: idx for idx, jn in enumerate(jt.joint_names)}
+        gripper_value = command_cfg.get("gripper_value")
+        final_gripper_value = command_cfg.get("final_gripper_value")
 
         # Log raw MoveIt joint names and trajectory info
         self.get_logger().info(f"  MoveIt joints: {jt.joint_names}")
@@ -854,7 +897,7 @@ class GestureMotionExecutor(Node):
 
         arduino_waypoints = []
         raw_waypoints = []
-        for point in jt.points:
+        for point_index, point in enumerate(jt.points):
             values = []
             for joint_name in TRAJECTORY_JOINT_ORDER:
                 idx = joint_indices.get(joint_name)
@@ -862,6 +905,10 @@ class GestureMotionExecutor(Node):
                     values.append(point.positions[idx])
                 else:
                     values.append(held.get(joint_name, 0.0))
+            if gripper_value is not None:
+                values[TRAJECTORY_JOINT_ORDER.index("joint_grip_L")] = float(gripper_value)
+            if final_gripper_value is not None and point_index == len(jt.points) - 1:
+                values[TRAJECTORY_JOINT_ORDER.index("joint_grip_L")] = float(final_gripper_value)
             raw_waypoints.append(list(values))
             arduino_waypoints.append(self._format_waypoint_for_arduino(values))
 
@@ -873,10 +920,24 @@ class GestureMotionExecutor(Node):
         if self.pretty_print_trajectory_waypoints:
             self._log_trajectory_waypoints(name, jt, raw_waypoints, arduino_waypoints)
 
-        # Save trajectory to CSV
+        return jt, raw_waypoints, arduino_waypoints
+
+    def _record_planned_trajectory(
+        self,
+        name: str,
+        jt,
+        raw_waypoints: List[List[float]],
+        arduino_waypoints: List[str],
+    ) -> None:
         self._save_trajectory_csv(name, jt, raw_waypoints, arduino_waypoints)
         self._append_sequence_trajectory(jt, raw_waypoints, arduino_waypoints)
 
+    def _send_trajectory_to_arduino(
+        self,
+        name: str,
+        raw_waypoints: List[List[float]],
+        arduino_waypoints: List[str],
+    ) -> None:
         # Most Arduino sketches parse one whitespace-separated waypoint per line.
         # Keep the old comma-queue mode available for firmware that supports it.
         command_queue = "\n".join(arduino_waypoints) if self.stream_trajectory_waypoints else ",".join(arduino_waypoints)
@@ -887,6 +948,16 @@ class GestureMotionExecutor(Node):
             f"Sent {len(arduino_waypoints)} waypoints to Arduino for {name} "
             f"({'line-stream' if self.stream_trajectory_waypoints else 'comma-queue'} mode)"
         )
+
+    def _extract_and_send_trajectory(self, name: str, planned_trajectory, command_cfg: Optional[Dict] = None) -> bool:
+        """Extract, save, and send a MoveIt planned trajectory to Arduino."""
+        extracted = self._extract_trajectory_waypoints(name, planned_trajectory, command_cfg)
+        if extracted is None:
+            return False
+        jt, raw_waypoints, arduino_waypoints = extracted
+        self._record_planned_trajectory(name, jt, raw_waypoints, arduino_waypoints)
+        self._send_trajectory_to_arduino(name, raw_waypoints, arduino_waypoints)
+        return True
 
     def _log_trajectory_waypoints(
         self,
@@ -1074,7 +1145,7 @@ class GestureMotionExecutor(Node):
         self.get_logger().info(f"Sent gripper waypoint to Arduino: {waypoint}")
 
     # ------------------------------------------------------------------
-    # Gripper value note: 0 = closed, 90 = fully open
+    # Gripper value note: 0 = fully open, 90 = closed
     # Arduino expects 10 space-separated values per waypoint:
     #   x_cm y_cm theta_deg grip hand wrist elbow shoulder la frame
     # ------------------------------------------------------------------
@@ -1129,18 +1200,23 @@ class GestureMotionExecutor(Node):
             orientation_constraint.header.frame_id = pose_msg.header.frame_id
             orientation_constraint.link_name = str(command_cfg.get("link_name", self.end_effector_link))
             orientation_constraint.orientation = pose_msg.pose.orientation
+            if hasattr(orientation_constraint, "ROTATION_VECTOR"):
+                orientation_constraint.parameterization = OrientationConstraint.ROTATION_VECTOR
             orient_tol = float(command_cfg.get("orientation_tolerance_rad", self.orientation_tolerance_rad))
             orientation_constraint.absolute_x_axis_tolerance = orient_tol
             orientation_constraint.absolute_y_axis_tolerance = orient_tol
             orientation_constraint.absolute_z_axis_tolerance = orient_tol
             orientation_constraint.weight = 1.0
             constraints.orientation_constraints.append(orientation_constraint)
+            path_constraints = Constraints()
+            path_constraints.orientation_constraints.append(deepcopy(orientation_constraint))
+            goal.request.path_constraints = path_constraints
 
         goal.request.goal_constraints = [constraints]
         self._fill_workspace(goal.request, pose_msg.header.frame_id)
         goal.planning_options = PlanningOptions()
         goal.planning_options.plan_only = bool(command_cfg.get("plan_only", self.plan_only))
-        self._send_move_group_goal(name, goal)
+        self._send_move_group_goal(name, goal, command_cfg)
 
     def _plan_joint_state(self, name: str, joint_msg: JointState, command_cfg: Dict) -> None:
         if self.move_group_client is None:
@@ -1179,7 +1255,7 @@ class GestureMotionExecutor(Node):
         self._fill_workspace(goal.request, str(command_cfg.get("frame_id", self.base_frame)))
         goal.planning_options = PlanningOptions()
         goal.planning_options.plan_only = bool(command_cfg.get("plan_only", self.plan_only))
-        self._send_move_group_goal(name, goal)
+        self._send_move_group_goal(name, goal, command_cfg)
 
     def _fill_workspace(self, request: MotionPlanRequest, frame_id: str) -> None:
         if len(self.workspace_bounds) != 6:
@@ -1195,12 +1271,14 @@ class GestureMotionExecutor(Node):
     # ------------------------------------------------------------------
     # MoveIt action handling
     # ------------------------------------------------------------------
-    def _send_move_group_goal(self, name: str, goal: MoveGroup.Goal) -> None:
+    def _send_move_group_goal(self, name: str, goal: MoveGroup.Goal, command_cfg: Dict) -> None:
         self._publish_status(f"Sending MoveIt request for {name}")
         future = self.move_group_client.send_goal_async(goal)
-        future.add_done_callback(lambda done: self._goal_response_callback(name, done))
+        future.add_done_callback(
+            lambda done: self._goal_response_callback(name, done, command_cfg)
+        )
 
-    def _goal_response_callback(self, name: str, future) -> None:
+    def _goal_response_callback(self, name: str, future, command_cfg: Dict) -> None:
         try:
             goal_handle = future.result()
         except Exception as exc:
@@ -1216,9 +1294,11 @@ class GestureMotionExecutor(Node):
             return
 
         result_future = goal_handle.get_result_async()
-        result_future.add_done_callback(lambda done: self._goal_result_callback(name, done))
+        result_future.add_done_callback(
+            lambda done: self._goal_result_callback(name, done, command_cfg)
+        )
 
-    def _goal_result_callback(self, name: str, future) -> None:
+    def _goal_result_callback(self, name: str, future, command_cfg: Dict) -> None:
         try:
             result = future.result().result
         except Exception as exc:
@@ -1236,13 +1316,20 @@ class GestureMotionExecutor(Node):
             if trajectory and trajectory.joint_trajectory.points:
                 self._reset_trajectory_approval()
                 self._publish_display_trajectory(name, result)
+                extracted = self._extract_trajectory_waypoints(name, trajectory, command_cfg)
+                if extracted is None:
+                    self._signal_plan_done(False)
+                    return
+                jt, raw_waypoints, arduino_waypoints = extracted
+                self._record_planned_trajectory(name, jt, raw_waypoints, arduino_waypoints)
+
                 if self.require_trajectory_approval:
                     if not self._wait_for_trajectory_approval(name):
                         self._publish_status(f"Plan for {name} was not approved")
                         self._signal_plan_done(False)
                         return
 
-                self._extract_and_send_trajectory(name, trajectory)
+                self._send_trajectory_to_arduino(name, raw_waypoints, arduino_waypoints)
             else:
                 self.get_logger().warn(f"No trajectory in result for {name}")
                 self._signal_plan_done(False)

@@ -39,13 +39,16 @@ def generate_launch_description():
             ]
         ),
         launch_arguments={
+            "initial_reset": "true",
             "enable_color": "true",
             "enable_depth": "true",
             "enable_accel": "false",
             "enable_gyro": "false",
             "enable_motion": "false",
-            "rgb_camera.color_profile": "848x480x30",
-            "depth_module.depth_profile": "848x480x30",
+            "rgb_camera.color_profile": "640x480x30",
+            "depth_module.color_profile": "640x480x30",
+            "depth_module.depth_profile": "640x480x30",
+            "depth_module.infra_profile": "640x480x30",
             "enable_sync": "true",
             "align_depth.enable": "true",
         }.items(),

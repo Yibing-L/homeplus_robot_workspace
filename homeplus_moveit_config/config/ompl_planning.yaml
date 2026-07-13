@@ -153,6 +153,8 @@ planner_configs:
     intermediate_states: true
 
 base_arm:
+  enforce_constrained_state_space: true
+  projection_evaluator: joints(base_x,base_y,joint_shoulder,joint_elbow,joint_wrist,joint_hand)
   planner_configs:
     - SBLkConfigDefault
     - ESTkConfigDefault

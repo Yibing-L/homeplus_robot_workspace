@@ -4,10 +4,12 @@ Bidirectional Arduino bridge: reads joint states from serial → /joint_states,
 and writes commands from /arduino/command_queue → serial.
 
 To run manually:
-  python3 arduino_reader.py --port /dev/ttyACM0 --baud 9600 --rate 20
+  python3 arduino_reader.py --port auto --baud 9600 --rate 20
 """
 
 import argparse
+import glob
+import os
 import time
 from typing import List, Optional
 
@@ -34,16 +36,18 @@ JOINT_NAMES = [
 class ArduinoBridge(Node):
     def __init__(
         self,
-        port: str = "/dev/ttyACM0",
+        port: str = "auto",
         baud: int = 9600,
         joint_names: Optional[List[str]] = None,
         read_hz: float = 20.0,
     ):
         super().__init__("arduino_bridge")
         self.port = port
+        self.active_port: Optional[str] = None
         self.baud = int(baud)
         self.read_hz = float(read_hz)
         self.joint_names = joint_names or list(JOINT_NAMES)
+        self.current_positions = [0.0] * len(self.joint_names)
 
         # --- Publishers ---
         self.joint_state_pub = self.create_publisher(JointState, "/joint_states", 10)
@@ -67,16 +71,57 @@ class ArduinoBridge(Node):
         period = 1.0 / max(1.0, self.read_hz)
         self.timer = self.create_timer(period, self._read_loop)
 
+    @staticmethod
+    def _candidate_ports() -> List[str]:
+        by_id = sorted(glob.glob("/dev/serial/by-id/*"))
+        tty_ports = sorted(glob.glob("/dev/ttyACM*")) + sorted(glob.glob("/dev/ttyUSB*"))
+        # Prefer persistent by-id names; keep insertion order while removing duplicates.
+        return list(dict.fromkeys(by_id + tty_ports))
+
+    def _resolve_port(self) -> Optional[str]:
+        if self.port and self.port.lower() != "auto":
+            return self.port
+
+        candidates = self._candidate_ports()
+        if not candidates:
+            self.get_logger().error(
+                "No Arduino serial device found. Checked /dev/serial/by-id/*, "
+                "/dev/ttyACM*, and /dev/ttyUSB*."
+            )
+            return None
+
+        selected = candidates[0]
+        if selected.startswith("/dev/serial/by-id/"):
+            target = os.path.realpath(selected)
+            self.get_logger().info(f"Auto-selected Arduino serial {selected} -> {target}")
+        else:
+            self.get_logger().info(f"Auto-selected Arduino serial {selected}")
+        return selected
+
+    def _publish_joint_state(self) -> None:
+        js = JointState()
+        js.header.stamp = self.get_clock().now().to_msg()
+        js.name = list(self.joint_names)
+        js.position = list(self.current_positions)
+        self.joint_state_pub.publish(js)
+
     # ------------------------------------------------------------------
     # Serial management
     # ------------------------------------------------------------------
     def _open_serial(self) -> None:
+        port = self._resolve_port()
+        if port is None:
+            self.ser = None
+            return
+
         try:
-            self.ser = serial.Serial(self.port, self.baud, timeout=1)
+            self.ser = serial.Serial(port, self.baud, timeout=1)
+            self.active_port = port
             time.sleep(2.0)
-            self.get_logger().info(f"Opened serial {self.port}")
+            self.get_logger().info(f"Opened serial {self.active_port}")
         except Exception as exc:
-            self.get_logger().error(f"Failed to open serial {self.port}: {exc}")
+            self.get_logger().error(f"Failed to open serial {port}: {exc}")
+            self.active_port = None
             self.ser = None
 
     def _ensure_serial(self) -> bool:
@@ -90,15 +135,18 @@ class ArduinoBridge(Node):
     # ------------------------------------------------------------------
     def _read_loop(self) -> None:
         if not self._ensure_serial():
+            self._publish_joint_state()
             return
 
         try:
             raw = self.ser.readline()
             if not raw:
+                self._publish_joint_state()
                 return
 
             line = raw.decode("utf-8", errors="ignore").strip()
             if not line:
+                self._publish_joint_state()
                 return
 
             # Status/ack lines from Arduino — not joint data
@@ -109,6 +157,7 @@ class ArduinoBridge(Node):
                 done_msg = Bool(data=True)
                 self.status_pub.publish(done_msg)
                 self.get_logger().info(f"Arduino status: {line}")
+                self._publish_joint_state()
                 return
             if (lower.startswith("proceed")
                     or lower.startswith("timeout")
@@ -119,6 +168,7 @@ class ArduinoBridge(Node):
                     or lower.startswith("usb serial")):
                 self.ack_pub.publish(String(data=line))
                 self.get_logger().info(f"Arduino: {line}")
+                self._publish_joint_state()
                 return
 
             parts = [p.strip() for p in line.replace(",", " ").split() if p.strip()]
@@ -128,6 +178,7 @@ class ArduinoBridge(Node):
                         f"Got {len(parts)} values, expected {len(self.joint_names)}: '{line}'"
                     )
                     self._last_warned_line = line
+                self._publish_joint_state()
                 return
 
             positions = []
@@ -137,13 +188,11 @@ class ArduinoBridge(Node):
                 except ValueError:
                     positions.append(0.0)
 
-            js = JointState()
-            js.header.stamp = self.get_clock().now().to_msg()
-            js.name = list(self.joint_names)
-            js.position = positions
-            self.joint_state_pub.publish(js)
+            self.current_positions = positions
+            self._publish_joint_state()
         except Exception as exc:
             self.get_logger().error(f"Error reading serial: {exc}")
+            self._publish_joint_state()
 
     # ------------------------------------------------------------------
     # Write: /arduino/command_queue → Arduino
@@ -195,7 +244,7 @@ class ArduinoBridge(Node):
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(add_help=False)
-    parser.add_argument("--port", default="/dev/ttyACM0")
+    parser.add_argument("--port", default="auto")
     parser.add_argument("--baud", default="9600")
     parser.add_argument("--rate", default="20")
     parser.add_argument("--joint-names", default="")

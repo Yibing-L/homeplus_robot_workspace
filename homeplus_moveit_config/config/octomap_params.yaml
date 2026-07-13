@@ -1,7 +1,7 @@
 octomap_server:
   ros__parameters:
     # Topic that will be used to insert point clouds into OctoMap
-    point_cloud_topic: '/full_cloud'
+    point_cloud_topic: '/obstacle_cloud'
 
     # Frame for the octomap (typically 'map' or the fixed world frame in your setup)
     frame_id: 'hand_camera_depth_optical_frame'

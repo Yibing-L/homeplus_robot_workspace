@@ -11,7 +11,7 @@ from launch_ros.substitutions import FindPackageShare
 def generate_launch_description():
     world_frame_arg = DeclareLaunchArgument(
         "world_frame",
-        default_value="base_link",
+        default_value="world",
         description="World frame used by grounding_dino_node pose output",
     )
 
@@ -47,14 +47,19 @@ def generate_launch_description():
             ]
         ),
         launch_arguments={
+            "initial_reset": "true",
             "enable_color": "true",
             "enable_depth": "true",
-            "color_width": "848",
-            "color_height": "480",
-            "color_fps": "30.0",
-            "depth_width": "848",
-            "depth_height": "480",
-            "depth_fps": "30.0",
+            "enable_infra": "false",
+            "enable_infra1": "false",
+            "enable_infra2": "false",
+            "enable_accel": "false",
+            "enable_gyro": "false",
+            "enable_motion": "false",
+            "rgb_camera.color_profile": "640x480x30",
+            "depth_module.color_profile": "640x480x30",
+            "depth_module.depth_profile": "640x480x30",
+            "depth_module.infra_profile": "640x480x30",
             "enable_sync": "true",
             "align_depth.enable": "true",
         }.items(),
@@ -85,7 +90,7 @@ def generate_launch_description():
         output="screen",
         parameters=[
             {
-                "image_topic": "/camera/camera/color/image_rect_raw",
+                "image_topic": "/camera/camera/color/image_raw",
                 "depth_topic": "/camera/camera/aligned_depth_to_color/image_raw",
                 "camera_info_topic": "/camera/camera/color/camera_info",
                 "inference_rate": LaunchConfiguration("inference_rate"),

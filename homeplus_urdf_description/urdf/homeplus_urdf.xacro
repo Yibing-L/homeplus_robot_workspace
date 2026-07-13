@@ -203,6 +203,16 @@
   </collision>
 </link>
 
+<!-- Tool-center point used for Cartesian goals. This is an initial CAD-based
+     estimate at the front center of the gripper; calibrate xyz against the
+     physical finger contact point if higher grasp accuracy is required. -->
+<link name="grasp_tcp"/>
+<joint name="palm_to_grasp_tcp" type="fixed">
+  <parent link="palm_1"/>
+  <child link="grasp_tcp"/>
+  <origin xyz="0.105 -0.026 -0.027" rpy="0 0 0"/>
+</joint>
+
 <link name="FingerL_new_1">
   <inertial>
     <origin xyz="-0.009097242313835907 0.057476767816965396 -0.024889912187255447" rpy="0 0 0"/>
@@ -461,6 +471,7 @@
 </joint>
 
 <joint name="rear_camera_to_base" type="fixed">
+  <!-- Keep the exported camera mesh in the original rear body opening. -->
   <origin xyz="-0.17907 0.0 0.2794" rpy="0 0 0"/>
   <parent link="base_link"/>
   <child link="rear_camera_link_1"/>
@@ -468,7 +479,9 @@
 
 <link name="rear_camera_link"/>
 <joint name="rear_camera_link_alias" type="fixed">
-  <origin xyz="0 0 0" rpy="0 0 3.141592653589793"/>
+  <!-- The physical sensor moved to the left face while the legacy CAD mesh
+       remains at the rear opening. This frame is the actual sensor pose. -->
+  <origin xyz="0.17907 0.17907 0" rpy="0 0 1.5707963267948966"/>
   <parent link="rear_camera_link_1"/>
   <child link="rear_camera_link"/>
 </joint>

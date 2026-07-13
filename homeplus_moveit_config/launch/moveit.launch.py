@@ -1,20 +1,20 @@
 #!/usr/bin/env python3
 
 from launch import LaunchDescription
-from launch.actions import DeclareLaunchArgument, TimerAction, ExecuteProcess
+from launch.actions import DeclareLaunchArgument, TimerAction, ExecuteProcess, OpaqueFunction
 from launch.substitutions import Command, LaunchConfiguration, PathJoinSubstitution
 from launch.conditions import IfCondition
 from launch_ros.actions import Node
 from launch_ros.parameter_descriptions import ParameterValue
 from moveit_configs_utils import MoveItConfigsBuilder
 import os
-import sys
 import yaml
 from ament_index_python.packages import get_package_share_directory
 
-def generate_launch_description():
-    # Check for use_octomap flag early (before LaunchConfiguration is available)
-    use_octomap = any('use_octomap:=true' in arg for arg in sys.argv)
+def _launch_setup(context):
+    use_octomap = LaunchConfiguration('use_octomap').perform(context).lower() in (
+        'true', '1', 'yes', 'on'
+    )
 
     # Paths and configurations
     homeplus_urdf_pkg = get_package_share_directory('homeplus_urdf_description')
@@ -50,15 +50,16 @@ def generate_launch_description():
         )
     )
 
-    # Only load OctoMap sensor plugin when use_octomap:=true
-    if use_octomap:
-        builder = builder.sensors(file_path="config/octomap_sensors.yaml")
-
     moveit_config = builder.to_moveit_configs()
 
     # OctoMap parameters — only passed to move_group when enabled
     move_group_params = [moveit_config.to_dict()]
     if use_octomap:
+        octomap_sensors_path = os.path.join(
+            homeplus_moveit_pkg, 'config', 'octomap_sensors.yaml'
+        )
+        with open(octomap_sensors_path, 'r') as f:
+            move_group_params.append(yaml.safe_load(f))
         move_group_params.append({
             'octomap_frame': 'world',
             'octomap_resolution': 0.05,
@@ -69,48 +70,7 @@ def generate_launch_description():
     run_arduino_reader = LaunchConfiguration('run_arduino_reader')
     run_rebuild_map = LaunchConfiguration('run_rebuild_map')
 
-    # Declare launch arguments
-    declare_use_octomap = DeclareLaunchArgument(
-        'use_octomap',
-        default_value='false',
-        description='Enable OctoMap-based collision avoidance in MoveIt planning'
-    )
-    declare_auto_start_test_cmd = DeclareLaunchArgument(
-        'auto_start_test',
-        default_value='false',
-        description='Whether to automatically start the IK test sequence'
-    )
-    declare_run_arduino_reader = DeclareLaunchArgument(
-        'run_arduino_reader',
-        default_value='false',
-        description='If true, start the Arduino serial reader node (reads /dev/ttyACM0)'
-    )
-    declare_use_joint_gui = DeclareLaunchArgument(
-        'use_joint_gui',
-        default_value='true',
-        description='Launch joint state publisher GUI (disable when using gesture pipeline)'
-    )
-    declare_run_rebuild_map = DeclareLaunchArgument(
-        'run_rebuild_map',
-        default_value='false',
-        description='If true, start the map rebuilding node that listens for Arduino status and repopulates OctoMap'
-    )
-    declare_launch_robot_state_publisher = DeclareLaunchArgument(
-        'launch_robot_state_publisher',
-        default_value='true',
-        description='If true, start robot_state_publisher here. Set false when another launch (e.g. state_publisher.launch.py in pane 1) already owns it.'
-    )
-
-    # Create and return launch description
-    return LaunchDescription([
-    # Launch Arguments
-    declare_use_octomap,
-    declare_auto_start_test_cmd,
-    declare_run_arduino_reader,
-    declare_use_joint_gui,
-    declare_run_rebuild_map,
-    declare_launch_robot_state_publisher,
-
+    return [
     # Robot State Publisher (skipped if pane 1 already owns it)
         Node(
             package='robot_state_publisher',
@@ -126,7 +86,7 @@ def generate_launch_description():
 
         # Launch Arduino serial reader 
         ExecuteProcess(
-            cmd=['python3', os.path.join(homeplus_moveit_pkg, 'scripts', 'arduino_reader.py'), '--port', '/dev/ttyACM0', '--baud', '9600'],
+            cmd=['python3', os.path.join(homeplus_moveit_pkg, 'scripts', 'arduino_reader.py'), '--port', 'auto', '--baud', '9600'],
             output='screen',
             condition=IfCondition(run_arduino_reader)
         ),
@@ -172,8 +132,50 @@ def generate_launch_description():
                         'robot_description_kinematics': robot_description_kinematics,
                         'use_sim_time': False
                     }],
+                    condition=IfCondition(LaunchConfiguration('use_rviz')),
                 ),
             ]
         ),
 
+    ]
+
+
+def generate_launch_description():
+    return LaunchDescription([
+        DeclareLaunchArgument(
+            'use_octomap',
+            default_value='false',
+            description='Enable OctoMap-based collision avoidance in MoveIt planning',
+        ),
+        DeclareLaunchArgument(
+            'auto_start_test',
+            default_value='false',
+            description='Whether to automatically start the IK test sequence',
+        ),
+        DeclareLaunchArgument(
+            'run_arduino_reader',
+            default_value='false',
+            description='If true, start the Arduino serial reader node with automatic port detection',
+        ),
+        DeclareLaunchArgument(
+            'use_joint_gui',
+            default_value='true',
+            description='Launch joint state publisher GUI (disable when using gesture pipeline)',
+        ),
+        DeclareLaunchArgument(
+            'use_rviz',
+            default_value='true',
+            description='Launch RViz with the MoveIt MotionPlanning display',
+        ),
+        DeclareLaunchArgument(
+            'run_rebuild_map',
+            default_value='false',
+            description='If true, start the map rebuilding node that listens for Arduino status and repopulates OctoMap',
+        ),
+        DeclareLaunchArgument(
+            'launch_robot_state_publisher',
+            default_value='true',
+            description='If true, start robot_state_publisher here. Set false when another launch already owns it.',
+        ),
+        OpaqueFunction(function=_launch_setup),
     ])

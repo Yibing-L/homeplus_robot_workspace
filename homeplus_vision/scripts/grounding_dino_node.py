@@ -13,7 +13,7 @@ Parameters (declared):
 - camera_frame: TF frame used for back-projected camera points. If empty, use CameraInfo header.
 - inference_rate: Hz for running inference (default 2.0)
 - task_id: 1-6 to select targets for different parts of the pipeline
-- world_frame: TF parent frame for published poses (default base_link); use odom, world, base_link, etc. as in your TF tree
+- world_frame: TF parent frame for published poses (default world); use odom, world, base_link, etc. as in your TF tree
 - tf_lookup_timeout_sec: max wait for each TF lookup (default 0.5)
 
 Outputs:
@@ -66,7 +66,7 @@ class GroundingDinoNode(Node):
         self.declare_parameter('camera_info_topic', '/camera/camera/color/camera_info')
         self.declare_parameter('camera_frame', '')
         self.declare_parameter('inference_rate', 2.0)
-        self.declare_parameter('world_frame', 'base_link')
+        self.declare_parameter('world_frame', 'world')
         self.declare_parameter('tf_lookup_timeout_sec', 0.5)
 
         self.device = self.get_parameter('device').value
@@ -84,7 +84,7 @@ class GroundingDinoNode(Node):
         self._tf_timeout = Duration(seconds=float(self.get_parameter('tf_lookup_timeout_sec').value))
 
         # Target resolution for inference
-        self.target_w = 848
+        self.target_w = 640
         self.target_h = 480
 
         self.declare_parameter('task_id', 1)

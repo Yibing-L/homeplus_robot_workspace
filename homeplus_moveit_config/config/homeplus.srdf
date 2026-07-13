@@ -1,12 +1,12 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <robot name="homeplus_urdf">
     <group name="arm">
-        <chain base_link="base_link" tip_link="palm_1"/>
+        <chain base_link="base_link" tip_link="grasp_tcp"/>
     </group>
 
 
     <group name="base_arm">
-        <chain base_link="world" tip_link="palm_1"/>
+        <chain base_link="world" tip_link="grasp_tcp"/>
     </group>
     
     <group name="gripper">
@@ -77,7 +77,5 @@
     <disable_collisions link1="hand_camera_link_1"  link2="wrist_1"           reason="Never"/>
     <disable_collisions link1="hand_camera_link_1"  link2="FingerL_new_1"     reason="Never"/>
     <disable_collisions link1="hand_camera_link_1"  link2="FingerR_new_1"     reason="Never"/>
-
-    <virtual_joint name="world_joint" type="fixed" parent_frame="world" child_link="base_link" />
 
 </robot>
