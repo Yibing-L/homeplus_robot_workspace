@@ -45,54 +45,295 @@ commands:
 
   gripper_close:
     type: gripper
-    value: 90.0
+    value: 75.0
+
+  press_square_button:
+    type: sequence
+    detection_topic: /molmopoint_pose_world
+    detection_timeout_sec: 8.0
+    detection_min_stable_samples: 2
+    max_replanning_attempts: 5
+    steps:
+      # At 70 degrees the gripper is mostly closed, leaving one forward contact
+      # point available for pressing instead of an open grasp.
+      - name: set_single_contact_point
+        type: gripper
+        value: 70.0
+        max_attempts: 2
+        settle_sec: 1.0
+
+      # Always retract the arm before repositioning the mobile base. This also
+      # makes a retry safe after a previous run aborted at the standoff: the
+      # base cannot carry an already-extended fingertip into the appliance.
+      - name: retract_arm_for_approach
+        type: joint_state
+        require_trajectory_approval: false
+        group_name: arm
+        joints:
+          joint_shoulder: 0.0
+          joint_elbow: 0.0
+          joint_wrist: 0.0
+          joint_hand: 0.0
+        planner_id: RRTConnectkConfigDefault
+        allowed_planning_time: 5.0
+        num_planning_attempts: 3
+
+      # Establish the pressing orientation away from the appliance before the
+      # short final approach. press_tcp is the selected fingertip at gripper 70
+      # and its +X points forward at world RPY 0/0/0.
+      - name: move_to_button_standoff
+        type: pose
+        require_trajectory_approval: false
+        frame_id: world
+        group_name: base_arm
+        link_name: press_tcp
+        target: detected
+        offset_x: -0.15
+        offset_z: 0.0
+        gripper_value: 70.0
+        rpy_deg: [0.0, 0.0, 0.0]
+        position_tolerance_m: 0.02
+        use_orientation_constraint: true
+        orientation_tolerance_rad: 0.05
+        safe_z_candidate_offsets_m: [0.0]
+        max_replanning_attempts: 3
+        # Keep the standoff TCP 0.45..0.70 m ahead of the base. After the
+        # 11 cm contact approach, the fixed-base arm therefore needs at most
+        # about 0.81 m of forward reach. The previous 0.80 m standoff ceiling
+        # allowed a 0.89..0.91 m press reach that was only marginally feasible.
+        base_goal_tcp_x_min_m: 0.45
+        base_goal_tcp_x_max_m: 0.70
+        base_goal_tcp_y_max_m: 0.20
+        max_base_goal_rotation_rad: 0.20
+        planner_id: RRTConnectkConfigDefault
+        allowed_planning_time: 10.0
+        num_planning_attempts: 5
+
+      # Reacquire the button from the settled, closer hand-camera view. A
+      # detect step commands no joints, so both the base and arm remain fixed.
+      # The refreshed XYZ pose and target mask are used by the press stage.
+      - name: refine_button_target
+        type: detect
+        detection_timeout_sec: 30.0
+        # The press goal is only +/-1 cm, so two samples allowed to disagree
+        # by nearly 9 cm are not a meaningful stable estimate for this task.
+        detection_min_stable_samples: 3
+        detection_stability_tolerance_m: 0.02
+        preserve_reference_z: false
+
+      - name: press_button
+        type: pose
+        require_trajectory_approval: false
+        frame_id: world
+        # The standoff stage has already positioned the mobile base inside a
+        # press-capable reach band. press_arm keeps the base fixed and uses the
+        # calibrated press_tcp itself as the IK tip.
+        group_name: press_arm
+        link_name: press_tcp
+        target: detected
+        # Place the lower-finger TCP directly at the refined button face.
+        offset_x: 0.0
+        # press_tcp is now located on the lower physical finger itself, 3 cm
+        # below its former frame. Apply an additional world-Z correction from
+        # physical trials so the selected contact point is 3 cm lower.
+        offset_z: -0.03
+        gripper_value: 70.0
+        rpy_deg: [0.0, 0.0, 0.0]
+        position_tolerance_m: 0.01
+        # Position-only IK is considerably more reliable for the
+        # under-actuated fixed-base arm at the contact goal.
+        use_orientation_constraint: false
+        safe_z_candidate_offsets_m: [0.0]
+        max_replanning_attempts: 3
+        planner_id: RRTConnectkConfigDefault
+        allowed_planning_time: 10.0
+        num_planning_attempts: 5
+        post_delay_sec: 1.0
+
+      - name: retreat_from_button
+        type: pose
+        require_trajectory_approval: false
+        frame_id: world
+        # Retreat with the same fixed-base, fingertip-tip group used for contact.
+        group_name: press_arm
+        link_name: press_tcp
+        target: previous_pose
+        # Return from the button face to the -15 cm standoff.
+        offset_x: -0.15
+        # Undo the lowered press height while retreating.
+        offset_z: 0.03
+        gripper_value: 70.0
+        rpy_deg: [0.0, 0.0, 0.0]
+        position_tolerance_m: 0.02
+        use_orientation_constraint: false
+        planner_id: RRTConnectkConfigDefault
+        allowed_planning_time: 10.0
+        num_planning_attempts: 5
 
   pick_up_coffee:
     type: sequence
-    detection_topic: /gdino_pose_world
-    detection_timeout_sec: 5.0
-    # Temporary test override: treat the cup as fixed in world frame.
-    hardcoded_detection_pose:
-      frame_id: world
-      position: [0.90, 0.30, 0.78]
-      rpy_deg: [0.0, 0.0, 0.0]
+    detection_topic: /molmopoint_pose_world
+    detection_timeout_sec: 8.0
+    detection_min_stable_samples: 2
+    # Retry stochastic OMPL failures automatically. A finite bound prevents an
+    # impossible or colliding target from hanging the executor indefinitely.
+    max_replanning_attempts: 5
     steps:
       - name: open_gripper
         type: gripper
         value: 0.0
 
-      - name: move_to_target
+      # First plan to a standoff pose. This gives MoveIt room to avoid the
+      # scene instead of forcing one long motion directly into the object.
+      - name: move_to_pregrasp
         type: pose
+        # A single gesture starts and completes the full sequence.
+        require_trajectory_approval: false
         frame_id: world
         group_name: base_arm
         target: detected
-        offset_x: -0.03
-        offset_z: -0.03
+        # A 25 cm world-X offset made this target too close to the base for a
+        # horizontal wrist pose. The whole-body IK compensated by driving the
+        # base about 0.5 m backward and folding the elbow to its upper limit.
+        # Keep the first view farther from the cup so the hand camera retains
+        # the complete object for the refinement detection.
+        offset_x: -0.20
+        # Use the detected height directly; no experiment-specific absolute
+        # tabletop height or TCP-height clamp is applied.
+        offset_z: 0.0
         gripper_value: 0.0
         rpy_deg: [0.0, 0.0, 0.0]
+        position_tolerance_m: 0.03
+        position_tolerance_xy_m: 0.01
+        position_tolerance_z_m: 0.005
         use_orientation_constraint: true
-        orientation_tolerance_rad: 0.01
+        orientation_tolerance_rad: 0.05
+        # Never silently raise the camera pose on stochastic retries.
+        safe_z_candidate_offsets_m: [0.0]
+        max_replanning_attempts: 3
+        # Keep the TCP in a useful forward-reach band relative to the mobile
+        # base. This permits a forward base approach to distant objects but
+        # excludes the far-back/extreme-fold solution seen for close objects.
+        base_goal_tcp_x_min_m: 0.55
+        base_goal_tcp_x_max_m: 0.90
+        base_goal_tcp_y_max_m: 0.20
+        max_base_goal_rotation_rad: 0.20
         planner_id: RRTConnectkConfigDefault
-        allowed_planning_time: 15.0
-        num_planning_attempts: 10
-        # Arduino DONE can arrive before the physical trajectory has settled.
-        # Keep the gripper open and wait before sending the close command.
+        allowed_planning_time: 5.0
+        num_planning_attempts: 3
+
+      # Refresh perception from the closer camera pose before committing to
+      # the final approach. The refreshed pose remains cached for lift/retreat.
+      - name: refine_target
+        type: detect
+        # The hand-mounted view can be temporarily occluded immediately after
+        # motion. Wait for a stable cluster instead of accepting the first
+        # low-confidence pose from a different object/background surface.
+        # MolmoPoint runs asynchronously at the configured inference rate, and
+        # depth is not valid for every 2-D detection. In the 2026-08-11 run,
+        # the third valid post-motion sample arrived only 0.12 s after the old
+        # 15 s deadline. Leave enough time for three depth-backed samples.
+        detection_timeout_sec: 30.0
+        detection_min_stable_samples: 3
+        # The initial distant view can report the table/bottom of the cup. Use
+        # the new segmented-depth estimate from the close view for Z instead
+        # of preserving that stale, often below-table initial measurement.
+        preserve_reference_z: false
+
+      - name: move_to_grasp
+        type: pose
+        require_trajectory_approval: false
+        frame_id: world
+        group_name: base_arm
+        target: detected
+        # Stop 2 cm before the detected cup center so the open gripper does
+        # not contact or push the cup during the final approach.
+        offset_x: -0.02
+        # Use the refined detected height directly. MoveIt collision checking,
+        # rather than an experiment-specific absolute Z clamp, provides the
+        # safety check against the current scene.
+        offset_z: 0.0
+        gripper_value: 0.0
+        rpy_deg: [0.0, 0.0, 0.0]
+        position_tolerance_m: 0.02
+        position_tolerance_z_m: 0.005
+        use_orientation_constraint: true
+        orientation_tolerance_rad: 0.05
+        # The pre-grasp stage has already aligned grasp_tcp to RPY 0/0/0.
+        # From here onward, keep that orientation as a path constraint rather
+        # than merely checking it at the endpoint.
+        maintain_orientation_during_path: true
+        # Keep every retry at the same detected height. If it is in collision,
+        # abort instead of silently changing the requested experiment pose.
+        safe_z_candidate_offsets_m: [0.0]
+        max_replanning_attempts: 3
+        # The initial pregrasp has already put the base in a useful location.
+        # Keep the refined grasp local so OMPL cannot choose an unrelated
+        # far-back base pose merely because it is kinematically valid. Allow a
+        # little more lateral correction than longitudinal correction because
+        # the fixed-base arm has limited world-Y authority.
+        max_base_goal_translation_m: 0.03
+        max_base_goal_y_translation_m: 0.05
+        max_base_goal_rotation_rad: 0.05
+        planner_id: RRTConnectkConfigDefault
+        allowed_planning_time: 5.0
+        num_planning_attempts: 3
+        # Firmware DONE may precede physical settling. Do not issue the close
+        # command while the final approach is still finishing.
         post_delay_sec: 3.0
 
       - name: close_gripper_at_target
         type: gripper
-        value: 90.0
+        value: 75.0
+        # Retry only if no DONE acknowledgement arrives. A successful close is
+        # not repeated unnecessarily.
+        max_attempts: 2
+        settle_sec: 2.0
 
       - name: lift
         type: pose
+        require_trajectory_approval: false
         frame_id: world
         group_name: base_arm
-        target: detected
-        offset_x: -0.03
-        offset_z: 0.20
+        # Raise from the grasp candidate MoveIt actually selected, which may
+        # be 1-2 cm above the minimum candidate used on the first attempt.
+        target: previous_pose
+        offset_x: 0.0
+        offset_z: 0.10
+        # The gripper is outside the base_arm planning group, so hold the
+        # commanded closed value explicitly throughout the lift trajectory.
+        gripper_value: 75.0
         rpy_deg: [0.0, 0.0, 0.0]
+        position_tolerance_m: 0.02
+        position_tolerance_z_m: 0.005
         use_orientation_constraint: true
-        orientation_tolerance_rad: 0.01
+        orientation_tolerance_rad: 0.05
+        maintain_orientation_during_path: true
+        max_base_goal_translation_m: 0.05
+        max_base_goal_rotation_rad: 0.10
         planner_id: RRTConnectkConfigDefault
-        allowed_planning_time: 15.0
-        num_planning_attempts: 10
+        allowed_planning_time: 10.0
+        num_planning_attempts: 5
+
+      - name: retreat_with_object
+        type: pose
+        require_trajectory_approval: false
+        frame_id: world
+        group_name: base_arm
+        # Continue from the completed lift instead of reconstructing a pose
+        # from the original pre-grasp detection.
+        target: previous_pose
+        offset_x: -0.15
+        offset_z: 0.0
+        gripper_value: 75.0
+        rpy_deg: [0.0, 0.0, 0.0]
+        position_tolerance_m: 0.03
+        position_tolerance_z_m: 0.005
+        use_orientation_constraint: true
+        orientation_tolerance_rad: 0.05
+        maintain_orientation_during_path: true
+        max_base_goal_translation_m: 0.15
+        max_base_goal_rotation_rad: 0.20
+        planner_id: RRTConnectkConfigDefault
+        allowed_planning_time: 10.0
+        num_planning_attempts: 5

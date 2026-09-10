@@ -1,0 +1,34 @@
+molmopoint:
+  ros__parameters:
+    # Official image-grounding checkpoint. NF4 is the best quality/fit tradeoff
+    # for this machine's 12 GB RTX 4080 Laptop GPU.
+    model_name_or_path: "allenai/MolmoPoint-8B"
+    model_revision: "188130f961c8e0888a34e11121a1423c461a01ba"
+    quantization: "4bit"
+    device: "auto"
+    model_cache_dir: ".models/huggingface"
+    # Runtime is network-independent after setup_molmopoint.sh downloads the
+    # pinned snapshot.
+    local_files_only: true
+    max_new_tokens: 64
+    max_points: 1
+    point_selection: "closest_to_center"
+    image_topic: "/cameras/d405/color/image_raw"
+    depth_topic: "/cameras/d405/aligned_depth_to_color/image_raw"
+    camera_info_topic: "/cameras/d405/color/camera_info"
+    camera_frame: "d405_color_optical_frame"
+    world_frame: "world"
+    inference_rate: 0.5
+    # Median valid depth in an 11x11 neighborhood; robust to D405 depth holes.
+    depth_sample_radius_px: 5
+    # The D405 is hand-mounted. Do not spend CPU on images acquired while the
+    # arm is moving, and never publish an in-flight frame after Arduino DONE.
+    pause_during_motion: true
+    motion_status_topic: "/arduino/status"
+    task_id: 1
+
+    debug_image_topic: "/molmopoint/debug_image"
+    detections_topic: "/molmopoint/detections"
+    pose_topic: "/molmopoint_pose_world"
+    mask_topic: "/object_mask"
+    mask_center_topic: "/molmopoint/point"

@@ -1,0 +1,91 @@
+d405_obstacle_cloud:
+  ros__parameters:
+    camera_role: "d405_end_effector"
+    depth_topic: "/cameras/d405/aligned_depth_to_color/image_raw"
+    camera_info_topic: "/cameras/d405/color/camera_info"
+    mask_topic: "/object_mask"
+    fallback_frame: "d405_color_optical_frame"
+    # Preserve the optical frame so MoveIt's updater gets the true sensor
+    # origin for ray clearing. Filtering is evaluated in base_link coordinates.
+    output_frame: ""
+    filter_frame: "base_link"
+    full_cloud_topic: "/vision/clouds/d405/full"
+    object_cloud_topic: "/vision/clouds/d405/target"
+    obstacle_cloud_topic: "/obstacle_cloud"
+    pixel_stride: 4
+    max_publish_rate_hz: 1.0
+    min_depth_m: 0.12
+    max_depth_m: 2.0
+    depth_consistency_threshold_m: 0.04
+    depth_consistency_min_neighbors: 2
+    # Exclude the floor/contact band and observations above the robot's useful
+    # manipulation volume. Both values are expressed in filter_frame.
+    obstacle_min_z_m: 0.05
+    obstacle_max_z_m: 1.80
+    stats_interval_sec: 5.0
+    # Arduino feedback supplies a trustworthy final arm state but not a full
+    # measured trajectory. Do not integrate moving D405 frames at stale TFs.
+    pause_during_motion: true
+    motion_status_topic: "/arduino/status"
+    # Manipulation intentionally places the tool next to the detected target.
+    # Remove a local contact neighborhood so target-edge depth noise is not
+    # treated as an obstacle; task-specific overrides remain local as well.
+    mask_dilation_pixels: 12
+    target_padding_m: 0.04
+    # At gripper=70 the two front finger surfaces are about 4.5 cm apart and
+    # the collision footprint reaches 6.7 cm laterally from press_tcp. Give
+    # task 2 an 8 cm local contact corridor while leaving task 1 at 4 cm.
+    button_task_id: 2
+    button_target_padding_m: 0.08
+    # Retain the most recent mask between MolmoPoint inference cycles and
+    # across an occasional frame with no point/segmentation result.
+    mask_timeout_sec: 6.0
+    clear_octomap_on_mask: true
+
+d435i_obstacle_cloud:
+  ros__parameters:
+    camera_role: "d435i_front_base"
+    depth_topic: "/cameras/d435i/aligned_depth_to_color/image_raw"
+    camera_info_topic: "/cameras/d435i/color/camera_info"
+    mask_topic: ""
+    fallback_frame: "d435i_color_optical_frame"
+    output_frame: ""
+    filter_frame: "base_link"
+    full_cloud_topic: "/vision/clouds/d435i/full"
+    object_cloud_topic: "/vision/clouds/d435i/target"
+    obstacle_cloud_topic: "/obstacle_cloud"
+    pixel_stride: 4
+    max_publish_rate_hz: 1.0
+    min_depth_m: 0.20
+    max_depth_m: 2.5
+    depth_consistency_threshold_m: 0.06
+    depth_consistency_min_neighbors: 2
+    obstacle_min_z_m: 0.05
+    obstacle_max_z_m: 1.80
+    stats_interval_sec: 5.0
+    pause_during_motion: false
+    clear_octomap_on_mask: false
+
+d455_obstacle_cloud:
+  ros__parameters:
+    camera_role: "d455_side_base"
+    depth_topic: "/cameras/d455/aligned_depth_to_color/image_raw"
+    camera_info_topic: "/cameras/d455/color/camera_info"
+    mask_topic: ""
+    fallback_frame: "d455_color_optical_frame"
+    output_frame: ""
+    filter_frame: "base_link"
+    full_cloud_topic: "/vision/clouds/d455/full"
+    object_cloud_topic: "/vision/clouds/d455/target"
+    obstacle_cloud_topic: "/obstacle_cloud"
+    pixel_stride: 4
+    max_publish_rate_hz: 1.0
+    min_depth_m: 0.20
+    max_depth_m: 2.5
+    depth_consistency_threshold_m: 0.06
+    depth_consistency_min_neighbors: 2
+    obstacle_min_z_m: 0.05
+    obstacle_max_z_m: 1.80
+    stats_interval_sec: 5.0
+    pause_during_motion: false
+    clear_octomap_on_mask: false

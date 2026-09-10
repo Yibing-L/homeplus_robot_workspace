@@ -1,42 +1,54 @@
 #!/usr/bin/env python3
 
+# Copyright 2026 Yibing Lu
+#
+# Permission is hereby granted, free of charge, to any person obtaining a copy
+# of this software and associated documentation files (the "Software"), to deal
+# in the Software without restriction, including without limitation the rights
+# to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+# copies of the Software, and to permit persons to whom the Software is
+# furnished to do so, subject to the following conditions:
+#
+# The above copyright notice and this permission notice shall be included in
+# all copies or substantial portions of the Software.
+#
+# THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+# IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+# FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL
+# THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+# LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+# OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
+# THE SOFTWARE.
+
+
+"""Compatibility launch for the end-effector D405 only."""
+
 from launch import LaunchDescription
-from launch_ros.actions import Node
 from launch.actions import DeclareLaunchArgument, IncludeLaunchDescription
+from launch.launch_description_sources import PythonLaunchDescriptionSource
 from launch.substitutions import LaunchConfiguration, PathJoinSubstitution
 from launch_ros.substitutions import FindPackageShare
-from launch.launch_description_sources import PythonLaunchDescriptionSource
 
 
 def generate_launch_description():
-    # Include RealSense camera launch
-    realsense_launch = IncludeLaunchDescription(
-        PythonLaunchDescriptionSource([
-            PathJoinSubstitution([
-                FindPackageShare('realsense2_camera'),
-                'launch',
-                'rs_launch.py'
-            ])
-        ]),
+    camera_launch = IncludeLaunchDescription(
+        PythonLaunchDescriptionSource(
+            PathJoinSubstitution(
+                [FindPackageShare("homeplus_vision"), "launch", "multi_camera.launch.py"]
+            )
+        ),
         launch_arguments={
-            'initial_reset': 'true',
-            'enable_color': 'true',
-            'enable_depth': 'true',
-            'enable_infra': 'false',
-            'enable_infra1': 'false',
-            'enable_infra2': 'false',
-            'enable_accel': 'false',
-            'enable_gyro': 'false',
-            'enable_motion': 'false',
-            'rgb_camera.color_profile': '640x480x30',
-            'depth_module.color_profile': '640x480x30',
-            'depth_module.depth_profile': '640x480x30',
-            'depth_module.infra_profile': '640x480x30',
-            'enable_sync': 'true',
-            'align_depth.enable': 'true',
-        }.items()
+            "enable_d405": "true",
+            "enable_d435i": "false",
+            "enable_d455": "false",
+            "d405_serial": LaunchConfiguration("serial_no"),
+            "initial_reset": LaunchConfiguration("initial_reset"),
+        }.items(),
     )
-    
-    return LaunchDescription([
-        realsense_launch,
-    ])
+    return LaunchDescription(
+        [
+            DeclareLaunchArgument("serial_no", default_value="''"),
+            DeclareLaunchArgument("initial_reset", default_value="false"),
+            camera_launch,
+        ]
+    )

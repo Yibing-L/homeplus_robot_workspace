@@ -47,17 +47,16 @@ windows:
       - source install/setup.bash
       - clear
     panes:
-      # ----- Pane 1: Robot TF + RealSense camera -----
+      # ----- Pane 1: Robot TF -----
       - shell_command:
-          - echo '=== [T1] Robot TF + RealSense ==='
-          - PUBLISH_JOINT_STATES=false bash scripts/run_robot_tf.sh &
-          - sleep 3
-          - bash scripts/run_realsense.sh
+          - echo '=== [T1] Robot TF ==='
+          - PUBLISH_JOINT_STATES=false bash scripts/run_robot_tf.sh
 
-      # ----- Pane 2: GroundingDINO (object detection) -----
+      # ----- Pane 2: Three-camera vision pipeline -----
       - shell_command:
-          - echo '=== [T2] GroundingDINO (task_id=1) ==='
-          - WORLD_FRAME=world bash scripts/run_dino.sh 1
+          - echo '=== [T2] D405 target + D435i/D455/D405 OctoMap ==='
+          - for i in $(seq 1 30); do ros2 service type /clear_octomap >/dev/null 2>&1 && break; sleep 1; done
+          - bash scripts/run_vision.sh task_id:=1
 
       # ----- Pane 3: MoveIt + gesture executor + Arduino bridge -----
       - shell_command:

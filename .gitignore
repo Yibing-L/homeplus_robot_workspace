@@ -33,6 +33,7 @@ Grounded-SAM-2
 *~
 *.swp
 *.tmp
+/.codex
 
 *.jpg
 *.JPG
@@ -56,6 +57,8 @@ env/
 .env/
 ENV/
 venv-*/
+.venv-molmopoint/
+.models/
 
 # pip / build caches
 __pycache__/
@@ -75,3 +78,5 @@ Pipfile.lock
 
 # Robot runtime logs
 trajectory_logs/
+detection_logs/
+target_logs/

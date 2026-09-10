@@ -1,173 +1,203 @@
-# homeplus_vision
+# HomePlus Vision
 
-ROS 2 vision tools for the HomePlus robot. The current package supports Intel
-RealSense capture, gesture recognition, and Grounding DINO target detection.
+ROS 2 perception package for the HomePlus robot's three Intel RealSense
+cameras. Camera identity is part of the interface: perception nodes never
+subscribe to an anonymous `/camera` topic.
 
-## Features
+## Camera Roles
 
-- RealSense RGB-D camera launch files
-- Gesture recognition from aligned RGB-D streams
-- Grounding DINO target detection
-- Optional 3D target pose output through TF2
-- Debug image and JSON detection topics
+| Camera | Mount | Responsibilities |
+|---|---|---|
+| D405 | End effector | Target detection and obstacle mapping |
+| D435i | Front of base | Obstacle mapping |
+| D455 | Left or right side of base | Gesture detection and obstacle mapping |
 
-## Dependencies
+The machine-readable inventory is in `config/camera_roles.yaml`. The D455 side
+is selected at launch with `side_mount:=left` or `side_mount:=right`.
 
-Install the ROS dependencies:
-
-```bash
-sudo apt install ros-humble-cv-bridge ros-humble-image-transport
-sudo apt install ros-humble-tf2-ros ros-humble-tf2-geometry-msgs
-sudo apt install ros-humble-realsense2-camera
-```
-
-Use the ROS Python interpreter for Python packages:
-
-```bash
-pip --python /usr/bin/python3 install --user \
-  "numpy==1.26.4" \
-  "opencv-contrib-python==4.10.0.84" \
-  "mediapipe==0.10.14" \
-  "torch==2.11.0" \
-  "transformers==4.33.2"
-```
-
-Important:
-
-- `cv_bridge` in ROS Humble can break with `numpy 2.x`.
-- The Grounding DINO stack used here expects `transformers==4.33.2`.
-- Keep Python packages in `/usr/bin/python3`, the same interpreter used by `ros2`.
-
-## Package Structure
+## Runtime Architecture
 
 ```text
-homeplus_vision/
-├── CMakeLists.txt
-├── package.xml
-├── config/
-│   ├── camera_calibration.yaml
-│   └── gesture_params.yaml
-├── launch/
-│   ├── camera_only.launch.py
-│   ├── dino_pipeline.launch.py
-│   └── gesture_pipeline.launch.py
-└── scripts/
-    ├── gesture_recognizer.py
-    ├── grounding_dino_node.py
-    └── test_grounding_dino_static.py
+D405  /cameras/d405  -> MolmoPoint-8B ------> /molmopoint_pose_world
+                     -> SAM2 point mask ----> /object_mask
+                     -> obstacle cloud -----+
+                                              |
+D435i /cameras/d435i -> obstacle cloud ------+-> /obstacle_cloud -> MoveIt
+                                              |
+D455  /cameras/d455  -> obstacle cloud ------+
+                     -> gesture recognizer -> /gesture_recognition/state
 ```
 
-## Camera Only
+All obstacle-cloud nodes transform points into `base_link` before publishing.
+The D405 node removes the current target mask from its obstacle cloud so MoveIt
+can approach the detected object. D435i and D455 contribute unmasked scene
+geometry.
+
+## Launch
+
+Build and source the workspace:
 
 ```bash
-ros2 launch realsense2_camera rs_launch.py \
-  enable_color:=true \
-  enable_depth:=true \
-  enable_sync:=true \
-  align_depth.enable:=true
-```
-
-The package also includes `camera_only.launch.py`, but direct RealSense launch
-arguments are usually clearer when debugging camera topics.
-
-## Gesture Recognition
-
-```bash
-ros2 launch homeplus_vision gesture_pipeline.launch.py \
-  checkpoint_path:=/absolute/path/to/model.pt \
-  label_map_path:=/absolute/path/to/labels.json
-```
-
-The gesture node consumes:
-
-```text
-/camera/camera/color/image_raw
-/camera/camera/aligned_depth_to_color/image_raw
-/camera/camera/color/camera_info
-```
-
-## Grounding DINO
-
-The DINO node expects a local `Grounded-SAM-2` checkout with Grounding DINO
-available on `PYTHONPATH`, plus this checkpoint:
-
-```text
-Grounded-SAM-2/gdino_checkpoints/groundingdino_swint_ogc.pth
-```
-
-The normal project entrypoint is:
-
-```bash
-cd ~/ros2_ws/homeplus_robot_workspace-occ-map
+cd ~/ros2_ws/homeplus_robot_workspace
+colcon build --packages-select homeplus_vision homeplus_moveit_config
 source install/setup.bash
-bash scripts/run_system.sh --with-dino --no-occ-map --task-id 1
 ```
 
-Useful debug terminals:
+Install the dedicated runtime and download the official checkpoint once:
 
 ```bash
-ros2 topic echo /gdino/detections
-ros2 topic echo /gdino/mask_center
-ros2 topic hz /gdino_debug_image
-ros2 run rqt_image_view rqt_image_view /gdino_debug_image
+bash scripts/setup_molmopoint.sh --download-model
 ```
 
-The DINO node publishes:
+This deployment pins official `allenai/MolmoPoint-8B` revision
+`188130f961c8e0888a34e11121a1423c461a01ba` with NF4 4-bit weights on the
+12 GB RTX 4080 Laptop GPU. The full BF16/F32 checkpoint does not fit alongside
+ROS perception and SAM2. The local environment inherits the workspace's ROS 2
+and CUDA-enabled PyTorch packages while pinning the Transformers version
+required by MolmoPoint.
+
+Review the upstream model card before non-research deployment. Although the
+weights are Apache-2.0, Ai2 notes that some training datasets are restricted to
+academic or non-commercial research use.
+
+Start robot TF in one terminal:
+
+```bash
+PUBLISH_JOINT_STATES=false bash scripts/run_robot_tf.sh
+```
+
+Start all cameras, target detection, and obstacle-cloud generation:
+
+```bash
+bash scripts/run_vision.sh side_mount:=left
+```
+
+Enable gesture recognition by supplying its checkpoint:
+
+```bash
+bash scripts/run_vision.sh \
+  side_mount:=right \
+  enable_gesture_detection:=true \
+  gesture_checkpoint:=/absolute/path/model.pt \
+  gesture_label_map:=/absolute/path/labels.json
+```
+
+The gesture pipeline is disabled by default because a trained checkpoint is a
+required runtime input. The D455 camera and its obstacle cloud still start.
+
+## Device Selection
+
+The launch file selects each device by model. Serial numbers are optional when
+exactly one D405, D435i, and D455 are attached. Pin devices for repeatable
+experiments when needed:
+
+```bash
+export D405_SERIAL="_123456789"
+export D435I_SERIAL="_234567890"
+export D455_SERIAL="_345678901"
+export D455_SIDE="left"
+bash scripts/run_vision.sh
+```
+
+The leading underscore keeps a numeric RealSense serial represented as a
+string by ROS parameters.
+
+## Launch Files
+
+- `multi_camera.launch.py`: three RealSense drivers and robot mount TFs.
+- `perception.launch.py`: target, gesture, and obstacle-cloud nodes for cameras
+  that are already running.
+- `vision_pipeline.launch.py`: normal full composition.
+- `molmopoint_pipeline.launch.py`: D405-only target-detection entry.
+- `molmopoint_test_interface.launch.py`: live MolmoPoint prompt tester.
+- `dino_pipeline.launch.py` and `dino_test_interface.launch.py`: legacy aliases.
+- `gesture_pipeline.launch.py`: D455-only gesture compatibility entry.
+- `camera_only.launch.py`: D405-only camera compatibility entry.
+
+## Interactive MolmoPoint Test
+
+Start the D405, the production detector node, and the live test window:
+
+```bash
+source .venv-molmopoint/bin/activate
+ros2 launch homeplus_vision molmopoint_test_interface.launch.py
+```
+
+Type a natural-language target and click **Apply live** (or press Enter). The
+model stays loaded while the prompt changes. The image and point table show
+`/molmopoint/debug_image` and `/molmopoint/detections` output. MolmoPoint emits
+constrained point tokens rather than calibrated detector confidence values.
+
+If the D405 driver is already running, avoid launching a second camera:
+
+```bash
+ros2 launch homeplus_vision molmopoint_test_interface.launch.py launch_camera:=false
+```
+
+To attach only the window to a detector that is already running:
+
+```bash
+ros2 run homeplus_vision molmopoint_test_interface.py
+```
+
+Pass an initial target or enable the normal SAM2/depth pose stage when needed:
+
+```bash
+ros2 launch homeplus_vision molmopoint_test_interface.launch.py \
+  caption:='the red mug on the left' publish_poses:=true
+```
+
+## Topic Contract
+
+Camera inputs:
 
 ```text
-/gdino/detections
-/gdino/mask_center
-/gdino_debug_image
-/gdino_pose_world
+/cameras/d405/{color,aligned_depth_to_color}
+/cameras/d435i/{color,aligned_depth_to_color}
+/cameras/d455/{color,aligned_depth_to_color}
+```
+
+Perception outputs retained for compatibility with the motion stack:
+
+```text
+/molmopoint_pose_world
 /object_mask
+/gesture_recognition/state
+/obstacle_cloud
 ```
 
-## Camera Frames
+Per-camera debug clouds are available under `/vision/clouds/<camera>/`.
 
-Camera frames are named explicitly to avoid mixing the hand, front, and rear
-cameras:
+## MoveIt Integration
 
-```text
-hand_camera_link_1
-  hand_camera_link
-    hand_camera_color_optical_frame
-    hand_camera_depth_optical_frame
-
-front_camera_link_1
-  front_camera_link
-    front_camera_color_optical_frame
-    front_camera_depth_optical_frame
-
-rear_camera_link_1
-  rear_camera_link
-    rear_camera_color_optical_frame
-    rear_camera_depth_optical_frame
-```
-
-For DINO 3D pose output, use `hand_camera_color_optical_frame` as the camera TF
-frame.
-
-## Troubleshooting
-
-If DINO starts but no detections appear:
+`homeplus_moveit_config` subscribes to `/obstacle_cloud`. When the full vision
+pipeline is running, launch gesture control without its legacy D405 cloud node:
 
 ```bash
-ros2 topic list
-ros2 topic hz /camera/camera/color/image_rect_raw
-ros2 topic hz /gdino_debug_image
+ros2 launch homeplus_moveit_config gesture_control.launch.py \
+  use_octomap:=true \
+  launch_obstacle_cloud:=false
 ```
 
-If target poses are shifted, inspect the hand camera TF:
+## Verification
+
+Confirm each physical camera is publishing on its assigned namespace:
 
 ```bash
-ros2 run tf2_ros tf2_echo base_link hand_camera_color_optical_frame
+ros2 topic hz /cameras/d405/color/image_raw
+ros2 topic hz /cameras/d435i/aligned_depth_to_color/image_raw
+ros2 topic hz /cameras/d455/color/image_raw
+ros2 topic hz /obstacle_cloud
 ```
 
-If `cv_bridge` or OpenCV fails after pip installs, restore compatible versions:
+Check mount transforms:
 
 ```bash
-pip --python /usr/bin/python3 uninstall -y numpy opencv-python opencv-contrib-python
-pip --python /usr/bin/python3 install --user --force-reinstall \
-  "numpy==1.26.4" \
-  "opencv-contrib-python==4.10.0.84"
+ros2 run tf2_ros tf2_echo hand_camera_link d405_link
+ros2 run tf2_ros tf2_echo front_camera_link d435i_link
+ros2 run tf2_ros tf2_echo base_link d455_link
 ```
+
+RealSense publishes factory camera intrinsics on each `camera_info` topic. Mount
+extrinsics belong in the robot URDF or the configurable D455 mount launch
+arguments, not in a generic sample calibration file.

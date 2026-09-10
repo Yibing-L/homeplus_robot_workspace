@@ -62,7 +62,11 @@ def _launch_setup(context):
             move_group_params.append(yaml.safe_load(f))
         move_group_params.append({
             'octomap_frame': 'world',
-            'octomap_resolution': 0.05,
+            # Four-centimeter voxels make a tabletop extend about 2 cm above
+            # its measured surface, which is too coarse for a cup grasp. Two
+            # centimeters retains useful clearance without the former blocky
+            # palm/table false collisions.
+            'octomap_resolution': 0.02,
         })
 
     # Create launch arguments

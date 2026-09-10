@@ -4,6 +4,20 @@
         <chain base_link="base_link" tip_link="grasp_tcp"/>
     </group>
 
+    <!-- Button-specific arm group. Making press_tcp the IK tip lets the goal
+         sampler solve directly for the calibrated fingertip instead of
+         constraining an offset child of the normal grasp_tcp tip. -->
+    <group name="press_arm">
+        <chain base_link="base_link" tip_link="press_tcp"/>
+    </group>
+
+    <!-- Used by the hardware executor to generate a collision-checked first
+         phase in which the mobile base moves while the arm remains fixed. -->
+    <group name="base">
+        <joint name="base_x"/>
+        <joint name="base_y"/>
+        <joint name="base_theta"/>
+    </group>
 
     <group name="base_arm">
         <chain base_link="world" tip_link="grasp_tcp"/>

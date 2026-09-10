@@ -3,16 +3,19 @@
 <package format="3">
   <name>homeplus_vision</name>
   <version>0.0.1</version>
-  <description>Vision package for and pose estimation using RealSense camera</description>
-  <maintainer email="your.email@example.com">Your Name</maintainer>
+  <description>Multi-camera perception for the HomePlus robot</description>
+  <maintainer email="yl3498@cornell.edu">Yibing Lu</maintainer>
   <license>MIT</license>
 
   <buildtool_depend>ament_cmake</buildtool_depend>
   <buildtool_depend>ament_cmake_python</buildtool_depend>
 
   <depend>rclpy</depend>
+  <depend>ament_index_python</depend>
   <depend>homeplus_interfaces</depend>
+  <depend>rcl_interfaces</depend>
   <depend>std_msgs</depend>
+  <depend>std_srvs</depend>
   <depend>sensor_msgs</depend>
   <depend>geometry_msgs</depend>
   <depend>tf2</depend>
@@ -21,6 +24,8 @@
   <depend>cv_bridge</depend>
   <depend>image_transport</depend>
   <depend>realsense2_camera</depend>
+  <exec_depend>sensor_msgs_py</exec_depend>
+  <exec_depend>python3-tk</exec_depend>
 
   <test_depend>ament_lint_auto</test_depend>
   <test_depend>ament_lint_common</test_depend>

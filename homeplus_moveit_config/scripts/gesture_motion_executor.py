@@ -4,6 +4,7 @@ import math
 import time
 import threading
 from copy import deepcopy
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Dict, List, Optional
 
@@ -22,7 +23,9 @@ from moveit_msgs.msg import (
     PlanningOptions,
     PositionConstraint,
     RobotState,
+    RobotTrajectory,
 )
+from moveit_msgs.srv import GetMotionPlan
 from rclpy.action import ActionClient
 from rclpy.callback_groups import ReentrantCallbackGroup
 from rclpy.duration import Duration
@@ -31,6 +34,8 @@ from rclpy.time import Time
 from sensor_msgs.msg import JointState
 from shape_msgs.msg import SolidPrimitive
 from std_msgs.msg import Bool, Float32, String
+from std_srvs.srv import Empty
+from trajectory_msgs.msg import JointTrajectoryPoint
 from tf2_ros import Buffer, TransformListener
 
 # Joint order that the Arduino expects for trajectory waypoints
@@ -38,6 +43,61 @@ TRAJECTORY_JOINT_ORDER = [
     "base_x", "base_y", "base_theta",
     "joint_grip_L", "joint_hand", "joint_wrist", "joint_elbow", "joint_shoulder",
 ]
+
+WHEEL_JOINT_NAMES = [
+    "joint_wheel_FL", "joint_wheel_FR", "joint_wheel_RL", "joint_wheel_RR",
+]
+
+BASE_JOINT_NAMES = ["base_x", "base_y", "base_theta"]
+ARM_JOINT_NAMES = [
+    "joint_shoulder", "joint_elbow", "joint_wrist", "joint_hand"
+]
+
+MOVEIT_ERROR_NAMES = {
+    1: "SUCCESS",
+    -1: "PLANNING_FAILED",
+    -2: "INVALID_MOTION_PLAN",
+    -3: "MOTION_PLAN_INVALIDATED_BY_ENVIRONMENT_CHANGE",
+    -4: "CONTROL_FAILED",
+    -5: "UNABLE_TO_ACQUIRE_SENSOR_DATA",
+    -6: "TIMED_OUT",
+    -7: "PREEMPTED",
+    -10: "START_STATE_IN_COLLISION",
+    -11: "START_STATE_VIOLATES_PATH_CONSTRAINTS",
+    -12: "GOAL_IN_COLLISION",
+    -13: "GOAL_VIOLATES_PATH_CONSTRAINTS",
+    -14: "GOAL_CONSTRAINTS_VIOLATED",
+    -15: "INVALID_GROUP_NAME",
+    -16: "INVALID_GOAL_CONSTRAINTS",
+    -17: "INVALID_ROBOT_STATE",
+    -18: "INVALID_LINK_NAME",
+    -21: "FRAME_TRANSFORM_FAILURE",
+    -22: "COLLISION_CHECKING_UNAVAILABLE",
+    -23: "ROBOT_STATE_STALE",
+    -24: "SENSOR_INFO_STALE",
+    -25: "COMMUNICATION_FAILURE",
+    -29: "CRASH",
+    -30: "ABORT",
+    -31: "NO_IK_SOLUTION",
+}
+
+
+@dataclass
+class PlanContext:
+    """State for one MoveGroup request.
+
+    Keeping this state request-local prevents a late result from a timed-out
+    plan from completing (or executing) a newer command.
+    """
+
+    request_id: int
+    name: str
+    event: threading.Event = field(default_factory=threading.Event)
+    success: bool = False
+    cancelled: bool = False
+    awaiting_approval: bool = False
+    retryable_failure: bool = False
+    goal_handle: object = None
 
 
 def quaternion_from_euler(roll: float, pitch: float, yaw: float):
@@ -70,9 +130,11 @@ class GestureMotionExecutor(Node):
         self.declare_parameter("enable_moveit_planning", False)
         self.declare_parameter("move_group_action_name", "/move_action")
         self.declare_parameter("default_group_name", "base_arm")
+        self.declare_parameter("execution_order", "base_then_arm")
+        self.declare_parameter("planning_service_name", "/plan_kinematic_path")
         self.declare_parameter("end_effector_link", "grasp_tcp")
         self.declare_parameter("base_frame", "world")
-        self.declare_parameter("planner_id", "BiTRRTkConfigDefault")
+        self.declare_parameter("planner_id", "RRTConnectkConfigDefault")
         self.declare_parameter("plan_only", True)
         self.declare_parameter("allowed_planning_time", 5.0)
         self.declare_parameter("num_planning_attempts", 3)
@@ -92,6 +154,15 @@ class GestureMotionExecutor(Node):
         self.declare_parameter("joint_tolerance", 0.02)
         self.declare_parameter("workspace_bounds", [-2.0, -2.0, -1.0, 2.0, 2.0, 2.0])
         self.declare_parameter("gripper_settle_sec", 1.0)
+        self.declare_parameter("continue_on_arduino_timeout", False)
+        self.declare_parameter("max_start_state_error", 0.15)
+        self.declare_parameter("detection_min_stable_samples", 3)
+        self.declare_parameter("detection_stability_tolerance_m", 0.05)
+        self.declare_parameter("detection_max_refresh_shift_m", 0.15)
+        self.declare_parameter("clear_octomap_before_pose_plan", True)
+        self.declare_parameter("clear_octomap_service", "/clear_octomap")
+        self.declare_parameter("octomap_clear_timeout_sec", 2.0)
+        self.declare_parameter("octomap_rebuild_wait_sec", 1.2)
 
         execution_map_path = str(self.get_parameter("execution_map_path").value)
         if not execution_map_path:
@@ -102,6 +173,13 @@ class GestureMotionExecutor(Node):
         self.commands = self._load_execution_map(execution_map_path)
         self.enable_moveit_planning = bool(self.get_parameter("enable_moveit_planning").value)
         self.default_group_name = str(self.get_parameter("default_group_name").value)
+        self.execution_order = str(
+            self.get_parameter("execution_order").value
+        ).strip().lower()
+        if self.execution_order not in {"coordinated", "base_then_arm"}:
+            raise ValueError(
+                "execution_order must be 'coordinated' or 'base_then_arm'"
+            )
         self.end_effector_link = str(self.get_parameter("end_effector_link").value)
         self.base_frame = str(self.get_parameter("base_frame").value)
         self.planner_id = str(self.get_parameter("planner_id").value)
@@ -135,6 +213,36 @@ class GestureMotionExecutor(Node):
         self.joint_tolerance = float(self.get_parameter("joint_tolerance").value)
         self.workspace_bounds = list(self.get_parameter("workspace_bounds").value)
         self.gripper_settle_sec = float(self.get_parameter("gripper_settle_sec").value)
+        self.continue_on_arduino_timeout = bool(
+            self.get_parameter("continue_on_arduino_timeout").value
+        )
+        self.detection_min_stable_samples = max(
+            1, int(self.get_parameter("detection_min_stable_samples").value)
+        )
+        self.detection_stability_tolerance_m = float(
+            self.get_parameter("detection_stability_tolerance_m").value
+        )
+        self.detection_max_refresh_shift_m = float(
+            self.get_parameter("detection_max_refresh_shift_m").value
+        )
+        self.max_start_state_error = float(
+            self.get_parameter("max_start_state_error").value
+        )
+        self.clear_octomap_before_pose_plan = bool(
+            self.get_parameter("clear_octomap_before_pose_plan").value
+        )
+        self.octomap_clear_timeout_sec = max(
+            0.1, float(self.get_parameter("octomap_clear_timeout_sec").value)
+        )
+        self.octomap_rebuild_wait_sec = max(
+            0.0, float(self.get_parameter("octomap_rebuild_wait_sec").value)
+        )
+
+        if not self.plan_only:
+            raise ValueError(
+                "plan_only must remain true: this node executes trajectories through "
+                "the Arduino bridge, so MoveIt execution would command the motion twice."
+            )
 
         self.status_pub = self.create_publisher(
             String,
@@ -176,6 +284,16 @@ class GestureMotionExecutor(Node):
         self.cb_group = ReentrantCallbackGroup()
         self.tf_buffer = Buffer()
         self.tf_listener = TransformListener(self.tf_buffer, self)
+        self.octomap_clear_client = self.create_client(
+            Empty,
+            str(self.get_parameter("clear_octomap_service").value),
+            callback_group=self.cb_group,
+        )
+        self.motion_plan_client = self.create_client(
+            GetMotionPlan,
+            str(self.get_parameter("planning_service_name").value),
+            callback_group=self.cb_group,
+        )
         self.create_subscription(
             GestureCommand,
             str(self.get_parameter("command_topic").value),
@@ -208,20 +326,23 @@ class GestureMotionExecutor(Node):
         self._busy = False
         self._busy_lock = threading.Lock()
 
-        # Event used to signal when a MoveIt plan+execute completes
-        self._plan_done_event = threading.Event()
-        self._plan_success = False
+        self._plan_lock = threading.Lock()
+        self._next_plan_request_id = 1
+        self._active_plan: Optional[PlanContext] = None
         self._trajectory_approval_event = threading.Event()
         self._trajectory_approval_response: Optional[bool] = None
         self._trajectory_approval_lock = threading.Lock()
 
         # Detection pose tracking — subscriptions created dynamically per sequence
-        self._detection_pose: Optional[PoseStamped] = None
+        self._detection_poses: Dict[str, PoseStamped] = {}
+        self._detection_samples: Dict[str, List[PoseStamped]] = {}
         self._detection_lock = threading.Lock()
         self._detection_subs: Dict[str, object] = {}  # topic -> subscription
 
         # Arduino execution tracking — wait for "DONE" ack
         self._arduino_done_event = threading.Event()
+        self._arduino_result_lock = threading.Lock()
+        self._arduino_error_message: Optional[str] = None
         self._pending_joint_state: Optional[List[float]] = None
         self._pending_joint_state_reason: str = ""
         self._pending_joint_state_lock = threading.Lock()
@@ -238,6 +359,7 @@ class GestureMotionExecutor(Node):
         self._sequence_log_name: Optional[str] = None
         self._sequence_log_rows: List[Dict] = []
         self._sequence_log_time_offset = 0.0
+        self._target_audit_path: Optional[Path] = None
 
         self.move_group_client = None
         if self.enable_moveit_planning:
@@ -252,6 +374,9 @@ class GestureMotionExecutor(Node):
         self.get_logger().info(
             f"Gesture motion executor ready with {len(self.commands)} commands from {execution_map_path}"
         )
+        self.get_logger().info(
+            f"Hardware trajectory execution order: {self.execution_order}"
+        )
 
     # ------------------------------------------------------------------
     # Busy state
@@ -260,6 +385,15 @@ class GestureMotionExecutor(Node):
         with self._busy_lock:
             self._busy = busy
         self.busy_pub.publish(Bool(data=busy))
+
+    def _try_set_busy(self) -> bool:
+        """Atomically claim the executor for one command."""
+        with self._busy_lock:
+            if self._busy:
+                return False
+            self._busy = True
+        self.busy_pub.publish(Bool(data=True))
+        return True
 
     def _is_busy(self) -> bool:
         with self._busy_lock:
@@ -275,44 +409,176 @@ class GestureMotionExecutor(Node):
         sub = self.create_subscription(
             PoseStamped,
             topic,
-            self._detection_pose_callback,
+            lambda msg, source_topic=topic: self._detection_pose_callback(source_topic, msg),
             10,
             callback_group=self.cb_group,
         )
         self._detection_subs[topic] = sub
 
-    def _detection_pose_callback(self, msg: PoseStamped) -> None:
+    def _detection_pose_callback(self, topic: str, msg: PoseStamped) -> None:
         with self._detection_lock:
-            self._detection_pose = msg
+            self._detection_poses[topic] = msg
+            samples = self._detection_samples.setdefault(topic, [])
+            samples.append(deepcopy(msg))
+            if len(samples) > 30:
+                del samples[:-30]
 
-    def _get_detection_pose(self) -> Optional[PoseStamped]:
+    def _get_detection_pose(self, topic: str) -> Optional[PoseStamped]:
         with self._detection_lock:
-            return deepcopy(self._detection_pose) if self._detection_pose else None
+            pose = self._detection_poses.get(topic)
+            return deepcopy(pose) if pose else None
 
-    def _wait_for_detection(self, timeout_sec: float) -> Optional[PoseStamped]:
-        """Poll for a detection pose, returning None on timeout."""
+    def _wait_for_detection(
+        self,
+        topic: str,
+        timeout_sec: float,
+        reference_pose: Optional[PoseStamped] = None,
+        required_samples: Optional[int] = None,
+        stability_tolerance_m: Optional[float] = None,
+        max_refresh_shift_m: Optional[float] = None,
+    ) -> Optional[PoseStamped]:
+        """Return the median of consecutive spatially consistent detections."""
         deadline = time.monotonic() + timeout_sec
+        required = max(
+            1,
+            int(
+                self.detection_min_stable_samples
+                if required_samples is None
+                else required_samples
+            ),
+        )
+        tolerance = (
+            self.detection_stability_tolerance_m
+            if stability_tolerance_m is None
+            else float(stability_tolerance_m)
+        )
+        max_refresh_shift = (
+            self.detection_max_refresh_shift_m
+            if max_refresh_shift_m is None
+            else float(max_refresh_shift_m)
+        )
+        next_progress_log = time.monotonic() + 2.0
+        received_count = 0
+        usable_count = 0
+        rejected_by_reference = 0
+        latest_deviation: Optional[float] = None
+
         while time.monotonic() < deadline:
-            pose = self._get_detection_pose()
-            if pose is not None:
-                return pose
+            with self._detection_lock:
+                samples = [deepcopy(pose) for pose in self._detection_samples.get(topic, [])]
+
+            received_count = len(samples)
+            if reference_pose is not None:
+                reference = reference_pose.pose.position
+                accepted_samples = []
+                for pose in samples:
+                    shift = math.dist(
+                        (pose.pose.position.x, pose.pose.position.y, pose.pose.position.z),
+                        (reference.x, reference.y, reference.z),
+                    )
+                    if shift <= max_refresh_shift:
+                        accepted_samples.append(pose)
+                samples = accepted_samples
+            usable_count = len(samples)
+            rejected_by_reference = received_count - usable_count
+
+            if len(samples) >= required:
+                candidates = samples[-required:]
+                xs = sorted(pose.pose.position.x for pose in candidates)
+                ys = sorted(pose.pose.position.y for pose in candidates)
+                zs = sorted(pose.pose.position.z for pose in candidates)
+                middle = required // 2
+                if required % 2:
+                    median_xyz = (xs[middle], ys[middle], zs[middle])
+                else:
+                    median_xyz = (
+                        0.5 * (xs[middle - 1] + xs[middle]),
+                        0.5 * (ys[middle - 1] + ys[middle]),
+                        0.5 * (zs[middle - 1] + zs[middle]),
+                    )
+
+                max_deviation = max(
+                    math.dist(
+                        (pose.pose.position.x, pose.pose.position.y, pose.pose.position.z),
+                        median_xyz,
+                    )
+                    for pose in candidates
+                )
+                latest_deviation = max_deviation
+                if max_deviation <= tolerance:
+                    stable_pose = deepcopy(candidates[-1])
+                    stable_pose.pose.position.x = median_xyz[0]
+                    stable_pose.pose.position.y = median_xyz[1]
+                    stable_pose.pose.position.z = median_xyz[2]
+                    self.get_logger().info(
+                        f"  Detection stabilized from {required} samples "
+                        f"(max deviation {max_deviation:.3f} m)"
+                    )
+                    return stable_pose
+            now = time.monotonic()
+            if now >= next_progress_log:
+                remaining = max(0.0, deadline - now)
+                details = (
+                    f"  Detection wait: {usable_count}/{required} usable sample(s), "
+                    f"{received_count} received"
+                )
+                if reference_pose is not None:
+                    details += (
+                        f", {rejected_by_reference} outside the "
+                        f"{max_refresh_shift:.3f} m refresh gate"
+                    )
+                if latest_deviation is not None:
+                    details += (
+                        f", latest cluster deviation={latest_deviation:.3f} m "
+                        f"(limit {tolerance:.3f} m)"
+                    )
+                details += f"; {remaining:.1f}s remaining"
+                self.get_logger().info(details)
+                next_progress_log = now + 2.0
             time.sleep(0.1)
+        self.get_logger().warn(
+            f"  Detection wait expired: {usable_count}/{required} usable sample(s), "
+            f"{received_count} received, {rejected_by_reference} rejected by refresh gate"
+        )
         return None
 
-    def _refresh_detection(self, sequence_name: str, detection_topic: str, timeout_sec: float) -> Optional[PoseStamped]:
+    def _refresh_detection(
+        self,
+        sequence_name: str,
+        detection_topic: str,
+        timeout_sec: float,
+        reference_pose: Optional[PoseStamped] = None,
+        required_samples: Optional[int] = None,
+        stability_tolerance_m: Optional[float] = None,
+        max_refresh_shift_m: Optional[float] = None,
+    ) -> Optional[PoseStamped]:
         """Force a fresh target pose by clearing the cached one and waiting again."""
         self._ensure_detection_subscription(detection_topic)
         with self._detection_lock:
-            self._detection_pose = None
+            self._detection_poses.pop(detection_topic, None)
+            self._detection_samples[detection_topic] = []
 
         self._publish_status(
             f"[{sequence_name}] Waiting for object detection on {detection_topic}..."
         )
-        detected_pose = self._wait_for_detection(timeout_sec)
+        detected_pose = self._wait_for_detection(
+            detection_topic,
+            timeout_sec,
+            reference_pose=reference_pose,
+            required_samples=required_samples,
+            stability_tolerance_m=stability_tolerance_m,
+            max_refresh_shift_m=max_refresh_shift_m,
+        )
         if detected_pose is None:
             return None
 
         p = detected_pose.pose.position
+        if not all(math.isfinite(value) for value in (p.x, p.y, p.z)):
+            self.get_logger().error("Detection contained a non-finite position")
+            return None
+        if not detected_pose.header.frame_id:
+            self.get_logger().error("Detection did not specify a coordinate frame")
+            return None
         self.get_logger().info(
             f"  Detection acquired: x={p.x:.3f} y={p.y:.3f} z={p.z:.3f}"
         )
@@ -342,7 +608,7 @@ class GestureMotionExecutor(Node):
 
         return pose_msg
 
-    def _resolve_detected_pose(self, step: Dict, detected: PoseStamped) -> Dict:
+    def _resolve_detected_pose(self, step: Dict, detected: PoseStamped) -> Optional[Dict]:
         """Return a copy of the step config with position filled from detection + offsets."""
         resolved = dict(step)
         target_frame = str(step.get("frame_id", self.base_frame))
@@ -368,11 +634,11 @@ class GestureMotionExecutor(Node):
                         f"  Transformed detected target {source_frame} -> {target_frame}"
                     )
                 except Exception as exc:
-                    self.get_logger().warn(
+                    self.get_logger().error(
                         f"  Could not transform detected target {source_frame} -> "
-                        f"{target_frame}: {exc}; using original frame"
+                        f"{target_frame}: {exc}"
                     )
-                    target_frame = source_frame
+                    return None
         elif source_frame:
             target_frame = source_frame
 
@@ -393,9 +659,24 @@ class GestureMotionExecutor(Node):
     def _arduino_ack_callback(self, msg: String) -> None:
         ack = msg.data.strip()
         if ack.upper().startswith("DONE"):
+            with self._arduino_result_lock:
+                self._arduino_error_message = None
             self.get_logger().info(f"  Arduino DONE received: {ack}")
             self._apply_pending_joint_state()
             self._arduino_done_event.set()
+        elif ack.upper().startswith("ERROR"):
+            with self._arduino_result_lock:
+                self._arduino_error_message = ack
+            self.get_logger().error(f"  Arduino execution error: {ack}")
+            # Wake the waiter immediately. It will inspect the stored result
+            # and return failure rather than waiting for its host-side timeout.
+            self._arduino_done_event.set()
+
+    def _arm_arduino_wait(self) -> None:
+        """Clear the previous terminal result before publishing a new queue."""
+        with self._arduino_result_lock:
+            self._arduino_error_message = None
+        self._arduino_done_event.clear()
 
     def _queue_pending_joint_state(self, positions: List[float], reason: str) -> None:
         with self._pending_joint_state_lock:
@@ -455,6 +736,14 @@ class GestureMotionExecutor(Node):
 
             if self._arduino_done_event.wait(timeout=min(0.2, remaining)):
                 elapsed = time.monotonic() - start_time
+                with self._arduino_result_lock:
+                    error_message = self._arduino_error_message
+                if error_message is not None:
+                    self.get_logger().error(
+                        f"{label}: Arduino failed after {elapsed:.1f}s: "
+                        f"{error_message}"
+                    )
+                    return False
                 self.get_logger().info(f"{label}: Arduino DONE after {elapsed:.1f}s")
                 return True
 
@@ -470,6 +759,17 @@ class GestureMotionExecutor(Node):
     # Trajectory approval
     # ------------------------------------------------------------------
     def _trajectory_approval_callback(self, msg: Bool) -> None:
+        with self._plan_lock:
+            active_plan = self._active_plan
+            accepting_response = bool(
+                active_plan
+                and not active_plan.cancelled
+                and active_plan.awaiting_approval
+            )
+        if not accepting_response:
+            self.get_logger().warn("Ignoring trajectory approval: no plan is awaiting approval")
+            return
+
         with self._trajectory_approval_lock:
             self._trajectory_approval_response = bool(msg.data)
             self._trajectory_approval_event.set()
@@ -482,7 +782,7 @@ class GestureMotionExecutor(Node):
             self._trajectory_approval_response = None
             self._trajectory_approval_event.clear()
 
-    def _wait_for_trajectory_approval(self, name: str) -> bool:
+    def _wait_for_trajectory_approval(self, name: str, context: PlanContext) -> bool:
         timeout_sec = self.trajectory_approval_timeout_sec
         approve_cmd = (
             "ros2 topic pub --once "
@@ -503,6 +803,9 @@ class GestureMotionExecutor(Node):
         progress_period = 5.0
 
         while True:
+            if context.cancelled:
+                self.get_logger().warn(f"Approval wait cancelled for {name}")
+                return False
             if timeout_sec > 0.0:
                 elapsed = time.monotonic() - start_time
                 remaining = timeout_sec - elapsed
@@ -537,7 +840,27 @@ class GestureMotionExecutor(Node):
 
     def _plan_wait_timeout(self, command_cfg: Dict) -> Optional[float]:
         planning_time = float(command_cfg.get("allowed_planning_time", self.allowed_planning_time))
-        if not self.require_trajectory_approval:
+        if (
+            self.execution_order == "base_then_arm"
+            and str(command_cfg.get("group_name", self.default_group_name))
+            == "base_arm"
+        ):
+            phase_time = float(
+                command_cfg.get("phase_allowed_planning_time", 5.0)
+            )
+            service_timeout = float(
+                command_cfg.get("planning_service_timeout_sec", 3.0)
+            )
+            base_timeout = float(
+                command_cfg.get("base_phase_timeout_sec", 60.0)
+            )
+            # The plan context remains active while both phase plans are
+            # computed and while hardware confirms the base has settled.
+            planning_time += 2.0 * (phase_time + service_timeout) + base_timeout
+        require_approval = bool(
+            command_cfg.get("require_trajectory_approval", self.require_trajectory_approval)
+        )
+        if not require_approval:
             return max(30.0, planning_time + 10.0)
 
         approval_time = self.trajectory_approval_timeout_sec
@@ -574,14 +897,138 @@ class GestureMotionExecutor(Node):
         commands = payload.get("commands", {})
         if not commands:
             raise ValueError(f"No commands found in {path}")
+        errors = []
+        for name, command_cfg in commands.items():
+            errors.extend(self._command_config_errors(str(name), command_cfg))
+        if errors:
+            formatted = "\n  - ".join(errors)
+            raise ValueError(f"Invalid execution map {path}:\n  - {formatted}")
         return commands
 
+    @staticmethod
+    def _command_config_errors(name: str, command_cfg: Dict) -> List[str]:
+        errors: List[str] = []
+        if not isinstance(command_cfg, dict):
+            return [f"{name}: command must be a mapping"]
+
+        action_type = str(command_cfg.get("type", "command"))
+        supported = {"pose", "joint_state", "gripper", "command", "sequence", "detect"}
+        if action_type not in supported:
+            errors.append(f"{name}: unsupported type '{action_type}'")
+
+        if action_type == "pose":
+            position = command_cfg.get("position")
+            target = command_cfg.get("target")
+            supported_pose_targets = {"detected", "previous_pose"}
+            if target is not None and target not in supported_pose_targets:
+                errors.append(
+                    f"{name}: unsupported pose target '{target}'"
+                )
+            if target not in supported_pose_targets and position is None:
+                errors.append(
+                    f"{name}: pose requires position, target: detected, "
+                    "or target: previous_pose"
+                )
+            if position is not None and (
+                not isinstance(position, list)
+                or len(position) != 3
+                or not all(isinstance(v, (int, float)) and math.isfinite(v) for v in position)
+            ):
+                errors.append(f"{name}: position must contain three finite numbers")
+            rpy = command_cfg.get("rpy_deg")
+            orientation = command_cfg.get("orientation")
+            if rpy is not None and (not isinstance(rpy, list) or len(rpy) != 3):
+                errors.append(f"{name}: rpy_deg must contain three numbers")
+            if orientation is not None and (
+                not isinstance(orientation, list) or len(orientation) != 4
+            ):
+                errors.append(f"{name}: orientation must contain four numbers")
+
+        if action_type == "joint_state" and not command_cfg.get("joints"):
+            errors.append(f"{name}: joint_state requires a non-empty joints mapping")
+
+        if action_type == "gripper":
+            value = command_cfg.get("value")
+            if not isinstance(value, (int, float)) or not 0.0 <= float(value) <= 90.0:
+                errors.append(f"{name}: gripper value must be in Arduino degrees [0, 90]")
+            max_attempts = command_cfg.get("max_attempts", 1)
+            if not isinstance(max_attempts, int) or max_attempts < 1:
+                errors.append(f"{name}: max_attempts must be a positive integer")
+
+        for key in (
+            "position_tolerance_m",
+            "orientation_tolerance_rad",
+            "orientation_tolerance_x_rad",
+            "orientation_tolerance_y_rad",
+            "orientation_tolerance_z_rad",
+            "joint_tolerance",
+            "max_base_goal_translation_m",
+            "max_base_goal_y_translation_m",
+            "base_goal_tcp_y_max_m",
+            "max_base_goal_rotation_rad",
+            "base_goal_tcp_x_min_m",
+            "base_goal_tcp_x_max_m",
+            "detection_stability_tolerance_m",
+            "detection_max_refresh_shift_m",
+        ):
+            if key in command_cfg and float(command_cfg[key]) <= 0.0:
+                errors.append(f"{name}: {key} must be positive")
+        reach_min = command_cfg.get("base_goal_tcp_x_min_m")
+        reach_max = command_cfg.get("base_goal_tcp_x_max_m")
+        if (reach_min is None) != (reach_max is None):
+            errors.append(
+                f"{name}: base_goal_tcp_x_min_m and "
+                "base_goal_tcp_x_max_m must be set together"
+            )
+        elif reach_min is not None and float(reach_min) >= float(reach_max):
+            errors.append(
+                f"{name}: base_goal_tcp_x_min_m must be less than "
+                "base_goal_tcp_x_max_m"
+            )
+        for key in ("allowed_planning_time", "num_planning_attempts"):
+            if key in command_cfg and float(command_cfg[key]) <= 0.0:
+                errors.append(f"{name}: {key} must be positive")
+        if "max_replanning_attempts" in command_cfg:
+            value = command_cfg["max_replanning_attempts"]
+            if not isinstance(value, int) or isinstance(value, bool) or value <= 0:
+                errors.append(
+                    f"{name}: max_replanning_attempts must be a positive integer"
+                )
+
+        if action_type == "sequence":
+            steps = command_cfg.get("steps")
+            if not isinstance(steps, list) or not steps:
+                errors.append(f"{name}: sequence requires a non-empty steps list")
+            else:
+                for index, step in enumerate(steps):
+                    step_name = str(step.get("name", f"step_{index}")) if isinstance(step, dict) else f"step_{index}"
+                    errors.extend(
+                        GestureMotionExecutor._command_config_errors(
+                            f"{name}/{step_name}", step
+                        )
+                    )
+                uses_detection = any(
+                    isinstance(step, dict)
+                    and (step.get("target") == "detected" or step.get("type") == "detect")
+                    for step in steps
+                )
+                if uses_detection and not (
+                    command_cfg.get("detection_topic")
+                    or command_cfg.get("hardcoded_detection_pose")
+                ):
+                    errors.append(f"{name}: detected steps require detection_topic")
+        return errors
+
     def joint_states_callback(self, msg: JointState) -> None:
-        # Only accept feedback whose joint set matches our trajectory model
-        # (i.e. arduino_reader.py or our own publishes). joint_state_publisher
-        # publishes a superset of URDF joints with default zeros — accepting it
-        # would clobber latest_joint_state between sequence steps.
-        if set(msg.name) != set(TRAJECTORY_JOINT_ORDER):
+        # Require all trajectory joints but allow the zero-valued wheel joints
+        # included so robot_state_publisher can publish the complete TF tree.
+        if not set(TRAJECTORY_JOINT_ORDER).issubset(msg.name):
+            return
+        # A sequence owns the commanded state until it finishes.  The Arduino
+        # bridge may publish its previous/default state while a trajectory is
+        # running; accepting that here would make the following gripper command
+        # resend zeros for the arm and drive it back to its initial pose.
+        if self._is_busy():
             return
         self.latest_joint_state = msg
 
@@ -589,7 +1036,7 @@ class GestureMotionExecutor(Node):
     # Command dispatch
     # ------------------------------------------------------------------
     def command_callback(self, msg: GestureCommand) -> None:
-        if self._is_busy():
+        if not self._try_set_busy():
             self._publish_status(
                 f"Busy — ignoring gesture {msg.gesture_id} ({msg.command_name})"
             )
@@ -601,23 +1048,33 @@ class GestureMotionExecutor(Node):
         command_name = str(msg.command_name)
         command_cfg = self.commands.get(command_name)
         if command_cfg is None:
+            self._set_busy(False)
             self._publish_status(f"No execution configured for command {command_name}")
             self.get_logger().warn(f"No execution configured for command {command_name}")
             return
 
-        action_type = str(command_cfg.get("type", msg.command_type or "command"))
+        # All command types use the same serialized worker path. Previously,
+        # only sequences claimed the busy flag, so two single-pose commands
+        # could share approval/events and execute the wrong plan.
+        thread = threading.Thread(
+            target=self._run_command,
+            args=(command_name, command_cfg, msg.command_type),
+            daemon=True,
+        )
+        thread.start()
 
-        if action_type == "sequence":
-            # Run the sequence on a background thread so we don't block
-            # the executor's callback group while waiting for each step.
-            thread = threading.Thread(
-                target=self._run_sequence,
-                args=(command_name, command_cfg),
-                daemon=True,
-            )
-            thread.start()
-        else:
-            self._execute_single_step(command_name, command_cfg, msg.command_type)
+    def _run_command(self, command_name: str, command_cfg: Dict, fallback_type: str) -> None:
+        try:
+            action_type = str(command_cfg.get("type", fallback_type or "command"))
+            if action_type == "sequence":
+                self._run_sequence(command_name, command_cfg)
+            else:
+                self._execute_single_step(command_name, command_cfg, fallback_type)
+        except Exception as exc:
+            self.get_logger().error(f"Command {command_name} crashed: {exc}")
+            self._publish_status(f"Command {command_name} FAILED: {exc}")
+        finally:
+            self._set_busy(False)
 
     # ------------------------------------------------------------------
     # Single-step execution (unchanged behavior for non-sequence commands)
@@ -632,22 +1089,65 @@ class GestureMotionExecutor(Node):
             pose_msg = self._build_pose_message(command_cfg)
             self.target_pose_pub.publish(pose_msg)
             if self.enable_moveit_planning:
-                self._plan_pose(command_name, pose_msg, command_cfg)
+                context = self._plan_pose(command_name, pose_msg, command_cfg)
+                plan_succeeded = bool(
+                    context is not None and self._wait_for_plan(context, command_cfg)
+                )
+                if not plan_succeeded:
+                    self._publish_status(f"Command {command_name} failed during planning")
+                else:
+                    self._complete_single_trajectory(command_name, command_cfg)
         elif action_type == "joint_state":
             joint_msg = self._build_joint_state_message(command_cfg)
             self.joint_target_pub.publish(joint_msg)
             if self.enable_moveit_planning:
-                self._plan_joint_state(command_name, joint_msg, command_cfg)
+                context = self._plan_joint_state(command_name, joint_msg, command_cfg)
+                plan_succeeded = bool(
+                    context is not None and self._wait_for_plan(context, command_cfg)
+                )
+                if not plan_succeeded:
+                    self._publish_status(f"Command {command_name} failed during planning")
+                else:
+                    self._complete_single_trajectory(command_name, command_cfg)
         elif action_type == "gripper":
             grip_val = float(command_cfg["value"])
             self.gripper_target_pub.publish(Float32(data=grip_val))
-            self._send_gripper_to_arduino(grip_val)
+            max_attempts = int(command_cfg.get("max_attempts", 1))
+            for attempt in range(1, max_attempts + 1):
+                self._send_gripper_to_arduino(grip_val)
+                if self.wait_for_gripper_ack:
+                    if not self._wait_for_arduino_done(
+                        15.0, f"{command_name} gripper"
+                    ):
+                        self._force_apply_pending_joint_state("gripper timeout")
+                        if attempt < max_attempts:
+                            continue
+                        self._publish_status(
+                            f"Command {command_name} failed: gripper timeout"
+                        )
+                        break
+                else:
+                    self._force_apply_pending_joint_state(
+                        "gripper acknowledgement disabled"
+                    )
+                settle_sec = float(command_cfg.get("settle_sec", self.gripper_settle_sec))
+                if settle_sec > 0.0:
+                    time.sleep(settle_sec)
+                break
         elif action_type == "command":
             pass
         else:
             self.get_logger().warn(
                 f"Unsupported execution type '{action_type}' for {command_name}"
             )
+
+    def _complete_single_trajectory(self, command_name: str, command_cfg: Dict) -> None:
+        if self.wait_for_trajectory_ack:
+            if not self._wait_for_arduino_done(60.0, f"{command_name} trajectory"):
+                self._force_apply_pending_joint_state("trajectory timeout")
+                self._publish_status(f"Command {command_name} failed: trajectory timeout")
+        else:
+            self._force_apply_pending_joint_state("trajectory acknowledgement disabled")
 
     # ------------------------------------------------------------------
     # Sequence execution
@@ -658,7 +1158,6 @@ class GestureMotionExecutor(Node):
             self.get_logger().error(f"Sequence {sequence_name} has no steps")
             return
 
-        self._set_busy(True)
         self._start_sequence_trajectory_log(sequence_name)
         self._publish_status(f"Starting sequence: {sequence_name} ({len(steps)} steps)")
         self.get_logger().info(
@@ -681,13 +1180,26 @@ class GestureMotionExecutor(Node):
             )
         elif needs_detection:
             timeout = float(sequence_cfg.get("detection_timeout_sec", 5.0))
-            detected_pose = self._refresh_detection(sequence_name, detection_topic, timeout)
+            detected_pose = self._refresh_detection(
+                sequence_name,
+                detection_topic,
+                timeout,
+                required_samples=int(
+                    sequence_cfg.get(
+                        "detection_min_stable_samples",
+                        self.detection_min_stable_samples,
+                    )
+                ),
+            )
             if detected_pose is None:
                 self._abort_sequence(
-                    sequence_name, "detection", f"no detection on {detection_topic} within {timeout}s"
+                    sequence_name,
+                    "detection",
+                    f"no stable detection on {detection_topic} within {timeout}s",
                 )
                 return
 
+        last_successful_pose: Optional[PoseStamped] = None
         for i, step in enumerate(steps):
             step_name = step.get("name", f"step_{i}")
             step_type = step.get("type", "command")
@@ -696,11 +1208,52 @@ class GestureMotionExecutor(Node):
             effective_step = step
             if step.get("target") == "detected" and detected_pose is not None:
                 effective_step = self._resolve_detected_pose(step, detected_pose)
+                if effective_step is None:
+                    self._abort_sequence(
+                        sequence_name,
+                        step_name,
+                        "could not transform detected pose into the planning frame",
+                    )
+                    return
+            elif step.get("target") == "previous_pose":
+                if last_successful_pose is None:
+                    self._abort_sequence(
+                        sequence_name,
+                        step_name,
+                        "previous pose is unavailable",
+                    )
+                    return
+                effective_step = self._resolve_detected_pose(
+                    step, last_successful_pose
+                )
+                if effective_step is None:
+                    self._abort_sequence(
+                        sequence_name,
+                        step_name,
+                        "could not resolve previous pose in the planning frame",
+                    )
+                    return
+
+            if step.get("target") == "detected" and detected_pose is not None:
                 pos = effective_step["position"]
                 frame_id = effective_step.get("frame_id", self.base_frame)
                 self.get_logger().info(
                     f"  {step_name}: resolved target in {frame_id} -> "
                     f"[{pos[0]:.3f}, {pos[1]:.3f}, {pos[2]:.3f}]"
+                )
+                self._append_target_audit(
+                    sequence_name=sequence_name,
+                    step_name=step_name,
+                    detection_topic=str(detection_topic or ""),
+                    detected_pose=detected_pose,
+                    resolved_step=effective_step,
+                )
+            elif step.get("target") == "previous_pose":
+                pos = effective_step["position"]
+                frame_id = effective_step.get("frame_id", self.base_frame)
+                self.get_logger().info(
+                    f"  {step_name}: resolved from previous successful pose in "
+                    f"{frame_id} -> [{pos[0]:.3f}, {pos[1]:.3f}, {pos[2]:.3f}]"
                 )
 
             self._publish_status(
@@ -713,19 +1266,53 @@ class GestureMotionExecutor(Node):
             if step_type == "gripper":
                 grip_val = float(effective_step["value"])
                 self.gripper_target_pub.publish(Float32(data=grip_val))
-                self._send_gripper_to_arduino(grip_val)
-                if self.wait_for_gripper_ack:
-                    self.get_logger().info("  Waiting for Arduino to finish gripper...")
-                    if not self._wait_for_arduino_done(
-                        timeout_sec=15.0,
-                        label=f"{sequence_name}/{step_name} gripper",
-                    ):
-                        self._force_apply_pending_joint_state("gripper timeout")
-                        self.get_logger().warn(
-                            f"  Continuing sequence after gripper timeout for {step_name}"
+                max_attempts = int(effective_step.get("max_attempts", 1))
+                settle_sec = float(
+                    effective_step.get("settle_sec", self.gripper_settle_sec)
+                )
+                for attempt in range(1, max_attempts + 1):
+                    if max_attempts > 1:
+                        self.get_logger().info(
+                            f"  Gripper command attempt {attempt}/{max_attempts}"
                         )
-                else:
-                    self.get_logger().info("  Continuing without gripper DONE acknowledgement")
+                    self._send_gripper_to_arduino(grip_val)
+                    if self.wait_for_gripper_ack:
+                        self.get_logger().info("  Waiting for Arduino to finish gripper...")
+                        if not self._wait_for_arduino_done(
+                            timeout_sec=15.0,
+                            label=f"{sequence_name}/{step_name} gripper",
+                        ):
+                            self._force_apply_pending_joint_state("gripper timeout")
+                            if attempt < max_attempts:
+                                self.get_logger().warn(
+                                    f"  Retrying gripper command for {step_name}"
+                                )
+                                continue
+                            if not bool(effective_step.get(
+                                "continue_on_arduino_timeout",
+                                self.continue_on_arduino_timeout,
+                            )):
+                                self._abort_sequence(
+                                    sequence_name, step_name, "gripper timeout"
+                                )
+                                return
+                            self.get_logger().warn(
+                                f"  Continuing after gripper timeout for {step_name}"
+                            )
+                    else:
+                        self.get_logger().info(
+                            "  Continuing without gripper DONE acknowledgement"
+                        )
+                        self._force_apply_pending_joint_state(
+                            "gripper acknowledgement disabled"
+                        )
+
+                    if settle_sec > 0.0:
+                        self.get_logger().info(
+                            f"  Allowing gripper to settle for {settle_sec:.1f}s"
+                        )
+                        time.sleep(settle_sec)
+                    break
 
             elif step_type == "detect":
                 if not detection_topic:
@@ -736,12 +1323,47 @@ class GestureMotionExecutor(Node):
                     "detection_timeout_sec",
                     sequence_cfg.get("detection_timeout_sec", 5.0),
                 ))
-                detected_pose = self._refresh_detection(sequence_name, detection_topic, timeout)
-                if detected_pose is None:
+                refreshed_pose = self._refresh_detection(
+                    sequence_name,
+                    detection_topic,
+                    timeout,
+                    reference_pose=detected_pose,
+                    required_samples=int(
+                        effective_step.get(
+                            "detection_min_stable_samples",
+                            self.detection_min_stable_samples,
+                        )
+                    ),
+                    stability_tolerance_m=(
+                        float(effective_step["detection_stability_tolerance_m"])
+                        if "detection_stability_tolerance_m" in effective_step
+                        else None
+                    ),
+                    max_refresh_shift_m=(
+                        float(effective_step["detection_max_refresh_shift_m"])
+                        if "detection_max_refresh_shift_m" in effective_step
+                        else None
+                    ),
+                )
+                if (
+                    refreshed_pose is not None
+                    and detected_pose is not None
+                    and bool(effective_step.get("preserve_reference_z", False))
+                ):
+                    measured_z = refreshed_pose.pose.position.z
+                    reference_z = detected_pose.pose.position.z
+                    refreshed_pose.pose.position.z = reference_z
+                    self.get_logger().info(
+                        f"  Refined X/Y while preserving target Z={reference_z:.3f} m "
+                        f"(new Z measurement was {measured_z:.3f} m)"
+                    )
+                if refreshed_pose is not None:
+                    detected_pose = refreshed_pose
+                if refreshed_pose is None:
                     self._abort_sequence(
                         sequence_name,
                         step_name,
-                        f"no detection on {detection_topic} within {timeout}s",
+                        f"no stable detection on {detection_topic} within {timeout}s",
                     )
                     return
 
@@ -751,16 +1373,95 @@ class GestureMotionExecutor(Node):
                     return
 
                 pose_msg = self._build_pose_message(effective_step)
-                self.target_pose_pub.publish(pose_msg)
+                candidate_z_offsets = [
+                    float(value)
+                    for value in effective_step.get(
+                        "safe_z_candidate_offsets_m", [0.0]
+                    )
+                ]
+                if not candidate_z_offsets:
+                    candidate_z_offsets = [0.0]
 
-                self._plan_done_event.clear()
-                self._plan_success = False
-                self._plan_pose(step_name, pose_msg, effective_step)
+                max_replanning_attempts = max(
+                    1,
+                    int(
+                        effective_step.get(
+                            "max_replanning_attempts",
+                            sequence_cfg.get("max_replanning_attempts", 1),
+                        )
+                    ),
+                )
+                planning_succeeded = False
+                for planning_attempt in range(1, max_replanning_attempts + 1):
+                    candidate_index = min(
+                        planning_attempt - 1, len(candidate_z_offsets) - 1
+                    )
+                    candidate_z_offset = candidate_z_offsets[candidate_index]
+                    candidate_pose = deepcopy(pose_msg)
+                    candidate_pose.pose.position.z += candidate_z_offset
+                    self.target_pose_pub.publish(candidate_pose)
+                    if max_replanning_attempts > 1:
+                        self.get_logger().info(
+                            f"  Planning {step_name}: outer attempt "
+                            f"{planning_attempt}/{max_replanning_attempts}, "
+                            f"safe candidate z={candidate_pose.pose.position.z:.3f} m "
+                            f"(offset +{candidate_z_offset:.3f} m)"
+                        )
+                    attempt_step = effective_step
+                    if planning_attempt > 1:
+                        # The first attempt already cleared the map and waited
+                        # for a fresh cloud. Rebuilding the same scene on every
+                        # stochastic OMPL retry adds latency and can reinsert
+                        # the same target-edge noise that just caused failure.
+                        attempt_step = dict(effective_step)
+                        attempt_step["clear_octomap_before_plan"] = False
+                        self.get_logger().info(
+                            f"  Reusing prepared OctoMap for {step_name} retry"
+                        )
+                    context = self._plan_pose(
+                        step_name, candidate_pose, attempt_step
+                    )
+                    if context is not None and self._wait_for_plan(context, attempt_step):
+                        planning_succeeded = True
+                        break
 
-                self._plan_done_event.wait(timeout=self._plan_wait_timeout(effective_step))
-                if not self._plan_success:
+                    retryable = context is None or context.retryable_failure
+                    if not retryable or planning_attempt >= max_replanning_attempts:
+                        break
+                    self.get_logger().warn(
+                        f"  Replanning {step_name} after MoveIt failure "
+                        f"({planning_attempt}/{max_replanning_attempts})"
+                    )
+                    time.sleep(0.2)
+
+                if not planning_succeeded:
                     self._abort_sequence(sequence_name, step_name, "planning/execution failed")
                     return
+
+                last_successful_pose = deepcopy(candidate_pose)
+                if (
+                    step.get("target") == "detected"
+                    and detected_pose is not None
+                ):
+                    selected_step = dict(effective_step)
+                    selected_step["position"] = [
+                        candidate_pose.pose.position.x,
+                        candidate_pose.pose.position.y,
+                        candidate_pose.pose.position.z,
+                    ]
+                    selected_step["_unclamped_position_z_m"] = float(
+                        effective_step.get(
+                            "_unclamped_position_z_m",
+                            effective_step["position"][2],
+                        )
+                    )
+                    self._append_target_audit(
+                        sequence_name=sequence_name,
+                        step_name=f"{step_name}_selected_candidate",
+                        detection_topic=str(detection_topic or ""),
+                        detected_pose=detected_pose,
+                        resolved_step=selected_step,
+                    )
 
                 if self.wait_for_trajectory_ack:
                     self.get_logger().info("  Waiting for Arduino to finish trajectory...")
@@ -769,11 +1470,18 @@ class GestureMotionExecutor(Node):
                         label=f"{sequence_name}/{step_name} trajectory",
                     ):
                         self._force_apply_pending_joint_state("trajectory timeout")
-                        self.get_logger().warn(
-                            f"  Continuing sequence after trajectory timeout for {step_name}"
-                        )
+                        if not bool(effective_step.get(
+                            "continue_on_arduino_timeout",
+                            self.continue_on_arduino_timeout,
+                        )):
+                            self._abort_sequence(sequence_name, step_name, "trajectory timeout")
+                            return
+                        self.get_logger().warn(f"  Continuing after trajectory timeout for {step_name}")
                 else:
                     self.get_logger().info("  Continuing without trajectory DONE acknowledgement")
+                    self._force_apply_pending_joint_state(
+                        "trajectory acknowledgement disabled"
+                    )
 
                 post_delay_sec = float(effective_step.get("post_delay_sec", 0.0))
                 if post_delay_sec > 0.0:
@@ -790,12 +1498,8 @@ class GestureMotionExecutor(Node):
                 joint_msg = self._build_joint_state_message(effective_step)
                 self.joint_target_pub.publish(joint_msg)
 
-                self._plan_done_event.clear()
-                self._plan_success = False
-                self._plan_joint_state(step_name, joint_msg, effective_step)
-
-                self._plan_done_event.wait(timeout=self._plan_wait_timeout(effective_step))
-                if not self._plan_success:
+                context = self._plan_joint_state(step_name, joint_msg, effective_step)
+                if context is None or not self._wait_for_plan(context, effective_step):
                     self._abort_sequence(sequence_name, step_name, "planning/execution failed")
                     return
 
@@ -806,22 +1510,30 @@ class GestureMotionExecutor(Node):
                         label=f"{sequence_name}/{step_name} trajectory",
                     ):
                         self._force_apply_pending_joint_state("trajectory timeout")
-                        self.get_logger().warn(
-                            f"  Continuing sequence after trajectory timeout for {step_name}"
-                        )
+                        if not bool(effective_step.get(
+                            "continue_on_arduino_timeout",
+                            self.continue_on_arduino_timeout,
+                        )):
+                            self._abort_sequence(sequence_name, step_name, "trajectory timeout")
+                            return
+                        self.get_logger().warn(f"  Continuing after trajectory timeout for {step_name}")
                 else:
                     self.get_logger().info("  Continuing without trajectory DONE acknowledgement")
+                    self._force_apply_pending_joint_state(
+                        "trajectory acknowledgement disabled"
+                    )
             else:
-                self.get_logger().warn(f"Unknown step type '{step_type}' in {step_name}")
+                self._abort_sequence(
+                    sequence_name, step_name, f"unknown step type '{step_type}'"
+                )
+                return
 
-        self._set_busy(False)
         self._save_sequence_trajectory_csv(sequence_name)
         self._publish_status(f"Sequence {sequence_name} completed successfully")
         self.get_logger().info(f"=== Sequence '{sequence_name}' completed ===")
 
     def _abort_sequence(self, sequence_name: str, step_name: str, reason: str) -> None:
         self._save_sequence_trajectory_csv(sequence_name)
-        self._set_busy(False)
         self._publish_status(
             f"Sequence {sequence_name} ABORTED at {step_name}: {reason}"
         )
@@ -876,8 +1588,9 @@ class GestureMotionExecutor(Node):
         """Extract MoveIt waypoints into raw joint values and Arduino strings."""
         command_cfg = command_cfg or {}
         jt = planned_trajectory.joint_trajectory
-        if not jt.points:
-            self.get_logger().warn(f"No waypoints in trajectory for {name}")
+        validation_error = self._trajectory_validation_error(jt)
+        if validation_error:
+            self.get_logger().error(f"Unsafe trajectory for {name}: {validation_error}")
             return None
 
         joint_indices = {jn: idx for idx, jn in enumerate(jt.joint_names)}
@@ -905,10 +1618,16 @@ class GestureMotionExecutor(Node):
                     values.append(point.positions[idx])
                 else:
                     values.append(held.get(joint_name, 0.0))
+            # YAML and Arduino use gripper degrees; RobotState/JointState must
+            # always use SI radians like every other revolute ROS joint.
             if gripper_value is not None:
-                values[TRAJECTORY_JOINT_ORDER.index("joint_grip_L")] = float(gripper_value)
+                values[TRAJECTORY_JOINT_ORDER.index("joint_grip_L")] = math.radians(
+                    float(gripper_value)
+                )
             if final_gripper_value is not None and point_index == len(jt.points) - 1:
-                values[TRAJECTORY_JOINT_ORDER.index("joint_grip_L")] = float(final_gripper_value)
+                values[TRAJECTORY_JOINT_ORDER.index("joint_grip_L")] = math.radians(
+                    float(final_gripper_value)
+                )
             raw_waypoints.append(list(values))
             arduino_waypoints.append(self._format_waypoint_for_arduino(values))
 
@@ -921,6 +1640,46 @@ class GestureMotionExecutor(Node):
             self._log_trajectory_waypoints(name, jt, raw_waypoints, arduino_waypoints)
 
         return jt, raw_waypoints, arduino_waypoints
+
+    def _trajectory_validation_error(self, jt) -> Optional[str]:
+        """Return a reason when a MoveIt trajectory is unsafe to forward."""
+        if not jt.points:
+            return "trajectory contains no waypoints"
+        if not jt.joint_names:
+            return "trajectory contains no joints"
+        if len(set(jt.joint_names)) != len(jt.joint_names):
+            return "trajectory contains duplicate joint names"
+        unknown = sorted(set(jt.joint_names) - set(TRAJECTORY_JOINT_ORDER))
+        if unknown:
+            return f"trajectory contains joints unsupported by Arduino: {unknown}"
+
+        previous_time = -1.0
+        for index, point in enumerate(jt.points):
+            if len(point.positions) != len(jt.joint_names):
+                return (
+                    f"waypoint {index} has {len(point.positions)} positions for "
+                    f"{len(jt.joint_names)} joints"
+                )
+            if not all(math.isfinite(value) for value in point.positions):
+                return f"waypoint {index} contains a non-finite position"
+            point_time = point.time_from_start.sec + point.time_from_start.nanosec / 1e9
+            if point_time < previous_time:
+                return f"waypoint {index} moves backward in time"
+            previous_time = point_time
+
+        if self.latest_joint_state is not None and self.max_start_state_error > 0.0:
+            current = dict(zip(self.latest_joint_state.name, self.latest_joint_state.position))
+            first = jt.points[0].positions
+            for index, joint_name in enumerate(jt.joint_names):
+                if joint_name not in current:
+                    continue
+                error = abs(float(first[index]) - float(current[joint_name]))
+                if error > self.max_start_state_error:
+                    return (
+                        f"first waypoint for {joint_name} is {error:.3f} from current "
+                        f"state (limit {self.max_start_state_error:.3f})"
+                    )
+        return None
 
     def _record_planned_trajectory(
         self,
@@ -941,13 +1700,44 @@ class GestureMotionExecutor(Node):
         # Most Arduino sketches parse one whitespace-separated waypoint per line.
         # Keep the old comma-queue mode available for firmware that supports it.
         command_queue = "\n".join(arduino_waypoints) if self.stream_trajectory_waypoints else ",".join(arduino_waypoints)
-        self._arduino_done_event.clear()
+        self._arm_arduino_wait()
         self._queue_pending_joint_state(raw_waypoints[-1], f"{name} trajectory")
         self.arduino_cmd_pub.publish(String(data=command_queue))
         self.get_logger().info(
             f"Sent {len(arduino_waypoints)} waypoints to Arduino for {name} "
             f"({'line-stream' if self.stream_trajectory_waypoints else 'comma-queue'} mode)"
         )
+
+    @staticmethod
+    def _base_then_arm_split_index(
+        raw_waypoints: List[List[float]], epsilon: float = 1e-5
+    ) -> Optional[int]:
+        """Return the first arm-motion index after a nontrivial base phase."""
+        if len(raw_waypoints) < 2:
+            return None
+        start = raw_waypoints[0]
+        arm_indices = [
+            TRAJECTORY_JOINT_ORDER.index(name) for name in ARM_JOINT_NAMES
+        ]
+        base_indices = [
+            TRAJECTORY_JOINT_ORDER.index(name) for name in BASE_JOINT_NAMES
+        ]
+        first_arm_motion = None
+        for waypoint_index, waypoint in enumerate(raw_waypoints[1:], start=1):
+            if any(
+                abs(waypoint[index] - start[index]) > epsilon
+                for index in arm_indices
+            ):
+                first_arm_motion = waypoint_index
+                break
+        if first_arm_motion is None:
+            return None
+        base_moved = any(
+            abs(raw_waypoints[waypoint_index][index] - start[index]) > epsilon
+            for waypoint_index in range(first_arm_motion)
+            for index in base_indices
+        )
+        return first_arm_motion if base_moved else None
 
     def _extract_and_send_trajectory(self, name: str, planned_trajectory, command_cfg: Optional[Dict] = None) -> bool:
         """Extract, save, and send a MoveIt planned trajectory to Arduino."""
@@ -986,6 +1776,105 @@ class GestureMotionExecutor(Node):
         self._sequence_log_name = sequence_name
         self._sequence_log_rows = []
         self._sequence_log_time_offset = 0.0
+        self._start_target_audit(sequence_name)
+
+    def _start_target_audit(self, sequence_name: str) -> None:
+        """Create the per-sequence Cartesian-target audit before any motion."""
+        import csv
+        from datetime import datetime
+
+        try:
+            log_dir = Path.cwd() / "target_logs"
+            log_dir.mkdir(parents=True, exist_ok=True)
+            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+            self._target_audit_path = (
+                log_dir / f"targets_{sequence_name}_{timestamp}.csv"
+            )
+            with self._target_audit_path.open("w", newline="", encoding="utf-8") as stream:
+                writer = csv.writer(stream)
+                writer.writerow([
+                    "recorded_at", "sequence", "step", "detection_topic",
+                    "detection_stamp_sec", "detection_stamp_nanosec",
+                    "detection_frame", "raw_detected_x", "raw_detected_y",
+                    "raw_detected_z", "planning_frame",
+                    "transformed_detected_x", "transformed_detected_y",
+                    "transformed_detected_z", "offset_x", "offset_y", "offset_z",
+                    "requested_target_z", "tcp_height_adjustment_m",
+                    "target_x", "target_y", "target_z",
+                    "tolerance_xy_m", "tolerance_z_m", "end_effector_link",
+                ])
+            self.get_logger().info(f"  Target audit log: {self._target_audit_path}")
+        except Exception as exc:
+            self._target_audit_path = None
+            self.get_logger().warn(f"  Failed to create target audit log: {exc}")
+
+    def _append_target_audit(
+        self,
+        sequence_name: str,
+        step_name: str,
+        detection_topic: str,
+        detected_pose: PoseStamped,
+        resolved_step: Dict,
+    ) -> None:
+        """Append the exact detected and resolved Cartesian target used by MoveIt."""
+        import csv
+        from datetime import datetime
+
+        if self._target_audit_path is None:
+            return
+
+        raw = detected_pose.pose.position
+        target = resolved_step["position"]
+        requested_target_z = float(
+            resolved_step.get("_unclamped_position_z_m", target[2])
+        )
+        tcp_height_adjustment = float(target[2]) - requested_target_z
+        ox = float(resolved_step.get("offset_x", 0.0))
+        oy = float(resolved_step.get("offset_y", 0.0))
+        oz = float(resolved_step.get("offset_z", 0.0))
+        transformed = [
+            target[0] - ox,
+            target[1] - oy,
+            requested_target_z - oz,
+        ]
+        default_tol = float(
+            resolved_step.get("position_tolerance_m", self.position_tolerance_m)
+        )
+        tolerance_xy = float(
+            resolved_step.get("position_tolerance_xy_m", default_tol)
+        )
+        tolerance_z = float(
+            resolved_step.get("position_tolerance_z_m", default_tol)
+        )
+
+        try:
+            with self._target_audit_path.open("a", newline="", encoding="utf-8") as stream:
+                writer = csv.writer(stream)
+                writer.writerow([
+                    datetime.now().astimezone().isoformat(),
+                    sequence_name,
+                    step_name,
+                    detection_topic,
+                    detected_pose.header.stamp.sec,
+                    detected_pose.header.stamp.nanosec,
+                    detected_pose.header.frame_id,
+                    f"{raw.x:.6f}", f"{raw.y:.6f}", f"{raw.z:.6f}",
+                    resolved_step.get("frame_id", self.base_frame),
+                    f"{transformed[0]:.6f}",
+                    f"{transformed[1]:.6f}",
+                    f"{transformed[2]:.6f}",
+                    f"{ox:.6f}", f"{oy:.6f}", f"{oz:.6f}",
+                    f"{requested_target_z:.6f}",
+                    f"{tcp_height_adjustment:.6f}",
+                    f"{target[0]:.6f}",
+                    f"{target[1]:.6f}",
+                    f"{target[2]:.6f}",
+                    f"{tolerance_xy:.6f}",
+                    f"{tolerance_z:.6f}",
+                    resolved_step.get("link_name", self.end_effector_link),
+                ])
+        except Exception as exc:
+            self.get_logger().warn(f"  Failed to append target audit row: {exc}")
 
     def _append_sequence_trajectory(self, jt, raw_waypoints, arduino_waypoints) -> None:
         if self._sequence_log_name is None:
@@ -1099,7 +1988,7 @@ class GestureMotionExecutor(Node):
         base_x_cm = values[0] * 100.0         # m → cm
         base_y_cm = values[1] * 100.0         # m → cm
         theta_deg = math.degrees(values[2])   # rad → deg
-        grip = values[3]                       # pass through (0-90 degrees)
+        grip = math.degrees(values[3])        # rad → Arduino degrees
         hand_deg = math.degrees(values[4])    # rad → deg
         wrist_deg = math.degrees(values[5])   # rad → deg
         elbow_deg = math.degrees(values[6])   # rad → deg
@@ -1117,8 +2006,8 @@ class GestureMotionExecutor(Node):
         """Publish joint positions so MoveIt knows where the arm is after a trajectory."""
         js = JointState()
         js.header.stamp = self.get_clock().now().to_msg()
-        js.name = list(TRAJECTORY_JOINT_ORDER)
-        js.position = list(positions)
+        js.name = list(TRAJECTORY_JOINT_ORDER) + WHEEL_JOINT_NAMES
+        js.position = list(positions) + [0.0] * len(WHEEL_JOINT_NAMES)
         self.joint_state_pub.publish(js)
         # Also update our own cached state
         self.latest_joint_state = js
@@ -1133,13 +2022,13 @@ class GestureMotionExecutor(Node):
         values = []
         for joint_name in TRAJECTORY_JOINT_ORDER:
             if joint_name == "joint_grip_L":
-                values.append(grip_value)
+                values.append(math.radians(grip_value))
             else:
                 values.append(current.get(joint_name, 0.0))
 
         waypoint = self._format_waypoint_for_arduino(values)
         # Arm the DONE event BEFORE publishing — see _wait_for_arduino_done.
-        self._arduino_done_event.clear()
+        self._arm_arduino_wait()
         self._queue_pending_joint_state(values, "gripper command")
         self.arduino_cmd_pub.publish(String(data=waypoint))
         self.get_logger().info(f"Sent gripper waypoint to Arduino: {waypoint}")
@@ -1153,13 +2042,448 @@ class GestureMotionExecutor(Node):
     # ------------------------------------------------------------------
     # MoveIt planning
     # ------------------------------------------------------------------
-    def _plan_pose(self, name: str, pose_msg: PoseStamped, command_cfg: Dict) -> None:
-        if self.move_group_client is None:
+    def _joint_state_with_updates(self, updates: Dict[str, float]) -> JointState:
+        """Return the current full JointState with selected positions replaced."""
+        if self.latest_joint_state is not None:
+            joint_state = deepcopy(self.latest_joint_state)
+        else:
+            joint_state = JointState()
+        values = dict(zip(joint_state.name, joint_state.position))
+        values.update({name: float(value) for name, value in updates.items()})
+        ordered_names = list(joint_state.name)
+        for name in TRAJECTORY_JOINT_ORDER:
+            if name not in ordered_names:
+                ordered_names.append(name)
+        joint_state.name = ordered_names
+        joint_state.position = [float(values.get(name, 0.0)) for name in ordered_names]
+        joint_state.velocity = []
+        joint_state.effort = []
+        joint_state.header.stamp = self.get_clock().now().to_msg()
+        return joint_state
+
+    def _plan_joint_phase(
+        self,
+        name: str,
+        group_name: str,
+        start_state: JointState,
+        targets: Dict[str, float],
+        command_cfg: Dict,
+    ) -> Optional[RobotTrajectory]:
+        """Plan one collision-checked joint-space phase through MoveIt."""
+        service_timeout = max(
+            1.0,
+            float(command_cfg.get("planning_service_timeout_sec", 3.0)),
+        )
+        if not self.motion_plan_client.wait_for_service(
+            timeout_sec=service_timeout
+        ):
+            self.get_logger().error(
+                f"  Cannot plan {name}: {self.planning_service_name} is unavailable"
+            )
+            return None
+
+        request = GetMotionPlan.Request()
+        motion_request = request.motion_plan_request
+        motion_request.group_name = group_name
+        motion_request.planner_id = str(
+            command_cfg.get("planner_id", self.planner_id)
+        )
+        motion_request.allowed_planning_time = float(
+            command_cfg.get("phase_allowed_planning_time", 5.0)
+        )
+        motion_request.num_planning_attempts = int(
+            command_cfg.get("phase_num_planning_attempts", 3)
+        )
+        motion_request.start_state = RobotState()
+        motion_request.start_state.is_diff = True
+        motion_request.start_state.joint_state = deepcopy(start_state)
+
+        goal_constraints = Constraints()
+        goal_constraints.name = name
+        tolerance = max(
+            1e-4,
+            float(command_cfg.get("phase_joint_tolerance", 0.002)),
+        )
+        for joint_name, position in targets.items():
+            constraint = JointConstraint()
+            constraint.joint_name = joint_name
+            constraint.position = float(position)
+            constraint.tolerance_above = tolerance
+            constraint.tolerance_below = tolerance
+            constraint.weight = 1.0
+            goal_constraints.joint_constraints.append(constraint)
+        motion_request.goal_constraints = [goal_constraints]
+        self._fill_workspace(motion_request, self.base_frame)
+
+        self.get_logger().info(
+            f"  Planning collision-checked {name} phase with group '{group_name}'"
+        )
+        future = self.motion_plan_client.call_async(request)
+        completed = threading.Event()
+        future.add_done_callback(lambda _future: completed.set())
+        wait_timeout = motion_request.allowed_planning_time + service_timeout + 2.0
+        if not completed.wait(timeout=wait_timeout):
+            self.get_logger().error(
+                f"  {name} phase planning timed out after {wait_timeout:.1f}s"
+            )
+            return None
+        try:
+            response = future.result().motion_plan_response
+        except Exception as exc:
+            self.get_logger().error(f"  {name} phase planning failed: {exc}")
+            return None
+
+        error_code = int(response.error_code.val)
+        if error_code != 1:
+            error_name = MOVEIT_ERROR_NAMES.get(error_code, str(error_code))
+            self.get_logger().error(
+                f"  {name} phase has no valid collision-free path: {error_name}"
+            )
+            return None
+        if not response.trajectory.joint_trajectory.points:
+            self.get_logger().error(f"  {name} phase returned an empty trajectory")
+            return None
+        return response.trajectory
+
+    @staticmethod
+    def _trajectory_final_positions(trajectory: RobotTrajectory) -> Dict[str, float]:
+        joint_trajectory = trajectory.joint_trajectory
+        if not joint_trajectory.points:
+            return {}
+        return dict(
+            zip(joint_trajectory.joint_names, joint_trajectory.points[-1].positions)
+        )
+
+    def _stitch_base_then_arm(
+        self,
+        base_trajectory: Optional[RobotTrajectory],
+        arm_trajectory: Optional[RobotTrajectory],
+        start_state: JointState,
+        final_targets: Dict[str, float],
+    ) -> RobotTrajectory:
+        """Combine separately planned phases into one Arduino trajectory."""
+        combined = RobotTrajectory()
+        combined.joint_trajectory.header.stamp = self.get_clock().now().to_msg()
+        combined.joint_trajectory.joint_names = BASE_JOINT_NAMES + ARM_JOINT_NAMES
+        current = dict(zip(start_state.name, start_state.position))
+        time_offset = 0.0
+
+        def append_phase(
+            trajectory: RobotTrajectory,
+            moving_names: List[str],
+            offset: float,
+            skip_first_duplicate: bool,
+        ) -> float:
+            source = trajectory.joint_trajectory
+            indices = {name: index for index, name in enumerate(source.joint_names)}
+            last_time = offset
+            for source_index, source_point in enumerate(source.points):
+                for joint_name in moving_names:
+                    index = indices.get(joint_name)
+                    if index is not None:
+                        current[joint_name] = float(source_point.positions[index])
+                if skip_first_duplicate and source_index == 0:
+                    continue
+                source_time = (
+                    source_point.time_from_start.sec
+                    + source_point.time_from_start.nanosec / 1e9
+                )
+                point = JointTrajectoryPoint()
+                point.positions = [
+                    float(current.get(name, 0.0))
+                    for name in combined.joint_trajectory.joint_names
+                ]
+                point.time_from_start = Duration(
+                    seconds=offset + source_time
+                ).to_msg()
+                combined.joint_trajectory.points.append(point)
+                last_time = offset + source_time
+            return last_time
+
+        if base_trajectory is not None:
+            time_offset = append_phase(
+                base_trajectory, BASE_JOINT_NAMES, 0.0, False
+            )
+        if arm_trajectory is not None:
+            # Keep a visible time boundary in the stitched RViz trajectory.
+            # Hardware receives these as two queues and waits for base DONE.
+            phase_offset = time_offset + (0.10 if base_trajectory is not None else 0.0)
+            append_phase(
+                arm_trajectory,
+                ARM_JOINT_NAMES,
+                phase_offset,
+                base_trajectory is not None,
+            )
+
+        # Ensure the exact final joint goal is represented despite planner
+        # endpoint tolerances.
+        if combined.joint_trajectory.points:
+            final_point = combined.joint_trajectory.points[-1]
+            for index, joint_name in enumerate(combined.joint_trajectory.joint_names):
+                if joint_name in final_targets:
+                    final_point.positions[index] = float(final_targets[joint_name])
+        return combined
+
+    def _plan_base_then_arm_trajectory(
+        self,
+        name: str,
+        coordinated_trajectory: RobotTrajectory,
+        command_cfg: Dict,
+    ) -> Optional[RobotTrajectory]:
+        """Replace a whole-body solution with collision-checked serial phases."""
+        if str(command_cfg.get("group_name", self.default_group_name)) != "base_arm":
+            return coordinated_trajectory
+        if self.latest_joint_state is None:
+            self.get_logger().error(
+                f"  Cannot serialize {name}: current joint state is unavailable"
+            )
+            return None
+
+        final_targets = self._trajectory_final_positions(coordinated_trajectory)
+        required = set(BASE_JOINT_NAMES + ARM_JOINT_NAMES)
+        if not required.issubset(final_targets):
+            missing = sorted(required - set(final_targets))
+            self.get_logger().error(
+                f"  Cannot serialize {name}: coordinated solution lacks {missing}"
+            )
+            return None
+
+        start_state = self._joint_state_with_updates({})
+        current = dict(zip(start_state.name, start_state.position))
+        motion_epsilon = float(command_cfg.get("phase_motion_epsilon", 1e-4))
+        base_moves = any(
+            abs(final_targets[name] - current.get(name, 0.0)) > motion_epsilon
+            for name in BASE_JOINT_NAMES
+        )
+        arm_moves = any(
+            abs(final_targets[name] - current.get(name, 0.0)) > motion_epsilon
+            for name in ARM_JOINT_NAMES
+        )
+
+        base_trajectory = None
+        if base_moves:
+            base_trajectory = self._plan_joint_phase(
+                f"{name}/base_first",
+                "base",
+                start_state,
+                {name: final_targets[name] for name in BASE_JOINT_NAMES},
+                command_cfg,
+            )
+            if base_trajectory is None:
+                return None
+
+        base_end = {
+            name: final_targets[name] if base_moves else current.get(name, 0.0)
+            for name in BASE_JOINT_NAMES
+        }
+        arm_start_state = self._joint_state_with_updates(base_end)
+        arm_trajectory = None
+        if arm_moves:
+            arm_trajectory = self._plan_joint_phase(
+                f"{name}/arm_second",
+                "arm",
+                arm_start_state,
+                {name: final_targets[name] for name in ARM_JOINT_NAMES},
+                command_cfg,
+            )
+            if arm_trajectory is None:
+                return None
+
+        if base_trajectory is None and arm_trajectory is None:
+            return coordinated_trajectory
+        serialized = self._stitch_base_then_arm(
+            base_trajectory,
+            arm_trajectory,
+            start_state,
+            final_targets,
+        )
+        if not serialized.joint_trajectory.points:
+            self.get_logger().error(f"  Serialized trajectory for {name} is empty")
+            return None
+        self.get_logger().info(
+            f"  Serialized {name}: base phase first, arm phase second "
+            f"({len(serialized.joint_trajectory.points)} total waypoints)"
+        )
+        return serialized
+
+    def _clear_and_rebuild_octomap(self, name: str, command_cfg: Dict) -> bool:
+        enabled = bool(
+            command_cfg.get(
+                "clear_octomap_before_plan",
+                self.clear_octomap_before_pose_plan,
+            )
+        )
+        if not enabled:
+            return True
+
+        timeout_sec = float(
+            command_cfg.get(
+                "octomap_clear_timeout_sec", self.octomap_clear_timeout_sec
+            )
+        )
+        rebuild_wait_sec = float(
+            command_cfg.get(
+                "octomap_rebuild_wait_sec", self.octomap_rebuild_wait_sec
+            )
+        )
+        if not self.octomap_clear_client.wait_for_service(timeout_sec=timeout_sec):
+            self.get_logger().error(
+                f"  Cannot prepare OctoMap for {name}: clear service unavailable"
+            )
+            return False
+
+        self.get_logger().info(
+            f"  Clearing OctoMap before planning {name}"
+        )
+        future = self.octomap_clear_client.call_async(Empty.Request())
+        completed = threading.Event()
+        future.add_done_callback(lambda _done: completed.set())
+        if not completed.wait(timeout=timeout_sec):
+            self.get_logger().error(
+                f"  Cannot prepare OctoMap for {name}: clear timed out after "
+                f"{timeout_sec:.1f}s"
+            )
+            return False
+        try:
+            future.result()
+        except Exception as exc:
+            self.get_logger().error(
+                f"  Cannot prepare OctoMap for {name}: clear failed: {exc}"
+            )
+            return False
+
+        if rebuild_wait_sec > 0.0:
+            self.get_logger().info(
+                f"  Waiting {rebuild_wait_sec:.1f}s for a fresh filtered cloud"
+            )
+            time.sleep(rebuild_wait_sec)
+        return True
+
+    def _add_local_base_goal_constraints(
+        self,
+        constraints: Constraints,
+        command_cfg: Dict,
+        name: str,
+        pose_msg: PoseStamped,
+    ) -> None:
+        """Keep a Cartesian stage from using an unrelated distant base pose.
+
+        A whole-body pose goal has infinitely many base/arm IK solutions. OMPL
+        does not minimize base travel, so without these optional bounds it can
+        choose a far-away base pose and compensate with a folded arm.
+        """
+        translation_limit = command_cfg.get("max_base_goal_translation_m")
+        y_translation_limit = command_cfg.get("max_base_goal_y_translation_m")
+        lateral_reach_limit = command_cfg.get("base_goal_tcp_y_max_m")
+        rotation_limit = command_cfg.get("max_base_goal_rotation_rad")
+        reach_min = command_cfg.get("base_goal_tcp_x_min_m")
+        reach_max = command_cfg.get("base_goal_tcp_x_max_m")
+        if (
+            translation_limit is None
+            and y_translation_limit is None
+            and lateral_reach_limit is None
+            and rotation_limit is None
+            and reach_min is None
+        ):
             return
+        if self.latest_joint_state is None:
+            self.get_logger().warn(
+                f"  Cannot apply local base goal bounds for {name}: no current joint state"
+            )
+            return
+
+        current = dict(
+            zip(self.latest_joint_state.name, self.latest_joint_state.position)
+        )
+        applied = []
+
+        # For an ahead-facing mobile-manipulation stage, constrain base_x from
+        # the requested TCP position rather than around the current base. This
+        # allows a distant target to trigger a sensible forward approach while
+        # preventing a close target from selecting a far-back, fully folded IK.
+        if reach_min is not None and reach_max is not None and "base_x" in current:
+            min_reach = float(reach_min)
+            max_reach = float(reach_max)
+            base_x_lower = float(pose_msg.pose.position.x) - max_reach
+            base_x_upper = float(pose_msg.pose.position.x) - min_reach
+            joint_constraint = JointConstraint()
+            joint_constraint.joint_name = "base_x"
+            joint_constraint.position = 0.5 * (base_x_lower + base_x_upper)
+            joint_constraint.tolerance_above = 0.5 * (base_x_upper - base_x_lower)
+            joint_constraint.tolerance_below = 0.5 * (base_x_upper - base_x_lower)
+            joint_constraint.weight = 1.0
+            constraints.joint_constraints.append(joint_constraint)
+            applied.append(
+                f"base_x [{base_x_lower:.3f}, {base_x_upper:.3f}] m "
+                f"(TCP reach {min_reach:.3f}..{max_reach:.3f} m)"
+            )
+        elif translation_limit is not None and "base_x" in current:
+            limit = float(translation_limit)
+            joint_constraint = JointConstraint()
+            joint_constraint.joint_name = "base_x"
+            joint_constraint.position = float(current["base_x"])
+            joint_constraint.tolerance_above = limit
+            joint_constraint.tolerance_below = limit
+            joint_constraint.weight = 1.0
+            constraints.joint_constraints.append(joint_constraint)
+            applied.append(f"base_x +/-{limit:.3f} m")
+
+        y_limit_value = (
+            y_translation_limit
+            if y_translation_limit is not None
+            else translation_limit
+        )
+        if lateral_reach_limit is not None and "base_y" in current:
+            limit = float(lateral_reach_limit)
+            target_y = float(pose_msg.pose.position.y)
+            joint_constraint = JointConstraint()
+            joint_constraint.joint_name = "base_y"
+            joint_constraint.position = target_y
+            joint_constraint.tolerance_above = limit
+            joint_constraint.tolerance_below = limit
+            joint_constraint.weight = 1.0
+            constraints.joint_constraints.append(joint_constraint)
+            applied.append(
+                f"base_y [{target_y - limit:.3f}, {target_y + limit:.3f}] m "
+                f"(TCP lateral +/-{limit:.3f} m)"
+            )
+        elif y_limit_value is not None and "base_y" in current:
+            limit = float(y_limit_value)
+            joint_constraint = JointConstraint()
+            joint_constraint.joint_name = "base_y"
+            joint_constraint.position = float(current["base_y"])
+            joint_constraint.tolerance_above = limit
+            joint_constraint.tolerance_below = limit
+            joint_constraint.weight = 1.0
+            constraints.joint_constraints.append(joint_constraint)
+            applied.append(f"base_y +/-{limit:.3f} m")
+
+        if rotation_limit is not None and "base_theta" in current:
+            limit = float(rotation_limit)
+            joint_constraint = JointConstraint()
+            joint_constraint.joint_name = "base_theta"
+            joint_constraint.position = float(current["base_theta"])
+            joint_constraint.tolerance_above = limit
+            joint_constraint.tolerance_below = limit
+            joint_constraint.weight = 1.0
+            constraints.joint_constraints.append(joint_constraint)
+            applied.append(f"base_theta +/-{limit:.3f} rad")
+
+        if applied:
+            self.get_logger().info(
+                f"  Local base goal bounds for {name}: " + ", ".join(applied)
+            )
+
+    def _plan_pose(
+        self, name: str, pose_msg: PoseStamped, command_cfg: Dict
+    ) -> Optional[PlanContext]:
+        if self.move_group_client is None:
+            return None
         if not self.move_group_client.server_is_ready():
             self.get_logger().warn("MoveIt action server is not ready.")
-            self._signal_plan_done(False)
-            return
+            return None
+        if not self._clear_and_rebuild_octomap(name, command_cfg):
+            return None
 
         goal = MoveGroup.Goal()
         goal.request = MotionPlanRequest()
@@ -1172,6 +2496,7 @@ class GestureMotionExecutor(Node):
             command_cfg.get("num_planning_attempts", self.num_planning_attempts)
         )
         goal.request.start_state = RobotState()
+        goal.request.start_state.is_diff = True
         if self.latest_joint_state is not None:
             goal.request.start_state.joint_state = deepcopy(self.latest_joint_state)
 
@@ -1183,7 +2508,13 @@ class GestureMotionExecutor(Node):
         box = SolidPrimitive()
         box.type = SolidPrimitive.BOX
         tol = float(command_cfg.get("position_tolerance_m", self.position_tolerance_m))
-        box.dimensions = [tol, tol, tol]
+        tol_xy = float(command_cfg.get("position_tolerance_xy_m", tol))
+        tol_z = float(command_cfg.get("position_tolerance_z_m", tol))
+        # SolidPrimitive dimensions are full side lengths, while the public
+        # parameters are +/- tolerances around the requested point. Separate Z
+        # tolerance prevents the planner from choosing an easier endpoint
+        # several centimeters above a detected object.
+        box.dimensions = [2.0 * tol_xy, 2.0 * tol_xy, 2.0 * tol_z]
         region_pose = Pose()
         region_pose.position = pose_msg.pose.position
         region_pose.orientation.w = 1.0
@@ -1202,29 +2533,57 @@ class GestureMotionExecutor(Node):
             orientation_constraint.orientation = pose_msg.pose.orientation
             if hasattr(orientation_constraint, "ROTATION_VECTOR"):
                 orientation_constraint.parameterization = OrientationConstraint.ROTATION_VECTOR
-            orient_tol = float(command_cfg.get("orientation_tolerance_rad", self.orientation_tolerance_rad))
-            orientation_constraint.absolute_x_axis_tolerance = orient_tol
-            orientation_constraint.absolute_y_axis_tolerance = orient_tol
-            orientation_constraint.absolute_z_axis_tolerance = orient_tol
+            orient_tol = float(
+                command_cfg.get(
+                    "orientation_tolerance_rad", self.orientation_tolerance_rad
+                )
+            )
+            orient_tol_x = float(
+                command_cfg.get("orientation_tolerance_x_rad", orient_tol)
+            )
+            orient_tol_y = float(
+                command_cfg.get("orientation_tolerance_y_rad", orient_tol)
+            )
+            orient_tol_z = float(
+                command_cfg.get("orientation_tolerance_z_rad", orient_tol)
+            )
+            orientation_constraint.absolute_x_axis_tolerance = orient_tol_x
+            orientation_constraint.absolute_y_axis_tolerance = orient_tol_y
+            orientation_constraint.absolute_z_axis_tolerance = orient_tol_z
             orientation_constraint.weight = 1.0
             constraints.orientation_constraints.append(orientation_constraint)
-            path_constraints = Constraints()
-            path_constraints.orientation_constraints.append(deepcopy(orientation_constraint))
-            goal.request.path_constraints = path_constraints
+
+            if bool(command_cfg.get("maintain_orientation_during_path", False)):
+                path_constraints = Constraints()
+                path_constraints.name = f"{name}_maintain_orientation"
+                path_constraints.orientation_constraints.append(
+                    deepcopy(orientation_constraint)
+                )
+                goal.request.path_constraints = path_constraints
+                self.get_logger().info(
+                    f"  Maintaining orientation throughout path for {name} "
+                    f"(tolerances: roll={orient_tol_x:.3f}, "
+                    f"pitch={orient_tol_y:.3f}, yaw={orient_tol_z:.3f} rad)"
+                )
+
+        self._add_local_base_goal_constraints(
+            constraints, command_cfg, name, pose_msg
+        )
 
         goal.request.goal_constraints = [constraints]
         self._fill_workspace(goal.request, pose_msg.header.frame_id)
         goal.planning_options = PlanningOptions()
-        goal.planning_options.plan_only = bool(command_cfg.get("plan_only", self.plan_only))
-        self._send_move_group_goal(name, goal, command_cfg)
+        goal.planning_options.plan_only = True
+        return self._send_move_group_goal(name, goal, command_cfg)
 
-    def _plan_joint_state(self, name: str, joint_msg: JointState, command_cfg: Dict) -> None:
+    def _plan_joint_state(
+        self, name: str, joint_msg: JointState, command_cfg: Dict
+    ) -> Optional[PlanContext]:
         if self.move_group_client is None:
-            return
+            return None
         if not self.move_group_client.server_is_ready():
             self.get_logger().warn("MoveIt action server is not ready.")
-            self._signal_plan_done(False)
-            return
+            return None
 
         goal = MoveGroup.Goal()
         goal.request = MotionPlanRequest()
@@ -1237,6 +2596,7 @@ class GestureMotionExecutor(Node):
             command_cfg.get("num_planning_attempts", self.num_planning_attempts)
         )
         goal.request.start_state = RobotState()
+        goal.request.start_state.is_diff = True
         if self.latest_joint_state is not None:
             goal.request.start_state.joint_state = deepcopy(self.latest_joint_state)
 
@@ -1254,8 +2614,8 @@ class GestureMotionExecutor(Node):
         goal.request.goal_constraints = [constraints]
         self._fill_workspace(goal.request, str(command_cfg.get("frame_id", self.base_frame)))
         goal.planning_options = PlanningOptions()
-        goal.planning_options.plan_only = bool(command_cfg.get("plan_only", self.plan_only))
-        self._send_move_group_goal(name, goal, command_cfg)
+        goal.planning_options.plan_only = True
+        return self._send_move_group_goal(name, goal, command_cfg)
 
     def _fill_workspace(self, request: MotionPlanRequest, frame_id: str) -> None:
         if len(self.workspace_bounds) != 6:
@@ -1271,40 +2631,71 @@ class GestureMotionExecutor(Node):
     # ------------------------------------------------------------------
     # MoveIt action handling
     # ------------------------------------------------------------------
-    def _send_move_group_goal(self, name: str, goal: MoveGroup.Goal, command_cfg: Dict) -> None:
-        self._publish_status(f"Sending MoveIt request for {name}")
+    def _send_move_group_goal(
+        self, name: str, goal: MoveGroup.Goal, command_cfg: Dict
+    ) -> PlanContext:
+        with self._plan_lock:
+            if self._active_plan is not None:
+                raise RuntimeError(
+                    f"Cannot plan {name}: {self._active_plan.name} is still active"
+                )
+            request_id = self._next_plan_request_id
+            self._next_plan_request_id += 1
+            context = PlanContext(request_id=request_id, name=name)
+            self._active_plan = context
+
+        planner_id = goal.request.planner_id or "group default"
+        self._publish_status(f"Planning {name} with {planner_id} [request {request_id}]")
         future = self.move_group_client.send_goal_async(goal)
         future.add_done_callback(
-            lambda done: self._goal_response_callback(name, done, command_cfg)
+            lambda done: self._goal_response_callback(context, done, command_cfg)
         )
+        return context
 
-    def _goal_response_callback(self, name: str, future, command_cfg: Dict) -> None:
+    def _goal_response_callback(self, context: PlanContext, future, command_cfg: Dict) -> None:
+        name = context.name
         try:
             goal_handle = future.result()
         except Exception as exc:
+            if context.cancelled:
+                return
             self.get_logger().error(f"MoveIt request for {name} failed before acceptance: {exc}")
             self._publish_status(f"MoveIt request for {name} failed: {exc}")
-            self._signal_plan_done(False)
+            self._finish_plan(context, False)
+            return
+
+        if not self._is_plan_context_active(context):
+            self.get_logger().warn(f"Cancelling stale MoveIt response for {name}")
+            if goal_handle.accepted:
+                goal_handle.cancel_goal_async()
             return
 
         if not goal_handle.accepted:
             self.get_logger().warn(f"MoveIt request for {name} was rejected")
             self._publish_status(f"MoveIt request for {name} was rejected")
-            self._signal_plan_done(False)
+            self._finish_plan(context, False)
             return
+
+        with self._plan_lock:
+            if self._active_plan is context and not context.cancelled:
+                context.goal_handle = goal_handle
 
         result_future = goal_handle.get_result_async()
         result_future.add_done_callback(
-            lambda done: self._goal_result_callback(name, done, command_cfg)
+            lambda done: self._goal_result_callback(context, done, command_cfg)
         )
 
-    def _goal_result_callback(self, name: str, future, command_cfg: Dict) -> None:
+    def _goal_result_callback(self, context: PlanContext, future, command_cfg: Dict) -> None:
+        name = context.name
+        if not self._is_plan_context_active(context):
+            self.get_logger().warn(f"Ignoring stale MoveIt result for {name}")
+            return
         try:
             result = future.result().result
         except Exception as exc:
             self.get_logger().error(f"MoveIt result retrieval failed for {name}: {exc}")
             self._publish_status(f"MoveIt result retrieval failed for {name}: {exc}")
-            self._signal_plan_done(False)
+            self._finish_plan(context, False)
             return
 
         error_code = int(result.error_code.val)
@@ -1314,36 +2705,157 @@ class GestureMotionExecutor(Node):
 
             trajectory = result.planned_trajectory
             if trajectory and trajectory.joint_trajectory.points:
+                if self.execution_order == "base_then_arm":
+                    trajectory = self._plan_base_then_arm_trajectory(
+                        name, trajectory, command_cfg
+                    )
+                    if trajectory is None:
+                        self._publish_status(
+                            f"Could not create collision-checked base-then-arm path for {name}"
+                        )
+                        self._finish_plan(context, False)
+                        return
+                    result.planned_trajectory = trajectory
                 self._reset_trajectory_approval()
+                require_approval = bool(command_cfg.get(
+                    "require_trajectory_approval", self.require_trajectory_approval
+                ))
+                if require_approval:
+                    with self._plan_lock:
+                        if self._active_plan is context and not context.cancelled:
+                            context.awaiting_approval = True
                 self._publish_display_trajectory(name, result)
                 extracted = self._extract_trajectory_waypoints(name, trajectory, command_cfg)
                 if extracted is None:
-                    self._signal_plan_done(False)
+                    self._finish_plan(context, False)
                     return
                 jt, raw_waypoints, arduino_waypoints = extracted
                 self._record_planned_trajectory(name, jt, raw_waypoints, arduino_waypoints)
 
-                if self.require_trajectory_approval:
-                    if not self._wait_for_trajectory_approval(name):
+                if require_approval:
+                    if not self._wait_for_trajectory_approval(name, context):
                         self._publish_status(f"Plan for {name} was not approved")
-                        self._signal_plan_done(False)
+                        self._finish_plan(context, False)
                         return
+                elif self.require_trajectory_approval:
+                    self.get_logger().info(
+                        f"Plan for {name} is covered by the sequence approval; "
+                        "sending to Arduino automatically"
+                    )
+                    self._publish_status(
+                        f"Plan for {name} auto-approved by sequence configuration"
+                    )
 
-                self._send_trajectory_to_arduino(name, raw_waypoints, arduino_waypoints)
+                if not self._is_plan_context_active(context):
+                    self.get_logger().warn(f"Not executing stale plan for {name}")
+                    return
+
+                split_index = None
+                if self.execution_order == "base_then_arm":
+                    split_index = self._base_then_arm_split_index(raw_waypoints)
+
+                if split_index is not None:
+                    if not self.wait_for_trajectory_ack:
+                        self.get_logger().error(
+                            "base_then_arm execution requires "
+                            "wait_for_trajectory_ack=true"
+                        )
+                        self._publish_status(
+                            f"Cannot execute {name}: hardware acknowledgement disabled"
+                        )
+                        self._finish_plan(context, False)
+                        return
+                    self.get_logger().info(
+                        f"  Sending base phase for {name} first "
+                        f"({split_index} waypoint(s)); arm remains fixed"
+                    )
+                    self._send_trajectory_to_arduino(
+                        f"{name}/base_first",
+                        raw_waypoints[:split_index],
+                        arduino_waypoints[:split_index],
+                    )
+                    base_timeout = float(
+                        command_cfg.get("base_phase_timeout_sec", 60.0)
+                    )
+                    if not self._wait_for_arduino_done(
+                        timeout_sec=base_timeout,
+                        label=f"{name}/base_first trajectory",
+                    ):
+                        self._force_apply_pending_joint_state(
+                            f"{name} base phase timeout"
+                        )
+                        self._publish_status(
+                            f"Base phase failed for {name}; arm phase was not sent"
+                        )
+                        self._finish_plan(context, False)
+                        return
+                    self.get_logger().info(
+                        f"  Base settled for {name}; sending arm phase "
+                        f"({len(raw_waypoints) - split_index} waypoint(s))"
+                    )
+                    self._send_trajectory_to_arduino(
+                        f"{name}/arm_second",
+                        raw_waypoints[split_index:],
+                        arduino_waypoints[split_index:],
+                    )
+                else:
+                    self._send_trajectory_to_arduino(
+                        name, raw_waypoints, arduino_waypoints
+                    )
             else:
                 self.get_logger().warn(f"No trajectory in result for {name}")
-                self._signal_plan_done(False)
+                self._finish_plan(context, False)
                 return
 
-            self._signal_plan_done(True)
+            self._finish_plan(context, True)
         else:
-            self.get_logger().warn(f"MoveIt failed for {name} with code {error_code}")
-            self._publish_status(f"MoveIt failed for {name} with code {error_code}")
-            self._signal_plan_done(False)
+            error_name = MOVEIT_ERROR_NAMES.get(error_code, "UNKNOWN")
+            failure = f"{error_name} ({error_code})"
+            self.get_logger().warn(f"MoveIt failed for {name}: {failure}")
+            self._publish_status(f"MoveIt failed for {name}: {failure}")
+            context.retryable_failure = True
+            self._finish_plan(context, False)
 
-    def _signal_plan_done(self, success: bool) -> None:
-        self._plan_success = success
-        self._plan_done_event.set()
+    def _is_plan_context_active(self, context: PlanContext) -> bool:
+        with self._plan_lock:
+            return self._active_plan is context and not context.cancelled
+
+    def _finish_plan(self, context: PlanContext, success: bool) -> None:
+        with self._plan_lock:
+            if self._active_plan is not context or context.cancelled:
+                return
+            context.success = success
+            context.awaiting_approval = False
+            self._active_plan = None
+        context.event.set()
+
+    def _cancel_plan(self, context: PlanContext, reason: str) -> None:
+        goal_handle = None
+        with self._plan_lock:
+            if context.cancelled:
+                return
+            context.cancelled = True
+            context.awaiting_approval = False
+            goal_handle = context.goal_handle
+            if self._active_plan is context:
+                self._active_plan = None
+        if goal_handle is not None:
+            try:
+                goal_handle.cancel_goal_async()
+            except Exception as exc:
+                self.get_logger().warn(f"Failed to cancel MoveIt goal for {context.name}: {exc}")
+        context.event.set()
+        self.get_logger().warn(f"Cancelled plan for {context.name}: {reason}")
+        self._publish_status(f"Cancelled plan for {context.name}: {reason}")
+
+    def _wait_for_plan(self, context: PlanContext, command_cfg: Dict) -> bool:
+        timeout = self._plan_wait_timeout(command_cfg)
+        completed = context.event.wait(timeout=timeout)
+        if not completed:
+            timeout_text = "unbounded" if timeout is None else f"{timeout:.1f}s"
+            self._cancel_plan(context, f"request exceeded {timeout_text}")
+            return False
+        return context.success and not context.cancelled
 
     def _publish_status(self, text: str) -> None:
         self.status_pub.publish(String(data=text))

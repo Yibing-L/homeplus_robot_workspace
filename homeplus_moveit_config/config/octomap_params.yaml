@@ -4,16 +4,16 @@ octomap_server:
     point_cloud_topic: '/obstacle_cloud'
 
     # Frame for the octomap (typically 'map' or the fixed world frame in your setup)
-    frame_id: 'hand_camera_depth_optical_frame'
+    frame_id: 'world'
 
     # OctoMap resolution (meters)
-    resolution: 0.05
+    resolution: 0.04
 
     use_sim_time: false
     # sensor filtering
     sensor_model:
-      max_range: 5.0
-      min_range: 0.0
+      max_range: 2.0
+      min_range: 0.12
       free_thresh: 0.12
       occupied_thresh: 0.97
 

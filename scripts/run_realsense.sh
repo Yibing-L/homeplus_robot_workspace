@@ -1,14 +1,15 @@
 #!/usr/bin/env bash
 set -eo pipefail
 
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+cd "$ROOT"
+
 source /opt/ros/humble/setup.bash
+source install/setup.bash
 set -u
 
-ros2 launch realsense2_camera rs_launch.py \
-  enable_color:=true \
-  enable_depth:=true \
-  align_depth.enable:=true \
-  enable_sync:=true \
-  rgb_camera.color_profile:=640x480x30 \
-  depth_module.color_profile:=640x480x30 \
-  depth_module.depth_profile:=640x480x30
+ros2 launch homeplus_vision multi_camera.launch.py \
+  d405_serial:="${D405_SERIAL:-''}" \
+  d435i_serial:="${D435I_SERIAL:-''}" \
+  d455_serial:="${D455_SERIAL:-''}" \
+  side_mount:="${D455_SIDE:-left}"

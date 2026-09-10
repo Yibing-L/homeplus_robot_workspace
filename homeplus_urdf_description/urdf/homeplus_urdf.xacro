@@ -210,7 +210,21 @@
 <joint name="palm_to_grasp_tcp" type="fixed">
   <parent link="palm_1"/>
   <child link="grasp_tcp"/>
-  <origin xyz="0.105 -0.026 -0.027" rpy="0 0 0"/>
+  <!-- CAD geometry puts the physical gripper forward axis about 20 degrees
+       downward from palm +X.  Positive pitch aligns grasp_tcp +X with that
+       axis, so a world RPY goal of 0 0 0 is horizontal to the ground. -->
+  <origin xyz="0.105 -0.026 -0.027" rpy="0 0.349066 0"/>
+</joint>
+
+<!-- Contact frame for single-finger button pressing. Its X/Y position starts
+     from the CAD forward surface at joint_grip_L=70 degrees; the Z coordinate
+     includes the measured 3 cm downward shift to the lower physical finger.
+     Button tasks using it must command and hold the gripper at 70 degrees. -->
+<link name="press_tcp"/>
+<joint name="grasp_tcp_to_press_tcp" type="fixed">
+  <parent link="grasp_tcp"/>
+  <child link="press_tcp"/>
+  <origin xyz="0.07735 0.02253 -0.04204" rpy="0 0 0"/>
 </joint>
 
 <link name="FingerL_new_1">

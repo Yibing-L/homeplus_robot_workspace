@@ -34,6 +34,15 @@ def generate_launch_description():
         description="Launch RViz through the MoveIt launch file",
     )
 
+    launch_obstacle_cloud_arg = DeclareLaunchArgument(
+        "launch_obstacle_cloud",
+        default_value="false",
+        description=(
+            "Launch a legacy D405-only cloud node. Keep false when "
+            "homeplus_vision vision_pipeline.launch.py is running"
+        ),
+    )
+
     behavior_config_file_arg = DeclareLaunchArgument(
         "behavior_config_file",
         default_value=PathJoinSubstitution(
@@ -72,10 +81,31 @@ def generate_launch_description():
         description="Launch the Arduino serial bridge node",
     )
 
+    wait_for_hardware_ack_arg = DeclareLaunchArgument(
+        "wait_for_hardware_ack",
+        default_value="true",
+        description=(
+            "Wait for Arduino DONE after gripper and trajectory commands; "
+            "set false only for visualization/bench tests"
+        ),
+    )
+
+    continue_on_arduino_timeout_arg = DeclareLaunchArgument(
+        "continue_on_arduino_timeout",
+        default_value="false",
+        description="Assume the final state after an Arduino timeout (unsafe on hardware)",
+    )
+
     arduino_port_arg = DeclareLaunchArgument(
         "arduino_port",
         default_value="auto",
         description="Serial port for Arduino, or 'auto' to detect it",
+    )
+
+    arduino_baud_arg = DeclareLaunchArgument(
+        "arduino_baud",
+        default_value="115200",
+        description="Arduino serial baud rate (must match Serial.begin in firmware)",
     )
 
     moveit_launch = IncludeLaunchDescription(
@@ -98,22 +128,16 @@ def generate_launch_description():
     )
 
     occupancy_cloud_node = Node(
-        package="homeplus_moveit_config",
-        executable="cloud_builder.py",
-        name="cloud_builder",
+        package="homeplus_vision",
+        executable="obstacle_cloud_node.py",
+        name="d405_obstacle_cloud",
         output="screen",
         parameters=[
-            {
-                "depth_topic": "/camera/camera/aligned_depth_to_color/image_raw",
-                "camera_info_topic": "/camera/camera/color/camera_info",
-                "mask_topic": "/object_mask",
-                "output_frame": "base_link",
-                "mask_dilation_pixels": 8,
-                "target_padding_m": 0.02,
-                "mask_timeout_sec": 1.0,
-            }
+            PathJoinSubstitution(
+                [FindPackageShare("homeplus_vision"), "config", "obstacle_clouds.yaml"]
+            )
         ],
-        condition=IfCondition(LaunchConfiguration("use_octomap")),
+        condition=IfCondition(LaunchConfiguration("launch_obstacle_cloud")),
     )
 
     behavior_node = Node(
@@ -138,6 +162,11 @@ def generate_launch_description():
             {
                 "execution_map_path": LaunchConfiguration("execution_map_path"),
                 "enable_moveit_planning": LaunchConfiguration("enable_moveit_planning"),
+                "wait_for_gripper_ack": LaunchConfiguration("wait_for_hardware_ack"),
+                "wait_for_trajectory_ack": LaunchConfiguration("wait_for_hardware_ack"),
+                "continue_on_arduino_timeout": LaunchConfiguration(
+                    "continue_on_arduino_timeout"
+                ),
             },
         ],
         output="screen",
@@ -149,7 +178,7 @@ def generate_launch_description():
         name="arduino_bridge",
         arguments=[
             "--port", LaunchConfiguration("arduino_port"),
-            "--baud", "9600",
+            "--baud", LaunchConfiguration("arduino_baud"),
         ],
         output="screen",
         condition=IfCondition(LaunchConfiguration("run_arduino")),
@@ -161,12 +190,16 @@ def generate_launch_description():
             enable_moveit_planning_arg,
             use_octomap_arg,
             use_rviz_arg,
+            launch_obstacle_cloud_arg,
             behavior_config_file_arg,
             behavior_map_path_arg,
             executor_config_file_arg,
             execution_map_path_arg,
             run_arduino_arg,
+            wait_for_hardware_ack_arg,
+            continue_on_arduino_timeout_arg,
             arduino_port_arg,
+            arduino_baud_arg,
             moveit_launch,
             occupancy_cloud_node,
             behavior_node,

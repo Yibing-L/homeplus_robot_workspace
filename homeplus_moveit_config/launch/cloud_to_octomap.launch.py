@@ -33,10 +33,9 @@ def generate_launch_description():
     clear_octomap_service = LaunchConfiguration('clear_octomap_service')
 
     cloud_builder_node = Node(
-        package='homeplus_moveit_config',
-        # the installed script filename
-        executable='cloud_builder.py',
-        name='cloud_builder',
+        package='homeplus_vision',
+        executable='obstacle_cloud_node.py',
+        name='d405_obstacle_cloud',
         output='screen',
         parameters=[
             {'depth_topic': depth_topic},
@@ -68,18 +67,18 @@ def generate_launch_description():
     )
 
     return LaunchDescription([
-        DeclareLaunchArgument('depth_topic', default_value='/camera/camera/aligned_depth_to_color/image_raw'),
-        DeclareLaunchArgument('camera_info_topic', default_value='/camera/camera/color/camera_info'),
+        DeclareLaunchArgument('depth_topic', default_value='/cameras/d405/aligned_depth_to_color/image_raw'),
+        DeclareLaunchArgument('camera_info_topic', default_value='/cameras/d405/color/camera_info'),
         DeclareLaunchArgument('mask_topic', default_value='/object_mask'),
         DeclareLaunchArgument('output_frame', default_value=''),
-        DeclareLaunchArgument('octomap_frame', default_value='hand_camera_depth_optical_frame'),
+        DeclareLaunchArgument('octomap_frame', default_value='world'),
         DeclareLaunchArgument('octomap_input_topic', default_value='/obstacle_cloud'),
         DeclareLaunchArgument('mask_dilation_pixels', default_value='8'),
         DeclareLaunchArgument('target_padding_m', default_value='0.02'),
         DeclareLaunchArgument('mask_timeout_sec', default_value='1.0'),
         DeclareLaunchArgument(
             'clear_octomap_service',
-            default_value='/octomap_server/reset',
+            default_value='/clear_octomap',
         ),
         cloud_builder_node,
         octomap_node,

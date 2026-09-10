@@ -18,14 +18,19 @@ find_package(tf2_ros REQUIRED)
 find_package(tf2_geometry_msgs REQUIRED)
 find_package(cv_bridge REQUIRED)
 find_package(image_transport REQUIRED)
+find_package(std_srvs REQUIRED)
 
 # Install Python modules
 ament_python_install_package(${PROJECT_NAME})
 
 # Install Python scripts
 install(PROGRAMS
+  scripts/dino_test_interface.py
   scripts/gesture_recognizer.py
   scripts/grounding_dino_node.py
+  scripts/molmopoint_node.py
+  scripts/molmopoint_test_interface.py
+  scripts/obstacle_cloud_node.py
   scripts/test_grounding_dino_static.py
   DESTINATION lib/${PROJECT_NAME}
 )
@@ -34,6 +39,7 @@ install(PROGRAMS
 install(DIRECTORY
   launch
   DESTINATION share/${PROJECT_NAME}/
+  PATTERN "__pycache__" EXCLUDE
 )
 
 # Install config files

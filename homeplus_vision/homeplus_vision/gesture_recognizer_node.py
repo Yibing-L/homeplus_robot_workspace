@@ -1,5 +1,26 @@
 #!/usr/bin/env python3
 
+# Copyright 2026 Yibing Lu
+#
+# Permission is hereby granted, free of charge, to any person obtaining a copy
+# of this software and associated documentation files (the "Software"), to deal
+# in the Software without restriction, including without limitation the rights
+# to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+# copies of the Software, and to permit persons to whom the Software is
+# furnished to do so, subject to the following conditions:
+#
+# The above copyright notice and this permission notice shall be included in
+# all copies or substantial portions of the Software.
+#
+# THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+# IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+# FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL
+# THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+# LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+# OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
+# THE SOFTWARE.
+
+
 import collections
 import importlib
 import json
@@ -112,7 +133,10 @@ def insert_angles(x_raw: np.ndarray) -> np.ndarray:
     angle_valid = np.zeros((t, 16), dtype=np.float32)
 
     for angle_idx, (parent, joint, child) in enumerate(_HAND_TRIPLETS):
-        valid = hand_joint_valid[:, parent] & hand_joint_valid[:, joint] & hand_joint_valid[:, child]
+        valid = hand_joint_valid[:,
+                                 parent] & hand_joint_valid[:,
+                                                            joint] & hand_joint_valid[:,
+                                                                                      child]
         if valid.any():
             v1 = hand_xyz[valid, parent] - hand_xyz[valid, joint]
             v2 = hand_xyz[valid, child] - hand_xyz[valid, joint]
@@ -188,7 +212,9 @@ def build_model_from_artifact(artifact: Dict):
                 bidirectional=True,
             )
             lstm_out_dim = hidden * 2
-            self.res_proj = nn.Linear(lstm_out_dim, proj_dim) if lstm_out_dim != proj_dim else nn.Identity()
+            self.res_proj = nn.Linear(
+                lstm_out_dim,
+                proj_dim) if lstm_out_dim != proj_dim else nn.Identity()
             self.res_norm = nn.LayerNorm(proj_dim)
             self.attn_pool = TemporalAttentionPool(proj_dim, num_heads=attn_heads)
             self.head = nn.Sequential(
@@ -269,7 +295,9 @@ def build_model_from_artifact(artifact: Dict):
             return self.temporal_model(self.downsampler(x), mask)
 
     state_dict = artifact["state_dict"]
-    has_group_downsampler = any(key.startswith("downsampler.projections.") for key in state_dict.keys())
+    has_group_downsampler = any(
+        key.startswith("downsampler.projections.")
+        for key in state_dict.keys())
 
     if has_group_downsampler:
         group_dims = []
@@ -281,7 +309,10 @@ def build_model_from_artifact(artifact: Dict):
             group_dims.append(int(state_dict[weight_key].shape[0]))
             idx += 1
         if not group_dims:
-            raise RuntimeError("Checkpoint advertises a feature downsampler, but no projection weights were found.")
+            raise RuntimeError(
+                "Checkpoint advertises a feature downsampler, but no projection "
+                "weights were found."
+            )
 
         temporal_model = AttentionBiLSTM(
             int(sum(group_dims)),
@@ -313,16 +344,28 @@ def load_checkpoint(path: str) -> Dict:
     artifact = torch.load(path, map_location="cpu", weights_only=False)
     clip_norm = artifact.get("clip_norm")
     return {
-        "artifact": artifact,
-        "model": build_model_from_artifact(artifact),
-        "mu": np.array(artifact["mu"], dtype=np.float32),
-        "sd": np.array(artifact["sd"], dtype=np.float32),
-        "n_continuous": int(artifact.get("n_continuous", 148)),
-        "n_classes": int(artifact["n_classes"]),
-        "in_dim": int(artifact["in_dim"]),
-        "has_angles": bool("angles" in str(artifact.get("type", "")) or int(artifact["in_dim"]) >= 207),
-        "scale_mean": float(artifact["scale_mean"]) if artifact.get("scale_mean") is not None else None,
-        "clip_norm": True if clip_norm is None else bool(clip_norm),
+        "artifact":
+        artifact,
+        "model":
+        build_model_from_artifact(artifact),
+        "mu":
+        np.array(artifact["mu"], dtype=np.float32),
+        "sd":
+        np.array(artifact["sd"], dtype=np.float32),
+        "n_continuous":
+        int(artifact.get("n_continuous", 148)),
+        "n_classes":
+        int(artifact["n_classes"]),
+        "in_dim":
+        int(artifact["in_dim"]),
+        "has_angles":
+        bool("angles" in str(artifact.get("type", ""))
+             or int(artifact["in_dim"]) >= 207),
+        "scale_mean":
+        float(artifact["scale_mean"])
+        if artifact.get("scale_mean") is not None else None,
+        "clip_norm":
+        True if clip_norm is None else bool(clip_norm),
     }
 
 
@@ -340,7 +383,9 @@ def load_label_map(path: Optional[str], label_names: Sequence[str]) -> Dict[int,
 
 
 class FeatureBufferXYZ:
-    def __init__(self, intr: PinholeIntrinsics, t_target: int, buffer_size: int, depth_unit_scale: float):
+
+    def __init__(self, intr: PinholeIntrinsics, t_target: int,
+                 buffer_size: int, depth_unit_scale: float):
         self.intr = intr
         self.t_target = t_target
         self.depth_unit_scale = depth_unit_scale
@@ -393,7 +438,9 @@ class FeatureBufferXYZ:
                     joint_valid[joint_idx] = 1
 
             wrist_depth = hand_uvd[0, 2]
-            if np.isfinite(wrist_depth) and wrist_depth > 0 and joint_valid.sum() >= HAND_MIN_VALID:
+            if np.isfinite(
+                    wrist_depth) and wrist_depth > 0 and joint_valid.sum(
+                    ) >= HAND_MIN_VALID:
                 wrist_xyz[:] = deproject(
                     self.intr,
                     float(np.clip(hand_uvd[0, 0], 0, width - 1)),
@@ -450,10 +497,16 @@ class FeatureBufferXYZ:
 
     def _build_features_from_slice(self, frames) -> tuple[np.ndarray, np.ndarray]:
         t = self.t_target
-        hand_xyz_norm_seq = np.stack([frame[0] for frame in frames], axis=0).astype(np.float32)
-        arm_xyz_norm_seq = np.stack([frame[1] for frame in frames], axis=0).astype(np.float32)
-        wrist_xyz_seq = np.nan_to_num(np.stack([frame[2] for frame in frames], axis=0), nan=0.0)
-        scale_seq = np.nan_to_num(np.array([frame[3] for frame in frames], dtype=np.float32), nan=0.0)
+        hand_xyz_norm_seq = np.stack([frame[0] for frame in frames],
+                                     axis=0).astype(np.float32)
+        arm_xyz_norm_seq = np.stack([frame[1] for frame in frames],
+                                    axis=0).astype(np.float32)
+        wrist_xyz_seq = np.nan_to_num(np.stack([frame[2] for frame in frames],
+                                               axis=0),
+                                      nan=0.0)
+        scale_seq = np.nan_to_num(np.array([frame[3] for frame in frames],
+                                           dtype=np.float32),
+                                  nan=0.0)
         valid_joint_t = np.stack([frame[4] for frame in frames], axis=0).astype(np.float32)
         valid_arm_joint_t = np.stack([frame[5] for frame in frames], axis=0).astype(np.float32)
         valid_t = np.array([frame[6] for frame in frames], dtype=bool)
@@ -607,9 +660,13 @@ class GestureRecognizerNode(Node):
         self.declare_parameter("label_names", [])
         self.declare_parameter("device", "auto")
         self.declare_parameter("recognition_topic", "/gesture_recognition/state")
-        self.declare_parameter("color_topic", "/camera/camera/color/image_raw")
-        self.declare_parameter("depth_topic", "/camera/camera/aligned_depth_to_color/image_raw")
-        self.declare_parameter("camera_info_topic", "/camera/camera/color/camera_info")
+        self.declare_parameter("color_topic", "/cameras/d455/color/image_raw")
+        self.declare_parameter(
+            "depth_topic", "/cameras/d455/aligned_depth_to_color/image_raw"
+        )
+        self.declare_parameter(
+            "camera_info_topic", "/cameras/d455/color/camera_info"
+        )
         self.declare_parameter("depth_unit_scale", 0.001)
         self.declare_parameter("max_sync_delta_sec", 0.05)
         self.declare_parameter("t_target", 64)
@@ -710,9 +767,13 @@ class GestureRecognizerNode(Node):
         depth_topic = str(self.get_parameter("depth_topic").value)
         camera_info_topic = str(self.get_parameter("camera_info_topic").value)
 
-        self.create_subscription(CameraInfo, camera_info_topic, self.camera_info_callback, qos_profile_sensor_data)
-        self.create_subscription(Image, depth_topic, self.depth_callback, qos_profile_sensor_data)
-        self.create_subscription(Image, color_topic, self.color_callback, qos_profile_sensor_data)
+        self.create_subscription(CameraInfo, camera_info_topic,
+                                 self.camera_info_callback,
+                                 qos_profile_sensor_data)
+        self.create_subscription(Image, depth_topic, self.depth_callback,
+                                 qos_profile_sensor_data)
+        self.create_subscription(Image, color_topic, self.color_callback,
+                                 qos_profile_sensor_data)
 
         self.get_logger().info(
             "Gesture recognizer ready: "
@@ -756,27 +817,33 @@ class GestureRecognizerNode(Node):
             depth_unit_scale=self.depth_unit_scale,
         )
         self.get_logger().info(
-            f"Camera intrinsics received: fx={self.intrinsics.fx:.2f}, fy={self.intrinsics.fy:.2f}, "
-            f"cx={self.intrinsics.cx:.2f}, cy={self.intrinsics.cy:.2f}"
-        )
+            f"Camera intrinsics received: fx={self.intrinsics.fx:.2f}, "
+            f"fy={self.intrinsics.fy:.2f}, "
+            f"cx={self.intrinsics.cx:.2f}, cy={self.intrinsics.cy:.2f}")
 
     def depth_callback(self, msg: Image) -> None:
         try:
-            self.latest_depth = self.bridge.imgmsg_to_cv2(msg, desired_encoding="passthrough")
+            self.latest_depth = self.bridge.imgmsg_to_cv2(
+                msg, desired_encoding="passthrough")
             self.latest_depth_stamp_ns = stamp_to_ns(msg.header.stamp)
         except Exception as exc:
-            self._warn_throttled("depth_convert", f"Failed to decode depth image: {exc}")
+            self._warn_throttled("depth_convert",
+                                 f"Failed to decode depth image: {exc}")
 
     def color_callback(self, msg: Image) -> None:
         if self.intrinsics is None or self.feature_buffer is None:
             return
         if self.latest_depth is None or self.latest_depth_stamp_ns is None:
-            self._warn_throttled("waiting_depth", "Waiting for aligned depth frames.")
+            self._warn_throttled("waiting_depth",
+                                 "Waiting for aligned depth frames.")
             return
 
         color_stamp_ns = stamp_to_ns(msg.header.stamp)
-        if abs(color_stamp_ns - self.latest_depth_stamp_ns) > self.max_sync_delta_ns:
-            self._warn_throttled("sync", "Color/depth timestamps are too far apart; skipping frame.")
+        if abs(color_stamp_ns -
+               self.latest_depth_stamp_ns) > self.max_sync_delta_ns:
+            self._warn_throttled(
+                "sync",
+                "Color/depth timestamps are too far apart; skipping frame.")
             return
 
         self.frame_index += 1
@@ -829,30 +896,43 @@ class GestureRecognizerNode(Node):
                     x_input = insert_angles(x_input)
                 if self.scale_mean is not None and self.scale_mean > 1e-8:
                     x_input[:, 147] /= self.scale_mean
-                x_input[:, :self.n_continuous] = (x_input[:, :self.n_continuous] - self.mu) / (self.sd + 1e-8)
+                x_input[:, :self.n_continuous] = (
+                    x_input[:, :self.n_continuous] - self.mu) / (self.sd +
+                                                                 1e-8)
                 if self.clip_norm:
                     clip_mu = x_input[:, :self.n_continuous].mean(axis=0)
                     clip_sd = x_input[:, :self.n_continuous].std(axis=0) + 1e-6
-                    x_input[:, :self.n_continuous] = (x_input[:, :self.n_continuous] - clip_mu) / clip_sd
+                    x_input[:, :self.n_continuous] = (
+                        x_input[:, :self.n_continuous] - clip_mu) / clip_sd
 
-                x_tensor = self.torch.from_numpy(x_input[None]).float().to(self.device)
-                m_tensor = self.torch.from_numpy(valid_t[None].astype(np.float32)).to(self.device)
+                x_tensor = self.torch.from_numpy(x_input[None]).float().to(
+                    self.device)
+                m_tensor = self.torch.from_numpy(valid_t[None].astype(
+                    np.float32)).to(self.device)
                 with self.torch.no_grad():
-                    probs = self.torch.softmax(self.model(x_tensor, m_tensor), dim=1).cpu().numpy()[0]
+                    probs = self.torch.softmax(self.model(x_tensor, m_tensor),
+                                               dim=1).cpu().numpy()[0]
                 window_probs.append(probs)
 
             if window_probs:
-                public_label, ema_conf = self.accumulator.update(np.mean(window_probs, axis=0))
+                public_label, ema_conf = self.accumulator.update(
+                    np.mean(window_probs, axis=0))
 
         valid_ratio = float(np.mean([window[1].mean() for window in windows]))
         self._publish_result(public_label, ema_conf, is_active)
 
         if debug_frame is not None:
-            state = "idle" if not is_active else f"motion={hand_motion:.3f} valid={valid_ratio:.2f}"
-            self._draw_overlay(debug_frame, state, self._label_name(public_label), ema_conf, is_active)
+            state = (
+                "idle" if not is_active else
+                f"motion={hand_motion:.3f} valid={valid_ratio:.2f}"
+            )
+            self._draw_overlay(debug_frame, state,
+                               self._label_name(public_label), ema_conf,
+                               is_active)
             self._publish_debug_image(msg, debug_frame)
 
-    def _publish_result(self, public_label: Optional[int], confidence: float, is_active: bool) -> None:
+    def _publish_result(self, public_label: Optional[int], confidence: float,
+                        is_active: bool) -> None:
         label_name = self._label_name(public_label)
         class_id = -1 if public_label is None else int(public_label)
         recognition_msg = GestureRecognition()
@@ -870,7 +950,8 @@ class GestureRecognizerNode(Node):
 
         if self.last_logged_label != class_id or self.last_logged_active != is_active:
             self.get_logger().info(
-                f"gesture={label_name} class_id={class_id} conf={confidence:.2f} active={is_active}"
+                f"gesture={label_name} class_id={class_id} "
+                f"conf={confidence:.2f} active={is_active}"
             )
             self.last_logged_label = class_id
             self.last_logged_active = is_active

@@ -51,9 +51,9 @@ bash scripts/run_robot_tf.sh &
 sleep 3
 bash scripts/run_realsense.sh
 
-# --- Terminal 2: GroundingDINO (object detection -> /gdino_pose_world)
+# --- Terminal 2: MolmoPoint (target pointing -> /molmopoint_pose_world)
 cd ~/homeplus_robot_workspace
-WORLD_FRAME=world bash scripts/run_dino.sh 1
+WORLD_FRAME=world bash scripts/run_molmopoint.sh 1
 # task_id arg: 1 = pick_up_coffee preset
 
 # --- Terminal 3: MoveIt + gesture executor + Arduino bridge
@@ -105,14 +105,14 @@ tmux kill-server                  # kill ALL tmux sessions
 --------------------------------------------------------------------------------
 # All-in-one launcher (handles TF, RealSense, occ-map, optional dino+gesture)
 bash scripts/run_system.sh \
-    --with-dino \
+    --with-molmopoint \
     --task-id 1 \
     --gesture-checkpoint /abs/path/checkpoint.pt \
     --gesture-label-map /abs/path/label_map.json
 
 # Flags:
 #   --no-occ-map               disable octomap pipeline
-#   --with-dino                enable GroundingDINO
+#   --with-molmopoint          enable MolmoPoint
 #   --task-id N                dino preset id (default 1)
 #   --gesture-checkpoint PATH  enable gesture recognizer
 #   --gesture-label-map  PATH  optional label map
@@ -150,17 +150,17 @@ bash scripts/run_occ_map.sh
 # or:
 ros2 launch homeplus_moveit_config cloud_to_octomap.launch.py \
     octomap_input_topic:=/obstacle_cloud \
-    depth_topic:=/camera/camera/aligned_depth_to_color/image_raw \
-    camera_info_topic:=/camera/camera/color/camera_info \
+    depth_topic:=/cameras/d405/aligned_depth_to_color/image_raw \
+    camera_info_topic:=/cameras/d405/color/camera_info \
     output_frame:=base_link \
     octomap_frame:=base_link
 
-# GroundingDINO node directly
-ros2 run homeplus_vision grounding_dino_node.py --ros-args \
+# MolmoPoint node directly (activate .venv-molmopoint first)
+ros2 run homeplus_vision molmopoint_node.py --ros-args \
     -p task_id:=1 -p world_frame:=world \
-    -p image_topic:=/camera/camera/color/image_raw \
-    -p depth_topic:=/camera/camera/aligned_depth_to_color/image_raw \
-    -p camera_info_topic:=/camera/camera/color/camera_info
+    -p image_topic:=/cameras/d405/color/image_raw \
+    -p depth_topic:=/cameras/d405/aligned_depth_to_color/image_raw \
+    -p camera_info_topic:=/cameras/d405/color/camera_info
 
 # Gesture recognizer node directly
 ros2 run homeplus_vision gesture_recognizer.py --ros-args \
@@ -169,7 +169,7 @@ ros2 run homeplus_vision gesture_recognizer.py --ros-args \
 
 # Arduino serial reader directly
 python3 ~/homeplus_robot_workspace/homeplus_moveit_config/scripts/arduino_reader.py \
-    --port auto --baud 9600
+    --port auto --baud 115200
 
 # Other moveit_config python utilities
 ros2 run homeplus_moveit_config ik.py
@@ -200,21 +200,21 @@ ros2 run homeplus_moveit_config gesture_motion_executor.py
 ros2 topic echo /arduino/ack
 
 # Confirm DINO is detecting an object (place coffee cup in view)
-ros2 topic echo /gdino_pose_world
+ros2 topic echo /molmopoint_pose_world
 
 # Confirm gesture pipeline is publishing
-ros2 topic echo /gesture/recognition
+ros2 topic echo /gesture_recognition/state
 ros2 topic echo /gesture_control/command
 
 # Camera streams
-ros2 topic echo /camera/camera/color/image_raw --no-arr
-ros2 topic hz   /camera/camera/color/image_raw
-ros2 topic hz   /camera/camera/aligned_depth_to_color/image_raw
+ros2 topic hz /cameras/d405/color/image_raw
+ros2 topic hz /cameras/d435i/aligned_depth_to_color/image_raw
+ros2 topic hz /cameras/d455/color/image_raw
 
 # General introspection
 ros2 node list
 ros2 topic list
-ros2 topic info /gdino_pose_world
+ros2 topic info /molmopoint_pose_world
 ros2 topic hz   /joint_states
 ros2 service list
 ros2 param list
@@ -222,11 +222,11 @@ ros2 param get /gesture_recognizer checkpoint_path
 
 # TF tree (writes frames.pdf to cwd)
 ros2 run tf2_tools view_frames
-ros2 run tf2_ros tf2_echo world hand_camera_link_1
+ros2 run tf2_ros tf2_echo world d405_color_optical_frame
 
 # Bag a topic for offline debug
-ros2 bag record -o /tmp/dino_bag /gdino_pose_world /camera/camera/color/image_raw
-ros2 bag play /tmp/dino_bag
+ros2 bag record -o /tmp/molmopoint_bag /molmopoint_pose_world /cameras/d405/color/image_raw
+ros2 bag play /tmp/molmopoint_bag
 
 
 --------------------------------------------------------------------------------
@@ -292,7 +292,7 @@ ros2 topic pub --once /gesture_control/approve_planned_path \
 ros2 topic pub --once /gesture_control/approve_planned_path \
   std_msgs/msg/Bool "{data: false}"
 
-# pick_up_coffee has multiple planned pose steps, so approve each RViz path.
+# pick_up_coffee has 4 planned pose stages: pre-grasp, grasp, lift, retreat.
 
 # Other behaviors (from gesture_behavior_map.yaml)
 #   0 home              joint_state
@@ -330,13 +330,13 @@ PREP (one time, in RViz):
 REQUIRED RUNNING:
   At minimum the MoveIt stack + gesture executor must be up:
       ros2 launch homeplus_moveit_config gesture_control.launch.py \
-          launch_moveit:=true run_arduino:=false
+          launch_moveit:=true run_arduino:=false wait_for_hardware_ack:=false
   (run_arduino:=false avoids needing an Arduino plugged in)
   TF must also be publishing — easiest is to also start scripts/run_robot_tf.sh
   Or just bring up the whole tmux session (T1 + T3 panes are enough).
 
-STEP 1 — fake the coffee detection (sequence reads /gdino_pose_world):
-  ros2 topic pub --rate 5 /gdino_pose_world geometry_msgs/msg/PoseStamped \
+STEP 1 — fake the coffee detection (sequence reads /molmopoint_pose_world):
+  ros2 topic pub --rate 5 /molmopoint_pose_world geometry_msgs/msg/PoseStamped \
     "{header: {frame_id: 'world'},
       pose: {position: {x: 0.4, y: 0.0, z: 0.3},
              orientation: {x: 0.0, y: 0.0, z: 0.0, w: 1.0}}}"
@@ -375,7 +375,7 @@ REPLAY a saved trajectory in RViz:
 TROUBLESHOOTING:
   Nothing happens after STEP 2:
       Check executor saw the command:  ros2 topic echo /gesture_control/command
-      Check it's seeing the fake pose: ros2 topic echo /gdino_pose_world
+      Check it's seeing the fake pose: ros2 topic echo /molmopoint_pose_world
       Confirm move_group is up:        ros2 node list | grep move_group
   Plan fails ("No motion plan found"):
       Pick a more reachable x/y/z; default arm reach is roughly within 0.5m
@@ -393,12 +393,12 @@ pkill -f ros2
 pkill -f rviz2
 pkill -f move_group
 pkill -f realsense
-pkill -f grounding_dino
+pkill -f molmopoint
 pkill -f gesture_recognizer
 pkill -f arduino_reader
 
 # One-liner: stop everything ROS-related
-pkill -f 'ros2|rviz2|move_group|realsense|grounding_dino|gesture_recognizer|arduino_reader'
+pkill -f 'ros2|rviz2|move_group|realsense|molmopoint|gesture_recognizer|arduino_reader'
 
 # Find and kill by port (e.g. if VNC 6080 is stuck)
 sudo lsof -i :6080
@@ -434,19 +434,18 @@ docker exec -it homeplus_ros2 bash
  10. KEY TOPICS / FRAMES (cheat-cheat)
 --------------------------------------------------------------------------------
 Topics
-  /camera/camera/color/image_raw                 RGB stream
-  /camera/camera/aligned_depth_to_color/image_raw  depth aligned to color
-  /camera/camera/depth/image_rect_raw            raw depth
-  /camera/camera/color/camera_info               intrinsics
+  /cameras/d405/*                                end-effector target + OctoMap
+  /cameras/d435i/*                               front-base OctoMap
+  /cameras/d455/*                                side gesture + OctoMap
   /joint_states                                  robot joints
-  /gdino_pose_world                              detected object pose
-  /gesture/recognition                           raw gesture inference
+  /molmopoint_pose_world                         detected object pose
+  /gesture_recognition/state                     raw gesture inference
   /gesture_control/command                       command to execute
   /arduino/ack                                   gripper / hardware ack
-  /full_cloud                                    point cloud -> octomap
+  /obstacle_cloud                                fused point cloud -> OctoMap
 
 Frames
-  world  ->  base_link  ->  hand_camera_link_1  ->  camera_link  ->  *_optical_frame
+  world -> base_link -> {d405,d435i,d455}_link -> *_optical_frame
 
 
 --------------------------------------------------------------------------------
@@ -454,9 +453,9 @@ Frames
 --------------------------------------------------------------------------------
 RViz black / no robot         source install/setup.bash; rebuild urdf pkg
 "package not found"           you forgot `source install/setup.bash`
-camera frames missing         `ros2 topic hz /camera/camera/color/image_raw`
-no /gdino_pose_world          DINO needs a valid TF target frame (use WORLD_FRAME=world for base_arm planning) and camera publishing
+camera frames missing         `ros2 topic hz /cameras/d405/color/image_raw`
+no /molmopoint_pose_world     MolmoPoint needs a valid TF target frame (use WORLD_FRAME=world for base_arm planning), CUDA, and camera publishing
 gripper not reacting          `ros2 topic echo /arduino/ack`; check Arduino serial perms
-TF errors                     `ros2 run tf2_ros tf2_echo world camera_link`
-MoveIt plan fails             toggle use_octomap off to isolate; check /joint_states
+TF errors                     `ros2 run tf2_ros tf2_echo world d405_link`
+MoveIt plan fails             check CLOUD_STATS mask=active and exactly one /obstacle_cloud publisher; clear /clear_octomap; then toggle use_octomap off to isolate
 ================================================================================

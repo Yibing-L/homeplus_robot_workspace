@@ -10,7 +10,7 @@ set -u
 
 ros2 launch homeplus_moveit_config cloud_to_octomap.launch.py \
   octomap_input_topic:=/obstacle_cloud \
-  depth_topic:=/camera/camera/aligned_depth_to_color/image_raw \
-  camera_info_topic:=/camera/camera/color/camera_info \
-  output_frame:=base_link \
-  octomap_frame:=base_link
+  depth_topic:=/cameras/d405/aligned_depth_to_color/image_raw \
+  camera_info_topic:=/cameras/d405/color/camera_info \
+  output_frame:="" \
+  octomap_frame:=world

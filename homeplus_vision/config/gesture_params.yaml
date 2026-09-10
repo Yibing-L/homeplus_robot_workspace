@@ -8,9 +8,11 @@ gesture_recognizer:
     label_names: []
     device: "auto"
 
-    color_topic: "/camera/camera/color/image_raw"
-    depth_topic: "/camera/camera/aligned_depth_to_color/image_raw"
-    camera_info_topic: "/camera/camera/color/camera_info"
+    # D455 side camera owns gesture recognition. Its physical side is selected
+    # by side_mount:=left|right in multi_camera.launch.py.
+    color_topic: "/cameras/d455/color/image_raw"
+    depth_topic: "/cameras/d455/aligned_depth_to_color/image_raw"
+    camera_info_topic: "/cameras/d455/color/camera_info"
     depth_unit_scale: 0.001
     max_sync_delta_sec: 0.08
 

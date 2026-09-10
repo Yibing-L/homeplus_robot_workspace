@@ -59,11 +59,11 @@ def parse_args():
     parser.add_argument(
         "--target-from-topic",
         action="store_true",
-        help="Use the latest /gdino_pose_world pose as the target marker.",
+        help="Use the latest /molmopoint_pose_world pose as the target marker.",
     )
     parser.add_argument(
         "--target-topic",
-        default="/gdino_pose_world",
+        default="/molmopoint_pose_world",
         help="Pose topic to read when --target-from-topic is set.",
     )
     parser.add_argument(
@@ -109,7 +109,7 @@ def make_target_markers(frame_id: str, x: float, y: float, z: float):
     text.color.g = 1.0
     text.color.b = 0.0
     text.color.a = 1.0
-    text.text = "DINO TARGET"
+    text.text = "MOLMOPOINT TARGET"
 
     return [sphere, text]
 

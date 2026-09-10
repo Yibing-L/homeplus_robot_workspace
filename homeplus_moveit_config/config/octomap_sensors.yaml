@@ -4,9 +4,10 @@ sensors:
 point_cloud_sensor:
   sensor_plugin: occupancy_map_monitor/PointCloudOctomapUpdater
   point_cloud_topic: /obstacle_cloud
-  max_range: 5.0
+  max_range: 2.0
   point_subsample: 1
   padding_offset: 0.03
   padding_scale: 1.0
+  # The target-aware D405 cloud publishes at 1 Hz.
   max_update_rate: 1.0
   filtered_cloud_topic: /filtered_cloud

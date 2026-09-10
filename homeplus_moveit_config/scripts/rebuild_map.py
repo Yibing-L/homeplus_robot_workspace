@@ -10,8 +10,8 @@ Run:
 
 Parameters:
     arduino_topic: topic to listen for status (std_msgs/Bool) (default: /arduino/status)
-  depth_topic: topic where depth images arrive (default: /camera/camera/depth/image_rect_raw)
-  camera_info_topic: CameraInfo topic (default: /camera/camera/depth/camera_info)
+  depth_topic: D405 aligned depth topic
+  camera_info_topic: D405 color CameraInfo topic
   republish_count: how many times to republish buffered frames after reset (default: 3)
   republish_delay: seconds between republished frames (default: 0.2)
 """
@@ -33,8 +33,12 @@ class RebuildMap(Node):
 
         # Params
         self.declare_parameter('arduino_topic', '/arduino/status')
-        self.declare_parameter('depth_topic', '/camera/camera/depth/image_rect_raw')
-        self.declare_parameter('camera_info_topic', '/camera/camera/depth/camera_info')
+        self.declare_parameter(
+            'depth_topic', '/cameras/d405/aligned_depth_to_color/image_raw'
+        )
+        self.declare_parameter(
+            'camera_info_topic', '/cameras/d405/color/camera_info'
+        )
         self.declare_parameter('republish_count', 3)
         self.declare_parameter('republish_delay', 0.2)
 

@@ -1,0 +1,12 @@
+# Official MolmoPoint-8B runtime versions. PyTorch and ROS Python packages are
+# inherited from the host by scripts/setup_molmopoint.sh.
+transformers==4.57.1
+accelerate>=1.10,<2
+bitsandbytes>=0.48,<0.50
+einops>=0.8,<1
+jinja2>=3.1,<4
+decord2==3.4.0
+huggingface-hub>=0.35,<1
+safetensors>=0.5,<1
+# colcon-core on ROS 2 Humble requires setuptools below 80.
+setuptools>=68,<80

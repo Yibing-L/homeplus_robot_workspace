@@ -1,85 +1,75 @@
 #!/usr/bin/env python3
 
+# Copyright 2026 Yibing Lu
+#
+# Permission is hereby granted, free of charge, to any person obtaining a copy
+# of this software and associated documentation files (the "Software"), to deal
+# in the Software without restriction, including without limitation the rights
+# to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+# copies of the Software, and to permit persons to whom the Software is
+# furnished to do so, subject to the following conditions:
+#
+# The above copyright notice and this permission notice shall be included in
+# all copies or substantial portions of the Software.
+#
+# THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+# IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+# FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL
+# THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+# LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+# OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
+# THE SOFTWARE.
+
+
+"""Compatibility pipeline: side-mounted D455 gesture detection."""
+
 from launch import LaunchDescription
 from launch.actions import DeclareLaunchArgument, IncludeLaunchDescription
+from launch.conditions import IfCondition
 from launch.launch_description_sources import PythonLaunchDescriptionSource
 from launch.substitutions import LaunchConfiguration, PathJoinSubstitution
-from launch_ros.actions import Node
-from launch_ros.parameter_descriptions import ParameterFile, ParameterValue
 from launch_ros.substitutions import FindPackageShare
 
 
+def _source(name):
+    return PythonLaunchDescriptionSource(
+        PathJoinSubstitution([FindPackageShare("homeplus_vision"), "launch", name])
+    )
+
+
 def generate_launch_description():
-    checkpoint_path_arg = DeclareLaunchArgument(
-        "checkpoint_path",
-        default_value="",
-        description="Path to a train_xyz.py or train_with_angles.py .pt checkpoint",
-    )
-
-    label_map_path_arg = DeclareLaunchArgument(
-        "label_map_path",
-        default_value="",
-        description="Optional JSON label map file for class names",
-    )
-
-    gesture_config_file_arg = DeclareLaunchArgument(
-        "gesture_config_file",
-        default_value=PathJoinSubstitution(
-            [FindPackageShare("homeplus_vision"), "config", "gesture_params.yaml"]
-        ),
-        description="Path to gesture recognizer config file",
-    )
-
-    realsense_launch = IncludeLaunchDescription(
-        PythonLaunchDescriptionSource(
-            [
-                PathJoinSubstitution(
-                    [FindPackageShare("realsense2_camera"), "launch", "rs_launch.py"]
-                )
-            ]
-        ),
+    camera = IncludeLaunchDescription(
+        _source("multi_camera.launch.py"),
         launch_arguments={
-            "initial_reset": "true",
-            "enable_color": "true",
-            "enable_depth": "true",
-            "enable_accel": "false",
-            "enable_gyro": "false",
-            "enable_motion": "false",
-            "rgb_camera.color_profile": "640x480x30",
-            "depth_module.color_profile": "640x480x30",
-            "depth_module.depth_profile": "640x480x30",
-            "depth_module.infra_profile": "640x480x30",
-            "enable_sync": "true",
-            "align_depth.enable": "true",
+            "enable_d405": "false",
+            "enable_d435i": "false",
+            "enable_d455": "true",
+            "d455_serial": LaunchConfiguration("d455_serial"),
+            "side_mount": LaunchConfiguration("side_mount"),
+        }.items(),
+        condition=IfCondition(LaunchConfiguration("launch_camera")),
+    )
+    perception = IncludeLaunchDescription(
+        _source("perception.launch.py"),
+        launch_arguments={
+            "enable_target_detection": "false",
+            "enable_gesture_detection": "true",
+            "enable_d405_octomap": "false",
+            "enable_d435i_octomap": "false",
+            "enable_d455_octomap": LaunchConfiguration("enable_octomap"),
+            "gesture_checkpoint": LaunchConfiguration("checkpoint_path"),
+            "gesture_label_map": LaunchConfiguration("label_map_path"),
         }.items(),
     )
-
-    gesture_node = Node(
-        package="homeplus_vision",
-        executable="gesture_recognizer.py",
-        name="gesture_recognizer",
-        parameters=[
-            ParameterFile(LaunchConfiguration("gesture_config_file"), allow_substs=True),
-            {
-                "checkpoint_path": ParameterValue(
-                    LaunchConfiguration("checkpoint_path"),
-                    value_type=str,
-                ),
-                "label_map_path": ParameterValue(
-                    LaunchConfiguration("label_map_path"),
-                    value_type=str,
-                ),
-            },
-        ],
-        output="screen",
-    )
-
     return LaunchDescription(
         [
-            checkpoint_path_arg,
-            label_map_path_arg,
-            gesture_config_file_arg,
-            realsense_launch,
-            gesture_node,
+            DeclareLaunchArgument("launch_camera", default_value="true"),
+            DeclareLaunchArgument("d455_serial", default_value="''"),
+            DeclareLaunchArgument("side_mount", default_value="left"),
+            DeclareLaunchArgument("enable_octomap", default_value="false"),
+            DeclareLaunchArgument("checkpoint_path", default_value=""),
+            DeclareLaunchArgument("label_map_path", default_value=""),
+            camera,
+            perception,
         ]
     )

@@ -1,119 +1,75 @@
 #!/usr/bin/env python3
 
+# Copyright 2026 Yibing Lu
+#
+# Permission is hereby granted, free of charge, to any person obtaining a copy
+# of this software and associated documentation files (the "Software"), to deal
+# in the Software without restriction, including without limitation the rights
+# to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+# copies of the Software, and to permit persons to whom the Software is
+# furnished to do so, subject to the following conditions:
+#
+# The above copyright notice and this permission notice shall be included in
+# all copies or substantial portions of the Software.
+#
+# THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+# IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+# FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL
+# THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+# LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+# OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
+# THE SOFTWARE.
+
+
+"""Legacy filename for the D405 MolmoPoint pipeline and optional obstacle cloud."""
+
 from launch import LaunchDescription
 from launch.actions import DeclareLaunchArgument, IncludeLaunchDescription
+from launch.conditions import IfCondition
 from launch.launch_description_sources import PythonLaunchDescriptionSource
 from launch.substitutions import LaunchConfiguration, PathJoinSubstitution
-from launch_ros.actions import Node
 from launch_ros.substitutions import FindPackageShare
 
 
+def _source(name):
+    return PythonLaunchDescriptionSource(
+        PathJoinSubstitution([FindPackageShare("homeplus_vision"), "launch", name])
+    )
+
+
 def generate_launch_description():
-    world_frame_arg = DeclareLaunchArgument(
-        "world_frame",
-        default_value="world",
-        description="World frame used by grounding_dino_node pose output",
-    )
-
-    inference_rate_arg = DeclareLaunchArgument(
-        "inference_rate",
-        default_value="2.0",
-        description="GroundingDINO inference loop frequency (Hz)",
-    )
-
-    task_id_arg = DeclareLaunchArgument(
-        "task_id",
-        default_value="1",
-        description="GroundingDINO task preset id",
-    )
-
-    # Camera pose in world 
-    camera_x_arg = DeclareLaunchArgument("camera_x", default_value="0.0")
-    camera_y_arg = DeclareLaunchArgument("camera_y", default_value="0.0")
-    camera_z_arg = DeclareLaunchArgument("camera_z", default_value="0.0")
-
-    camera_qx_arg = DeclareLaunchArgument("camera_qx", default_value="0")
-    camera_qy_arg = DeclareLaunchArgument("camera_qy", default_value="0")
-    camera_qz_arg = DeclareLaunchArgument("camera_qz", default_value="0")
-    camera_qw_arg = DeclareLaunchArgument("camera_qw", default_value="1")
-
-    # Realsense camera launch
-    realsense_launch = IncludeLaunchDescription(
-        PythonLaunchDescriptionSource(
-            [
-                PathJoinSubstitution(
-                    [FindPackageShare("realsense2_camera"), "launch", "rs_launch.py"]
-                )
-            ]
-        ),
+    camera = IncludeLaunchDescription(
+        _source("multi_camera.launch.py"),
         launch_arguments={
-            "initial_reset": "true",
-            "enable_color": "true",
-            "enable_depth": "true",
-            "enable_infra": "false",
-            "enable_infra1": "false",
-            "enable_infra2": "false",
-            "enable_accel": "false",
-            "enable_gyro": "false",
-            "enable_motion": "false",
-            "rgb_camera.color_profile": "640x480x30",
-            "depth_module.color_profile": "640x480x30",
-            "depth_module.depth_profile": "640x480x30",
-            "depth_module.infra_profile": "640x480x30",
-            "enable_sync": "true",
-            "align_depth.enable": "true",
+            "enable_d405": "true",
+            "enable_d435i": "false",
+            "enable_d455": "false",
+            "d405_serial": LaunchConfiguration("d405_serial"),
+        }.items(),
+        condition=IfCondition(LaunchConfiguration("launch_camera")),
+    )
+    perception = IncludeLaunchDescription(
+        _source("perception.launch.py"),
+        launch_arguments={
+            "enable_target_detection": "true",
+            "enable_gesture_detection": "false",
+            "enable_d405_octomap": LaunchConfiguration("enable_octomap"),
+            "enable_d435i_octomap": "false",
+            "enable_d455_octomap": "false",
+            "task_id": LaunchConfiguration("task_id"),
+            "target_inference_rate": LaunchConfiguration("inference_rate"),
+            "world_frame": LaunchConfiguration("world_frame"),
         }.items(),
     )
-
-    world_to_camera_tf = Node(
-        package="tf2_ros",
-        executable="static_transform_publisher",
-        name="world_to_camera_tf",
-        arguments=[
-            LaunchConfiguration("camera_x"),
-            LaunchConfiguration("camera_y"),
-            LaunchConfiguration("camera_z"),
-            LaunchConfiguration("camera_qx"),
-            LaunchConfiguration("camera_qy"),
-            LaunchConfiguration("camera_qz"),
-            LaunchConfiguration("camera_qw"),
-            LaunchConfiguration("world_frame"),
-            "hand_camera_link", 
-        ],
-    )
-
-    # dino node launch
-    gdino_node = Node(
-        package="homeplus_vision",
-        executable="grounding_dino_node.py",
-        name="grounding_dino",
-        output="screen",
-        parameters=[
-            {
-                "image_topic": "/camera/camera/color/image_raw",
-                "depth_topic": "/camera/camera/aligned_depth_to_color/image_raw",
-                "camera_info_topic": "/camera/camera/color/camera_info",
-                "inference_rate": LaunchConfiguration("inference_rate"),
-                "task_id": LaunchConfiguration("task_id"),
-                "world_frame": LaunchConfiguration("world_frame"),
-            }
-        ],
-    )
-
     return LaunchDescription(
         [
-            world_frame_arg,
-            inference_rate_arg,
-            task_id_arg,
-            camera_x_arg,
-            camera_y_arg,
-            camera_z_arg,
-            camera_qx_arg,
-            camera_qy_arg,
-            camera_qz_arg,
-            camera_qw_arg,
-            realsense_launch,
-            world_to_camera_tf,
-            gdino_node,
+            DeclareLaunchArgument("launch_camera", default_value="true"),
+            DeclareLaunchArgument("d405_serial", default_value="''"),
+            DeclareLaunchArgument("enable_octomap", default_value="false"),
+            DeclareLaunchArgument("world_frame", default_value="world"),
+            DeclareLaunchArgument("inference_rate", default_value="0.5"),
+            DeclareLaunchArgument("task_id", default_value="1"),
+            camera,
+            perception,
         ]
     )

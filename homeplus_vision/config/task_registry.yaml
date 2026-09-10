@@ -1,0 +1,34 @@
+# Central registry for task-driven perception and motion dispatch.
+#
+# `caption` is the object phrase passed to MolmoPoint. The detector adds the
+# pointing instruction automatically (for example, "red cup" becomes
+# "Point to red cup"). Tasks without a command are perception-only until a
+# corresponding sequence is added to gesture_execution_map.yaml.
+tasks:
+  1:
+    name: pick_up_red_cup
+    caption: red cup
+    command_name: pick_up_coffee
+    command_type: sequence
+
+  2:
+    name: press_square_button
+    caption: square button
+    command_name: press_square_button
+    command_type: sequence
+
+  3:
+    name: locate_aluminum_shelf
+    caption: the aluminum shelf
+
+  4:
+    name: locate_coffee_machine_handle
+    caption: the handle on the aluminum coffee machine
+
+  5:
+    name: locate_cup_on_shelf
+    caption: the coffee cup on the aluminum shelf
+
+  6:
+    name: locate_coffee_cup
+    caption: the coffee cup

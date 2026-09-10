@@ -1,0 +1,58 @@
+# HomePlus camera inventory and ownership contract.
+#
+# Runtime serial numbers are intentionally not stored in source control. Pass
+# d405_serial, d435i_serial, and d455_serial to the launch file when more than
+# one camera of a given model can be connected.
+camera_roles:
+  d405:
+    model: "Intel RealSense D405"
+    mount: "end_effector"
+    mount_frame: "hand_camera_link"
+    camera_namespace: "/cameras"
+    camera_name: "d405"
+    color_optical_frame: "d405_color_optical_frame"
+    depth_optical_frame: "d405_depth_optical_frame"
+    responsibilities:
+      - target_detection
+      - obstacle_mapping
+    topics:
+      color: "/cameras/d405/color/image_raw"
+      aligned_depth: "/cameras/d405/aligned_depth_to_color/image_raw"
+      camera_info: "/cameras/d405/color/camera_info"
+
+  d435i:
+    model: "Intel RealSense D435i"
+    mount: "front_base"
+    mount_frame: "front_camera_link"
+    camera_namespace: "/cameras"
+    camera_name: "d435i"
+    color_optical_frame: "d435i_color_optical_frame"
+    depth_optical_frame: "d435i_depth_optical_frame"
+    responsibilities:
+      - obstacle_mapping
+    topics:
+      color: "/cameras/d435i/color/image_raw"
+      aligned_depth: "/cameras/d435i/aligned_depth_to_color/image_raw"
+      camera_info: "/cameras/d435i/color/camera_info"
+
+  d455:
+    model: "Intel RealSense D455"
+    mount: "side_base"
+    mount_frame: "configured by side_mount:=left|right"
+    camera_namespace: "/cameras"
+    camera_name: "d455"
+    color_optical_frame: "d455_color_optical_frame"
+    depth_optical_frame: "d455_depth_optical_frame"
+    responsibilities:
+      - gesture_detection
+      - obstacle_mapping
+    topics:
+      color: "/cameras/d455/color/image_raw"
+      aligned_depth: "/cameras/d455/aligned_depth_to_color/image_raw"
+      camera_info: "/cameras/d455/color/camera_info"
+
+shared_outputs:
+  target_pose: "/molmopoint_pose_world"
+  target_mask: "/object_mask"
+  gesture_state: "/gesture_recognition/state"
+  obstacle_cloud: "/obstacle_cloud"

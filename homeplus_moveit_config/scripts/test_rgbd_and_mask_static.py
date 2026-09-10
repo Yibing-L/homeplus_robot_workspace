@@ -12,10 +12,10 @@ Usage examples:
 Notes:
 - Depth image may be a 16-bit PNG (values in millimeters) or an 8-bit image (will be scaled).
 - The script publishes:
-    color -> /camera/camera/color/image_raw
-    color camera info -> /camera/camera/color/camera_info
-    depth -> /camera/camera/depth/image_rect_raw
-    depth camera info -> /camera/camera/depth/camera_info
+    color -> /cameras/d405/color/image_raw
+    color camera info -> /cameras/d405/color/camera_info
+    depth -> /cameras/d405/aligned_depth_to_color/image_raw
+    depth camera info -> /cameras/d405/color/camera_info
     mask -> /object_mask
 
 """
@@ -31,11 +31,11 @@ from cv_bridge import CvBridge
 
 class StaticRGBDPublisher(Node):
     def __init__(self, color_path=None, depth_path=None, mask_path=None, rate=1.0, count=0,
-                 depth_topic='/camera/camera/depth/image_rect_raw',
-                 depth_info_topic='/camera/camera/depth/camera_info',
-                 color_topic='/camera/camera/color/image_raw',
-                 color_info_topic='/camera/camera/color/camera_info',
-                 mask_topic='/object_mask', frame_id='hand_camera_depth_optical_frame'):
+                 depth_topic='/cameras/d405/aligned_depth_to_color/image_raw',
+                 depth_info_topic='/cameras/d405/color/camera_info',
+                 color_topic='/cameras/d405/color/image_raw',
+                 color_info_topic='/cameras/d405/color/camera_info',
+                 mask_topic='/object_mask', frame_id='d405_color_optical_frame'):
         super().__init__('rgbd_test_publisher')
         self.bridge = CvBridge()
         self.color = None
@@ -157,7 +157,7 @@ def main():
     parser.add_argument('--mask', default=None)
     parser.add_argument('--rate', type=float, default=1.0)
     parser.add_argument('--count', type=int, default=0)
-    parser.add_argument('--frame-id', default='hand_camera_color_optical_frame')
+    parser.add_argument('--frame-id', default='d405_color_optical_frame')
     args = parser.parse_args()
 
     rclpy.init()

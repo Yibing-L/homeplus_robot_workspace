@@ -22,7 +22,11 @@ class HeaderPrinter(Node):
 
 def main():
     import sys
-    topic = '/camera/camera/depth/image_rect_raw' if len(sys.argv) < 2 else sys.argv[1]
+    topic = (
+        '/cameras/d405/aligned_depth_to_color/image_raw'
+        if len(sys.argv) < 2
+        else sys.argv[1]
+    )
     rclpy.init()
     node = HeaderPrinter(topic)
     try:
