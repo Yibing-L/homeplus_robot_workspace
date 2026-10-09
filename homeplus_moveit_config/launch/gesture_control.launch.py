@@ -162,6 +162,7 @@ def generate_launch_description():
             {
                 "execution_map_path": LaunchConfiguration("execution_map_path"),
                 "enable_moveit_planning": LaunchConfiguration("enable_moveit_planning"),
+                "clear_octomap_before_pose_plan": LaunchConfiguration("use_octomap"),
                 "wait_for_gripper_ack": LaunchConfiguration("wait_for_hardware_ack"),
                 "wait_for_trajectory_ack": LaunchConfiguration("wait_for_hardware_ack"),
                 "continue_on_arduino_timeout": LaunchConfiguration(

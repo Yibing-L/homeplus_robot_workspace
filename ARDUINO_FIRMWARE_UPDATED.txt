@@ -56,7 +56,15 @@ unsigned long prev_millis = 0;
 unsigned long command_start_millis = 0;
 // MoveIt trajectories in this pipeline are sampled at 10 Hz. Intermediate
 // samples are streaming setpoints, not individual stop-and-settle goals.
-const unsigned long TRAJECTORY_WAYPOINT_INTERVAL_MS = 100;
+unsigned long activeCommandId = 0;
+unsigned long trajectoryStart = 0;
+unsigned long settledSince = 0;
+unsigned long lastStateMillis = 0;
+unsigned long lastHostMillis = 0;
+const unsigned long SETTLE_DWELL_MS = 500;
+const unsigned long STATE_INTERVAL_MS = 50;
+float previousSettleX = 0, previousSettleY = 0, previousSettleTheta = 0;
+float previousSettleElbow = 0, previousSettleShoulder = 0;
 // Abort rather than silently advancing when the final goal cannot be reached.
 unsigned long command_timeout = 5000;
 unsigned long lastOdomPrintMillis = 0;
@@ -72,17 +80,16 @@ int32_t prev_nw = 0, prev_ne = 0, prev_sw = 0, prev_se = 0;
 int drive_threshold = 20;
 int theta_threshold = 10;
 const float THETA_TRANSLATING_OUTPUT_LIMIT = 0.45;
+// Maximum per-axis lag while following a trajectory, not endpoint tolerance.
+const float BASE_TRACKING_TOLERANCE_CM = 6.0;
 // The drive motors do not move below this normalized command. Map every
 // nonzero controller output into the effective motor range instead of turning
 // small corrections into zero power.
 const float MIN_DRIVE_COMMAND = 0.35;
 // The original single threshold mixed PWM microseconds with degrees.
 const float SERVO_PWM_THRESHOLD_US = 2.0;
-const float ELBOW_ANGLE_THRESHOLD_DEG = 1.0;
-// Shoulder feedback repeatedly settles about 2 degrees from the command under
-// load.  Accept that as queue completion, but keep the 0.5-degree PID target
-// below so updateArmPID() continues correcting after DONE is reported.
-const float SHOULDER_ANGLE_THRESHOLD_DEG = 2.5;
+const float ELBOW_ANGLE_THRESHOLD_DEG = 0.5;
+const float SHOULDER_ANGLE_THRESHOLD_DEG = 0.5;
 float la_threshold = 1.0;
 
 // --- Arm joint PID control ---
@@ -124,7 +131,7 @@ float resolution = 3100;
 char serialBuffer[SERIAL_BUF_SIZE];
 int serialBufIdx = 0;
 bool serialBufferOverflow = false;
-const int COMMAND_VALUE_COUNT = 10;
+const int COMMAND_VALUE_COUNT = 11; // Last field: time from start in milliseconds.
 const int MAX_COMMANDS = 45;
 
 // Fixed-size numeric storage avoids heap fragmentation from an array of
@@ -136,6 +143,10 @@ struct CommandWaypoint {
 };
 
 CommandWaypoint commandQueue[MAX_COMMANDS];
+bool streamActive = false;
+bool streamFinal = true;
+bool streamTransit = false;
+unsigned long streamSequence = 0;
 int commandCount = 0;
 int currentCommandIndex = 0;
 
@@ -242,6 +253,10 @@ int limitArmPWMChange(ArmPIDConfig& joint, int desired_pwm, float dt_sec);
 void updateArmPID(unsigned long now);
 void parseMessage(const CommandWaypoint& command);
 void parseCommandQueue(char* input);
+void parseStreamPacket(char* input);
+void printRobotState();
+void stopAtCurrentState();
+void protocolError(const char* reason);
 
 void setup() {
   pinMode(RELAY_PIN, OUTPUT);
@@ -331,7 +346,7 @@ void setup() {
   delay(1000);
   digitalWrite(RELAY_PIN, RELAY_ON);
 
-  Serial.println("USB Serial Ready");
+  Serial.println("READY4");
 }
 
 void loop() {
@@ -342,12 +357,22 @@ void loop() {
     char c = Serial.read();
     if (c == '\n') {
       if (serialBufferOverflow) {
-        Serial.println("ERROR RX_OVERFLOW");
+        stopAtCurrentState();
+        protocolError("RX_OVERFLOW");
       } else {
         serialBuffer[serialBufIdx] = '\0';
         if (serialBufIdx > 0) {
-          if (commandCount > 0) {
-            Serial.println("ERROR BUSY");
+          lastHostMillis = current_millis;
+          if (strcmp(serialBuffer, "PING") == 0) {
+            // Heartbeat never changes a target.
+          } else if (strcmp(serialBuffer, "STOP") == 0) {
+            stopAtCurrentState();
+            protocolError("STOPPED");
+          } else if (strncmp(serialBuffer, "STR ", 4) == 0) {
+            parseStreamPacket(serialBuffer);
+          } else if (commandCount > 0) {
+            // Do not replace or acknowledge the active command with a new one.
+            Serial.println("BUSY2");
           } else {
             parseCommandQueue(serialBuffer);
           }
@@ -358,6 +383,12 @@ void loop() {
     } else if (c != '\r') {
       if (serialBufIdx < SERIAL_BUF_SIZE - 1) {
         serialBuffer[serialBufIdx++] = c;
+        // Credit only bytes already removed from the AVR hardware RX ring.
+        // Host sends at most 32 bytes, then waits for this acknowledgement.
+        if (serialBufIdx % 32 == 0 && serialBuffer[0] == 'S' &&
+            serialBuffer[1] == 'T' && serialBuffer[2] == 'R') {
+          Serial.print("RX4 "); Serial.println(serialBufIdx);
+        }
       } else {
         serialBufferOverflow = true;
       }
@@ -367,92 +398,79 @@ void loop() {
   update_pos();
   updateArmPID(current_millis);
 
+  if (commandCount > 0 && current_millis - lastHostMillis > 1500) {
+    stopAtCurrentState(); protocolError("HOST_LOST");
+  }
   bool queueActive = commandCount > 0;
-  bool hasNextWaypoint = queueActive && currentCommandIndex < commandCount;
-  unsigned long waypointElapsed = current_millis - command_start_millis;
 
-  // Apply intermediate trajectory samples at the same 10 Hz cadence used by
-  // MoveIt. Requiring status() at every sample deadlocks on sub-centimeter
-  // increments and turns a coordinated trajectory into stop-and-go motion.
-  if (hasNextWaypoint &&
-      waypointElapsed >= TRAJECTORY_WAYPOINT_INTERVAL_MS) {
-    int appliedWaypoint = currentCommandIndex - 1;
-    Serial.print("ACK APPLIED ");
-    Serial.println(appliedWaypoint);
-
-    parseMessage(commandQueue[currentCommandIndex]);
-    currentCommandIndex++;
-    // Preserve cadence and allow natural catch-up if one loop iteration runs
-    // late, rather than accumulating timing drift across a long trajectory.
-    command_start_millis += TRAJECTORY_WAYPOINT_INTERVAL_MS;
-  } else if (queueActive && !hasNextWaypoint && status()) {
-    int reachedWaypoint = currentCommandIndex - 1;
-    int completedCount = commandCount;
-
-    Serial.print("ACK FINAL dx_cm=");
-    Serial.print(linearCountsToCm(dx), 2);
-    Serial.print(" dy_cm=");
-    Serial.print(linearCountsToCm(dy), 2);
-    Serial.print(" dth_deg=");
-    Serial.print(thetaCountsToDeg(dtheta), 2);
-    Serial.print(" grip_us=");
-    Serial.print(dgrip, 1);
-    Serial.print(" hand_us=");
-    Serial.print(dhand, 1);
-    Serial.print(" wrist_us=");
-    Serial.print(dwrist, 1);
-    Serial.print(" elbow_deg=");
-    Serial.print(delbow, 1);
-    Serial.print(" shoulder_deg=");
-    Serial.println(dshoulder, 1);
-
-    Serial.print("ACK REACHED ");
-    Serial.println(reachedWaypoint);
-    Serial.print("DONE ");
-    Serial.println(completedCount);
-
-    commandCount = 0;
-    currentCommandIndex = 0;
-  } else if (queueActive && !hasNextWaypoint &&
-             waypointElapsed > command_timeout) {
-    int failedWaypoint = currentCommandIndex - 1;
-
-    // Report the individual errors before replacing the targets. This makes
-    // a genuine final-goal failure diagnosable from the ROS terminal.
-    Serial.print("ERROR TIMEOUT ");
-    Serial.print(failedWaypoint);
-    Serial.print(" dx_cm=");
-    Serial.print(linearCountsToCm(dx), 2);
-    Serial.print(" dy_cm=");
-    Serial.print(linearCountsToCm(dy), 2);
-    Serial.print(" dth_deg=");
-    Serial.print(thetaCountsToDeg(dtheta), 2);
-    Serial.print(" grip_us=");
-    Serial.print(dgrip, 1);
-    Serial.print(" hand_us=");
-    Serial.print(dhand, 1);
-    Serial.print(" wrist_us=");
-    Serial.print(dwrist, 1);
-    Serial.print(" elbow_deg=");
-    Serial.print(delbow, 1);
-    Serial.print(" shoulder_deg=");
-    Serial.println(dshoulder, 1);
-
-    // Stop at the current measured/estimated state. Never advance into a
-    // sequence whose preceding final goal was not reached.
-    target_x = x;
-    target_y = y;
-    target_theta = theta;
-    grip_target = grip_pos;
-    hand_target = hand_pos;
-    wrist_target = wrist_pos;
-    elbow_target = elbow_pos;
-    shoulder_target = shoulder_pos;
-    la_target = la_pos;
-    frame_target = frame_pos;
-
-    commandCount = 0;
-    currentCommandIndex = 0;
+  unsigned long elapsed = current_millis - trajectoryStart;
+  // Coarse positioning accepts lag during the move and verifies the settled
+  // endpoint below. Contact/precision motion still enforces path tracking.
+  const bool checkMotionTracking = !(streamActive && streamTransit);
+  if (queueActive && checkMotionTracking && (fabs(linearCountsToCm(dx)) > BASE_TRACKING_TOLERANCE_CM ||
+      fabs(linearCountsToCm(dy)) > BASE_TRACKING_TOLERANCE_CM ||
+      fabs(thetaCountsToDeg(dtheta)) > 2.0 || fabs(delbow) > 3.0 || fabs(dshoulder) > 3.0)) {
+    // Capture the actual tracking errors before stop replaces the targets.
+    stopAtCurrentState();
+    printRobotState();
+    Serial.print("ERROR "); Serial.print(activeCommandId);
+    Serial.print(" TRACKING_ERROR dx_cm="); Serial.print(linearCountsToCm(dx), 3);
+    Serial.print(" dy_cm="); Serial.print(linearCountsToCm(dy), 3);
+    Serial.print(" yaw_deg="); Serial.print(thetaCountsToDeg(dtheta), 3);
+    Serial.print(" elbow_deg="); Serial.print(delbow, 3);
+    Serial.print(" shoulder_deg="); Serial.println(dshoulder, 3);
+    queueActive = false;
+  }
+  if (queueActive) {
+    // Interpolate the time-parameterized trajectory instead of applying every
+    // point at a fixed cadence. Intermediate samples are not stop goals.
+    while (currentCommandIndex < commandCount &&
+           elapsed >= (unsigned long)commandQueue[currentCommandIndex].value[10]) {
+      currentCommandIndex++;
+    }
+    if (currentCommandIndex < commandCount) {
+      const CommandWaypoint& a = commandQueue[currentCommandIndex - 1];
+      const CommandWaypoint& b = commandQueue[currentCommandIndex];
+      float u = (elapsed - a.value[10]) / (b.value[10] - a.value[10]);
+      CommandWaypoint interpolated;
+      for (int j = 0; j < 10; ++j)
+        interpolated.value[j] = a.value[j] + u * (b.value[j] - a.value[j]);
+      parseMessage(interpolated);
+      settledSince = 0;
+    } else if (streamActive && !streamFinal) {
+      stopAtCurrentState();
+      protocolError("BUFFER_UNDERRUN");
+    } else {
+      parseMessage(commandQueue[commandCount - 1]);
+      updateBaseError();
+      // Require both small error and no significant measured movement over a
+      // dwell. Servo wrist/hand/gripper values remain estimates, not encoders.
+      bool quiet = fabs(linearCountsToCm(x - previousSettleX)) < 0.1 &&
+                   fabs(linearCountsToCm(y - previousSettleY)) < 0.1 &&
+                   fabs(thetaCountsToDeg(theta - previousSettleTheta)) < 0.1 &&
+                   fabs(elbow_pos - previousSettleElbow) < 0.15 &&
+                   fabs(shoulder_pos - previousSettleShoulder) < 0.15;
+      if (!status() || !quiet || settledSince == 0) {
+        settledSince = (status() && quiet) ? current_millis : 0;
+        previousSettleX = x; previousSettleY = y; previousSettleTheta = theta;
+        previousSettleElbow = elbow_pos; previousSettleShoulder = shoulder_pos;
+      }
+      if (settledSince && current_millis - settledSince >= SETTLE_DWELL_MS) {
+        printRobotState();
+        Serial.print("DONE "); Serial.println(activeCommandId);
+        // Coarse stages accept this measured configuration; stop hunting the
+        // nominal endpoint. The next stage replans from fresh feedback.
+        if (streamActive && streamTransit) stopAtCurrentState();
+        commandCount = 0; currentCommandIndex = 0; streamActive = false;
+      } else if (elapsed > (unsigned long)commandQueue[commandCount - 1].value[10] + command_timeout) {
+        stopAtCurrentState();
+        printRobotState();
+        protocolError("SETTLE_TIMEOUT");
+      }
+    }
+  }
+  if (current_millis - lastStateMillis >= STATE_INTERVAL_MS) {
+    printRobotState(); lastStateMillis = current_millis;
   }
 
   updateBaseError();
@@ -497,13 +515,19 @@ void loop() {
 }
 
 bool status() {
+  if (streamActive && streamTransit) {
+    return fabs(linearCountsToCm(dx)) < 0.5 && fabs(linearCountsToCm(dy)) < 0.5 &&
+      fabs(thetaCountsToDeg(dtheta)) < 0.5 && fabs(delbow) < 1.0 && fabs(dshoulder) < 1.0 &&
+      fabs(dgrip) <= SERVO_PWM_THRESHOLD_US && fabs(dhand) <= SERVO_PWM_THRESHOLD_US &&
+      fabs(dwrist) <= SERVO_PWM_THRESHOLD_US && fabs(dla) < la_threshold && fabs(dframe) < la_threshold;
+  }
   return (
     abs(dx) < drive_threshold &&
     abs(dy) < drive_threshold &&
     abs(dtheta) < theta_threshold &&
-    abs(dgrip) < SERVO_PWM_THRESHOLD_US &&
-    abs(dhand) < SERVO_PWM_THRESHOLD_US &&
-    abs(dwrist) < SERVO_PWM_THRESHOLD_US &&
+    abs(dgrip) <= SERVO_PWM_THRESHOLD_US &&
+    abs(dhand) <= SERVO_PWM_THRESHOLD_US &&
+    abs(dwrist) <= SERVO_PWM_THRESHOLD_US &&
     abs(delbow) < ELBOW_ANGLE_THRESHOLD_DEG &&
     abs(dshoulder) < SHOULDER_ANGLE_THRESHOLD_DEG &&
     abs(dla) < la_threshold &&
@@ -713,7 +737,8 @@ void updateArmJointPID(ArmPIDConfig& joint,
   int requested_pwm = current_pwm;
 
   if (abs(joint_error) <= ARM_TARGET_TOLERANCE) {
-    output = 0;
+    // Keep the correction that established this hold; zeroing it causes a
+    // PWM discontinuity on the first update outside the deadband.
     joint.current_pwm_float = current_pwm;
     joint.current_pwm_speed = 0.0;
     writeArmPWM(joint, servo, current_pwm);
@@ -842,61 +867,193 @@ void parseMessage(const CommandWaypoint& command) {
   elbow_target = constrain(elbow_, ELBOW_PID.angle_min, ELBOW_PID.angle_max);
   shoulder_target = constrain(shoulder_, SHOULDER_PID.angle_min, SHOULDER_PID.angle_max);
   applyArmPIDTunings();
-  resetArmPID(elbowPID, elbowOutput);
-  resetArmPID(shoulderPID, shoulderOutput);
-
   la_target = constrain(la_, 0, 435);
   frame_target = constrain(frame_, 0, 150);
 }
 
+void protocolError(const char* reason) {
+  Serial.print("ERROR "); Serial.print(activeCommandId);
+  Serial.print(" "); Serial.println(reason);
+}
+
+void stopAtCurrentState() {
+  target_x = x; target_y = y; target_theta = theta;
+  grip_target = grip_pos; hand_target = hand_pos; wrist_target = wrist_pos;
+  elbow_target = elbow_pos; shoulder_target = shoulder_pos;
+  la_target = la_pos; frame_target = frame_pos;
+  commandCount = 0; currentCommandIndex = 0; settledSince = 0; streamActive = false;
+}
+
+float pwmToAngle(const JointConfig& joint, float pwm) {
+  return joint.angle_min + (pwm - joint.pwm_min) *
+      (joint.angle_max - joint.angle_min) / (joint.pwm_max - joint.pwm_min);
+}
+
+void printRobotState() {
+  Serial.print("STATE4 "); Serial.print(activeCommandId); Serial.print(" ");
+  Serial.print(linearCountsToCm(x), 3); Serial.print(" ");
+  Serial.print(linearCountsToCm(y), 3); Serial.print(" ");
+  Serial.print(thetaCountsToDeg(theta), 3); Serial.print(" ");
+  Serial.print(pwmToAngle(GRIP, grip_pos), 3); Serial.print(" ");
+  Serial.print(pwmToAngle(HAND, hand_pos), 3); Serial.print(" ");
+  Serial.print(pwmToAngle(WRIST, wrist_pos), 3); Serial.print(" ");
+  Serial.print(elbow_pos, 3); Serial.print(" "); Serial.println(shoulder_pos, 3);
+  if (streamActive) {
+    // Consumed points except the interpolation anchor can be reclaimed.
+    int retained = commandCount - max(0, currentCommandIndex - 1);
+    Serial.print("BUF3 "); Serial.print(activeCommandId); Serial.print(" ");
+    Serial.print(streamSequence); Serial.print(" "); Serial.println(MAX_COMMANDS - retained);
+  }
+}
+
+// STR id crc sequence final timed-points. CRC covers sequence/final as well
+// as positions. Appends retain absolute trajectory time and PID state.
+void parseStreamPacket(char* input) {
+  char* end;
+  unsigned long id = strtoul(input + 4, &end, 10);
+  if (end == input + 4 || *end != ' ' || id == 0) {
+    stopAtCurrentState(); protocolError("BAD_STREAM_ID"); return;
+  }
+  if (commandCount > 0 && (!streamActive || id != activeCommandId)) {
+    Serial.println("BUSY2"); return;
+  }
+  bool first = commandCount == 0;
+  if (first) activeCommandId = id;
+  char* crcStart = end + 1;
+  unsigned long expected = strtoul(crcStart, &end, 16);
+  if (end == crcStart || *end != ' ' || expected > 65535) {
+    stopAtCurrentState(); protocolError("BAD_CRC_HEADER"); return;
+  }
+  char* body = end + 1;
+  uint16_t crc = 0xffff;
+  for (const char* c = body; *c; ++c) {
+    crc ^= (uint16_t)(uint8_t)*c << 8;
+    for (int bit=0; bit<8; ++bit)
+      crc = (crc & 0x8000) ? (crc << 1) ^ 0x1021 : crc << 1;
+  }
+  if (crc != expected) { stopAtCurrentState(); protocolError("CRC_MISMATCH"); return; }
+  unsigned long seq = strtoul(body, &end, 10);
+  if (end == body || *end != ' ' || seq != (first ? 0 : streamSequence) || (!first && streamFinal)) {
+    stopAtCurrentState(); protocolError("STREAM_SEQUENCE"); return;
+  }
+  char* flag = end + 1;
+  if ((flag[0] < '0' || flag[0] > '3') || flag[1] != ' ') {
+    stopAtCurrentState(); protocolError("STREAM_FINAL"); return;
+  }
+  bool final = ((flag[0] - '0') & 1) != 0;
+  bool transit = ((flag[0] - '0') & 2) != 0;
+  if (!first && transit != streamTransit) {
+    stopAtCurrentState(); protocolError("STREAM_PROFILE"); return;
+  }
+  int discard = first ? 0 : max(0, currentCommandIndex - 1);
+  if (first) { commandCount = 0; currentCommandIndex = 0; }
+  for (int i=discard; i<commandCount; ++i) commandQueue[i-discard] = commandQueue[i];
+  commandCount -= discard; currentCommandIndex -= discard;
+  int count = commandCount;
+  char* context = NULL;
+  char* point = strtok_r(flag + 2, ",", &context);
+  bool any = false;
+  while (point != NULL) {
+    if (count >= MAX_COMMANDS) { stopAtCurrentState(); protocolError("BUFFER_FULL"); return; }
+    char* valuesContext = NULL;
+    char* token = strtok_r(point, " \t", &valuesContext);
+    int n = 0;
+    while (token != NULL && n < COMMAND_VALUE_COUNT) {
+      char* endValue;
+      float v = strtod(token, &endValue);
+      if (*endValue || !isfinite(v)) { stopAtCurrentState(); protocolError("BAD_NUMBER"); return; }
+      commandQueue[count].value[n++] = v;
+      token = strtok_r(NULL, " \t", &valuesContext);
+    }
+    if (n != COMMAND_VALUE_COUNT || token != NULL) {
+      stopAtCurrentState(); protocolError("INCORRECT_INPUT_COUNT"); return;
+    }
+    float* v = commandQueue[count].value;
+    if (fabs(v[0]) > 1000 || fabs(v[1]) > 1000 || v[3] < 0 || v[3] > 90 ||
+        v[4] < -70 || v[4] > 80 || v[5] < -90 || v[5] > 90 ||
+        v[6] < -35 || v[6] > 140 || v[7] < -30 || v[7] > 150 || v[8] != 0 || v[9] != 0) {
+      stopAtCurrentState(); protocolError("JOINT_LIMIT"); return;
+    }
+    if (v[10] < 0 || v[10] > 120000 || v[10] != floor(v[10]) ||
+        (count == 0 && v[10] != 0) || (count > 0 && v[10] <= commandQueue[count-1].value[10])) {
+      stopAtCurrentState(); protocolError("BAD_TIMING"); return;
+    }
+    count++; any = true;
+    point = strtok_r(NULL, ",", &context);
+  }
+  if (!any || (first && !final && count < 2)) {
+    stopAtCurrentState(); protocolError("EMPTY_STREAM"); return;
+  }
+  commandCount = count; streamActive = true; streamFinal = final; streamTransit = transit; streamSequence = seq + 1;
+  lastHostMillis = current_millis;
+  if (first) {
+    parseMessage(commandQueue[0]); currentCommandIndex = 1;
+    trajectoryStart = current_millis; settledSince = 0;
+  }
+  Serial.print("ACK "); Serial.print(activeCommandId); Serial.println(" BUFFERED");
+}
+
 void parseCommandQueue(char* input) {
-  commandCount = 0;
-  currentCommandIndex = 0;
-
+  streamActive = false;
+  commandCount = 0; currentCommandIndex = 0; settledSince = 0;
+  if (strncmp(input, "CMD ", 4) != 0) { protocolError("PROTOCOL_V2_REQUIRED"); return; }
+  char* endId;
+  unsigned long id = strtoul(input + 4, &endId, 10);
+  if (endId == input + 4 || *endId != ' ' || id == 0) { protocolError("BAD_ID"); return; }
+  activeCommandId = id;
+  char* endCrc;
+  unsigned long expectedCrc = strtoul(endId + 1, &endCrc, 16);
+  if (endCrc == endId + 1 || *endCrc != ' ' || expectedCrc > 65535) {
+    protocolError("BAD_CRC_HEADER"); return;
+  }
+  uint16_t crc = 0xffff;
+  for (const char* c = endCrc + 1; *c; ++c) {
+    crc ^= (uint16_t)(uint8_t)*c << 8;
+    for (int bit = 0; bit < 8; ++bit)
+      crc = (crc & 0x8000) ? (crc << 1) ^ 0x1021 : crc << 1;
+  }
+  if (crc != expectedCrc) { protocolError("CRC_MISMATCH"); return; }
   char* queueContext = NULL;
-  char* commandText = strtok_r(input, ",", &queueContext);
-
+  char* commandText = strtok_r(endCrc + 1, ",", &queueContext);
   while (commandText != NULL) {
     if (commandCount >= MAX_COMMANDS) {
-      commandCount = 0;
-      Serial.println("ERROR QUEUE_TOO_LONG");
-      return;
+      commandCount = 0; protocolError("QUEUE_TOO_LONG"); return;
     }
-
     char* tokenContext = NULL;
     char* token = strtok_r(commandText, " \t", &tokenContext);
     int tokenCount = 0;
-
     while (token != NULL && tokenCount < COMMAND_VALUE_COUNT) {
-      commandQueue[commandCount].value[tokenCount] = atof(token);
-      tokenCount++;
+      char* endValue;
+      float value = strtod(token, &endValue);
+      if (*endValue != '\0' || !isfinite(value)) {
+        commandCount = 0; protocolError("BAD_NUMBER"); return;
+      }
+      commandQueue[commandCount].value[tokenCount++] = value;
       token = strtok_r(NULL, " \t", &tokenContext);
     }
-
-    // Validate the complete queue before starting any motion. This prevents a
-    // malformed final waypoint from aborting after earlier points have moved.
     if (tokenCount != COMMAND_VALUE_COUNT || token != NULL) {
-      commandCount = 0;
-      Serial.println("ERROR INCORRECT_INPUT_COUNT");
-      return;
+      commandCount = 0; protocolError("INCORRECT_INPUT_COUNT"); return;
     }
-
+    float* v = commandQueue[commandCount].value;
+    if (fabs(v[0]) > 1000 || fabs(v[1]) > 1000 || v[3] < 0 || v[3] > 90 ||
+        v[4] < -70 || v[4] > 80 || v[5] < -90 || v[5] > 90 ||
+        v[6] < -35 || v[6] > 140 || v[7] < -30 || v[7] > 150 || v[8] != 0 || v[9] != 0) {
+      commandCount = 0; protocolError("JOINT_LIMIT"); return;
+    }
+    float t = commandQueue[commandCount].value[10];
+    if (t < 0 || t > 120000 || (commandCount == 0 && t != 0) ||
+        (commandCount > 0 && t <= commandQueue[commandCount - 1].value[10])) {
+      commandCount = 0; protocolError("BAD_TIMING"); return;
+    }
     commandCount++;
     commandText = strtok_r(NULL, ",", &queueContext);
   }
-
   if (commandCount > 0) {
-    Serial.print("ACK QUEUED ");
-    Serial.println(commandCount);
-
-    parseMessage(commandQueue[currentCommandIndex]);
-    currentCommandIndex++;
-    // Use the loop's existing time sample. Calling millis() here would produce
-    // a value slightly newer than current_millis; the unsigned subtraction in
-    // the timeout check later in this same loop would then underflow and cause
-    // an immediate false timeout.
-    command_start_millis = current_millis;
-  }
+    Serial.print("ACK "); Serial.print(activeCommandId); Serial.println(" QUEUED");
+    // Preserve learned holding correction across settled trajectory chunks.
+    parseMessage(commandQueue[0]); currentCommandIndex = 1;
+    trajectoryStart = current_millis; command_start_millis = current_millis;
+  } else protocolError("EMPTY_QUEUE");
 }
 
 float sgn(int32_t value) {

@@ -23,24 +23,19 @@ d405_obstacle_cloud:
     obstacle_min_z_m: 0.05
     obstacle_max_z_m: 1.80
     stats_interval_sec: 5.0
-    # Arduino feedback supplies a trustworthy final arm state but not a full
-    # measured trajectory. Do not integrate moving D405 frames at stale TFs.
+    # Preserve settled-view target masks; every cloud uses acquisition-time TF.
     pause_during_motion: true
     motion_status_topic: "/arduino/status"
-    # Manipulation intentionally places the tool next to the detected target.
-    # Remove a local contact neighborhood so target-edge depth noise is not
-    # treated as an obstacle; task-specific overrides remain local as well.
-    mask_dilation_pixels: 12
-    target_padding_m: 0.04
-    # At gripper=70 the two front finger surfaces are about 4.5 cm apart and
-    # the collision footprint reaches 6.7 cm laterally from press_tcp. Give
-    # task 2 an 8 cm local contact corridor while leaving task 1 at 4 cm.
+    # Only remove the segmented target; retain nearby appliance/table surfaces.
+    mask_dilation_pixels: 2
+    target_padding_m: 0.0
+    # Do not erase an appliance-sized neighborhood around the button.
     button_task_id: 2
-    button_target_padding_m: 0.08
+    button_target_padding_m: 0.0
     # Retain the most recent mask between MolmoPoint inference cycles and
     # across an occasional frame with no point/segmentation result.
-    mask_timeout_sec: 6.0
-    clear_octomap_on_mask: true
+    mask_timeout_sec: 15.0
+    clear_octomap_on_mask: false
 
 d435i_obstacle_cloud:
   ros__parameters:

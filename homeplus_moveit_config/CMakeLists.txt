@@ -41,4 +41,13 @@ ament_export_dependencies(
   moveit_planners_ompl
 )
 
+if(BUILD_TESTING)
+  find_package(ament_cmake_test REQUIRED)
+  ament_add_test(pipeline_regression
+    COMMAND /usr/bin/python3 -m unittest discover -s ${CMAKE_CURRENT_SOURCE_DIR}/../tests -p test_*.py -v
+    TIMEOUT 60
+    GENERATE_RESULT_FOR_RETURN_CODE_ZERO
+  )
+endif()
+
 ament_package()

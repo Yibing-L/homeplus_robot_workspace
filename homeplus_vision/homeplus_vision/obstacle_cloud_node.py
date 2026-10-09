@@ -21,6 +21,7 @@
 
 """Build an OctoMap-ready obstacle cloud from one RGB-D camera."""
 
+import json
 from typing import Optional
 
 import numpy as np
@@ -28,10 +29,10 @@ import rclpy
 import sensor_msgs_py.point_cloud2 as point_cloud2
 from cv_bridge import CvBridge
 from rclpy.node import Node
-from rclpy.qos import qos_profile_sensor_data
+from rclpy.qos import qos_profile_sensor_data, QoSProfile, DurabilityPolicy
 from rclpy.time import Time
 from sensor_msgs.msg import CameraInfo, Image, PointCloud2
-from std_msgs.msg import Bool, Header
+from std_msgs.msg import Bool, Header, String
 from std_srvs.srv import Empty
 from tf2_ros import Buffer, TransformException, TransformListener
 
@@ -146,6 +147,8 @@ class ObstacleCloudNode(Node):
         self.bridge = CvBridge()
         self.tf_buffer = Buffer()
         self.tf_listener = TransformListener(self.tf_buffer, self)
+        self.pending_depth = None
+        self.create_timer(0.02, self._process_pending_depth)
 
         self.fx: Optional[float] = None
         self.fy: Optional[float] = None
@@ -153,6 +156,7 @@ class ObstacleCloudNode(Node):
         self.cy: Optional[float] = None
         self.mask = None
         self.mask_received_at = None
+        self.mask_stamp_ns = 0
         self.mask_was_active = False
         self.clear_request_pending = False
         self.last_octomap_clear_at = None
@@ -160,7 +164,9 @@ class ObstacleCloudNode(Node):
         self.last_mask_shape_warning = None
         self.last_cloud_publish_at = None
         self.last_stats_at = None
-        self.motion_active = False
+        self.motion_active = self.pause_during_motion
+        self.motion_finished_ns = 0
+        self.ready_pub = self.create_publisher(String, "/vision/planning_cloud_ready", 10)
 
         self.full_pub = self.create_publisher(
             PointCloud2, str(self.get_parameter("full_cloud_topic").value), 10
@@ -196,7 +202,7 @@ class ObstacleCloudNode(Node):
                 Bool,
                 self.motion_status_topic,
                 self.motion_status_callback,
-                10,
+                QoSProfile(depth=1, durability=DurabilityPolicy.TRANSIENT_LOCAL),
             )
 
         self.clear_octomap_client = None
@@ -220,6 +226,10 @@ class ObstacleCloudNode(Node):
         self.cy = float(msg.k[5])
 
     def mask_callback(self, msg: Image) -> None:
+        stamp_ns = Time.from_msg(msg.header.stamp).nanoseconds
+        if self.motion_active or stamp_ns <= self.motion_finished_ns:
+            return
+        self.mask_stamp_ns = stamp_ns
         self.mask = self.bridge.imgmsg_to_cv2(msg, "mono8")
         self.mask_received_at = self.get_clock().now()
         has_target = bool(np.any(self.mask))
@@ -242,19 +252,48 @@ class ObstacleCloudNode(Node):
                 "mask during hardware motion"
             )
         elif was_active and not self.motion_active:
+            self.motion_finished_ns = self.get_clock().now().nanoseconds
             self.get_logger().info(
                 "Hardware settled; clearing OctoMap before rebuilding the cloud"
             )
-            self._request_octomap_clear(force=True)
+            # Executor owns map rebuilding after a valid settled observation.
 
     def depth_callback(self, msg: Image) -> None:
+        # Retain a frame while joint-state TF catches up. Replacing it on every
+        # camera callback would keep chasing timestamps newer than feedback.
+        if self.pending_depth is None:
+            self.pending_depth = (msg, self.get_clock().now().nanoseconds)
+
+    def _process_pending_depth(self):
+        if self.pending_depth is None:
+            return
+        msg, received_ns = self.pending_depth
+        source = msg.header.frame_id or self.fallback_frame
+        stamp = Time.from_msg(msg.header.stamp)
+        frames = {self.output_frame, self.filter_frame}
+        ready = bool(source) and all(
+            not frame or frame == source or
+            self.tf_buffer.can_transform(frame, source, stamp)
+            for frame in frames)
+        if not ready:
+            if self.get_clock().now().nanoseconds - received_ns > 500_000_000:
+                self.pending_depth = None
+                self.get_logger().warning(
+                    'Dropping depth frame: acquisition-time TF still missing after 0.5 s',
+                    throttle_duration_sec=5.0)
+            return
+        self.pending_depth = None
+        self._process_depth(msg)
+
+    def _process_depth(self, msg: Image) -> None:
         if None in (self.fx, self.fy, self.cx, self.cy):
             return
 
         # The hand camera TF follows /joint_states. The Arduino bridge only has
         # a trustworthy final state, so integrating frames during motion would
         # stamp points at stale robot poses and leave ghost obstacles.
-        if self.pause_during_motion and self.motion_active:
+        if self.pause_during_motion and (self.motion_active or
+                Time.from_msg(msg.header.stamp).nanoseconds <= self.motion_finished_ns):
             return
 
         now = self.get_clock().now()
@@ -280,6 +319,8 @@ class ObstacleCloudNode(Node):
 
         height, width = depth.shape
         mask = self._current_mask()
+        if self.mask_topic and mask is None:
+            return  # Do not reinsert the target while awaiting segmentation.
         if mask is not None and mask.shape != (height, width):
             import cv2
 
@@ -353,7 +394,7 @@ class ObstacleCloudNode(Node):
         obstacle_points, bounds_removed = self._filter_obstacle_bounds(
             obstacle_points, frame_id, msg.header.stamp
         )
-        header = Header(stamp=self.get_clock().now().to_msg(), frame_id=frame_id)
+        header = Header(stamp=msg.header.stamp, frame_id=frame_id)
         self.full_pub.publish(
             point_cloud2.create_cloud_xyz32(header, full_points.tolist())
         )
@@ -363,6 +404,9 @@ class ObstacleCloudNode(Node):
         self.obstacle_pub.publish(
             point_cloud2.create_cloud_xyz32(header, obstacle_points.tolist())
         )
+        if len(obstacle_points) > 0:
+            self.ready_pub.publish(String(data=json.dumps({'stamp_ns': Time.from_msg(msg.header.stamp).nanoseconds,
+                'masked': mask is not None, 'mask_stamp_ns': self.mask_stamp_ns})))
         self._log_cloud_stats(
             now,
             raw_count=int(np.count_nonzero(valid)),
@@ -379,7 +423,7 @@ class ObstacleCloudNode(Node):
             return None
         if self.mask_timeout_sec == 0.0:
             return self.mask
-        age = (self.get_clock().now() - self.mask_received_at).nanoseconds / 1e9
+        age = (self.get_clock().now().nanoseconds - self.mask_stamp_ns) / 1e9
         if age <= self.mask_timeout_sec:
             return self.mask
         self.mask_was_active = False
@@ -478,19 +522,9 @@ class ObstacleCloudNode(Node):
             return self.tf_buffer.lookup_transform(
                 target_frame, source_frame, Time.from_msg(stamp_msg)
             )
-        except TransformException:
-            try:
-                return self.tf_buffer.lookup_transform(
-                    target_frame, source_frame, Time()
-                )
-            except TransformException as exc:
-                key = (target_frame, source_frame)
-                if self.last_transform_warning != key:
-                    self.get_logger().warning(
-                        f"Waiting for transform {target_frame} <- {source_frame}: {exc}"
-                    )
-                    self.last_transform_warning = key
-                return None
+        except TransformException as exc:
+            self.get_logger().warning(f'Acquisition-time cloud TF missing: {exc}', throttle_duration_sec=5.0)
+            return None
 
     @staticmethod
     def _transform_points(points, transform):

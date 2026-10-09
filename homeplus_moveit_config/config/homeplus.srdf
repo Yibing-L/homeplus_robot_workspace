@@ -19,6 +19,10 @@
         <joint name="base_theta"/>
     </group>
 
+    <group name="base_press_arm">
+        <chain base_link="world" tip_link="press_tcp"/>
+    </group>
+
     <group name="base_arm">
         <chain base_link="world" tip_link="grasp_tcp"/>
     </group>

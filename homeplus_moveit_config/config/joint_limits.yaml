@@ -5,25 +5,29 @@ joint_limits:
     max_position: 10.0
     has_velocity_limits: true
     max_velocity: 1.0
-    has_acceleration_limits: false
+    has_acceleration_limits: true
+    max_acceleration: 0.25
   base_y:
     has_position_limits: true
     min_position: -10.0
     max_position: 10.0
     has_velocity_limits: true
     max_velocity: 1.0
-    has_acceleration_limits: false
+    has_acceleration_limits: true
+    max_acceleration: 0.25
   base_theta:
     has_velocity_limits: true
     max_velocity: 1.0
-    has_acceleration_limits: false
+    has_acceleration_limits: true
+    max_acceleration: 0.25
   joint_shoulder:
     has_position_limits: true
     min_position: -0.523599
     max_position: 2.617994
     has_velocity_limits: true
-    max_velocity: 1.0
-    has_acceleration_limits: false
+    max_velocity: 0.35  # Matches firmware PWM travel rate
+    has_acceleration_limits: true
+    max_acceleration: 0.25
   joint_elbow:
     has_position_limits: true
     min_position: -0.610865
@@ -31,33 +35,38 @@ joint_limits:
     # Plans at the exact hard stop cannot satisfy feedback tolerance under load.
     max_position: 2.443461
     has_velocity_limits: true
-    max_velocity: 1.0
-    has_acceleration_limits: false
+    max_velocity: 0.7  # Matches firmware PWM travel rate
+    has_acceleration_limits: true
+    max_acceleration: 0.25
   joint_wrist:
     has_position_limits: true
     min_position: -1.570796
     max_position: 1.570796
     has_velocity_limits: true
     max_velocity: 1.0
-    has_acceleration_limits: false
+    has_acceleration_limits: true
+    max_acceleration: 0.25
   joint_hand:
     has_position_limits: true
     min_position: -1.22173
     max_position: 1.396263
     has_velocity_limits: true
     max_velocity: 1.0
-    has_acceleration_limits: false
+    has_acceleration_limits: true
+    max_acceleration: 0.25
   joint_grip_L:
     has_position_limits: true
     min_position: 0.0
     max_position: 1.570796
     has_velocity_limits: true
     max_velocity: 1.0
-    has_acceleration_limits: false
+    has_acceleration_limits: true
+    max_acceleration: 0.25
   joint_grip_R:
     has_position_limits: true
     min_position: 0.0
     max_position: 1.570796
     has_velocity_limits: true
     max_velocity: 1.0
-    has_acceleration_limits: false
+    has_acceleration_limits: true
+    max_acceleration: 0.25

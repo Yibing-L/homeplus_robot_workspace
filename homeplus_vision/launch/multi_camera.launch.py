@@ -45,6 +45,9 @@ def _realsense(camera_name, device_type, serial_arg, enabled_arg):
             )
         ),
         launch_arguments={
+            **({"config_file": PathJoinSubstitution([
+                FindPackageShare("homeplus_vision"), "config", "d405_clock.yaml"
+            ])} if camera_name == "d405" else {}),
             "camera_namespace": CAMERA_NAMESPACE,
             "camera_name": camera_name,
             "device_type": device_type,

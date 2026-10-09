@@ -6,14 +6,14 @@ gesture_motion_executor:
     target_pose_topic: "/gesture_control/target_pose"
     joint_target_topic: "/gesture_control/joint_target"
     gripper_target_topic: "/gesture_control/gripper_target"
-    joint_states_topic: "/joint_states"
+    joint_states_topic: "/hardware/joint_states"
 
     enable_moveit_planning: true
     move_group_action_name: "/move_action"
     default_group_name: "base_arm"
-    # Globally execute mobile-manipulation paths as two collision-checked
-    # phases: base first with arm fixed, then arm with base fixed.
-    execution_order: "base_then_arm"
+    # Select a base pose with feasible arm continuation, move it, then replan
+    # from measured feedback. Contact stages keep the base fixed.
+    execution_order: "staged"
     planning_service_name: "/plan_kinematic_path"
     end_effector_link: "grasp_tcp"
     base_frame: "world"
@@ -37,16 +37,16 @@ gesture_motion_executor:
     orientation_tolerance_rad: 0.10
     joint_tolerance: 0.02
     workspace_bounds: [-2.0, -2.0, -1.0, 2.0, 2.0, 2.0]
-    # Treat missing hardware completion as a failed stage. Setting this true
-    # makes the planner assume the final state and is intended only for bench tests.
+    # Hardware failures always retain measured state and stop the task.
+    # Setting this true is rejected at startup.
     continue_on_arduino_timeout: false
-    max_start_state_error: 0.15
-    detection_min_stable_samples: 3
-    detection_stability_tolerance_m: 0.05
-    detection_max_refresh_shift_m: 0.15
+    max_start_state_error: 0.03
+    detection_min_stable_samples: 1
+    detection_stability_tolerance_m: 0.015
+    detection_max_refresh_shift_m: 0.0  # No rejection against the earlier target
     # Rebuild from the settled, target-filtered D405 view immediately before
     # each Cartesian plan so stale moving-camera voxels cannot reject the goal.
     clear_octomap_before_pose_plan: true
     clear_octomap_service: "/clear_octomap"
     octomap_clear_timeout_sec: 2.0
-    octomap_rebuild_wait_sec: 1.2
+    octomap_rebuild_wait_sec: 20.0

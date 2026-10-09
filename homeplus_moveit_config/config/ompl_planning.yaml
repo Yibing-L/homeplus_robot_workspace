@@ -131,10 +131,10 @@ planner_configs:
     max_failures: 5000  # maximum consecutive failure limit. default: 5000
 base_arm:
   default_planner_config: RRTConnectkConfigDefault
-  # The +/-10 m planar joints make the state-space extent very large. Keep
-  # collision samples near the 5 cm OctoMap resolution instead of relying on
-  # OMPL's coarser default fraction.
-  longest_valid_segment_fraction: 0.002
+  # These are prismatic base joints, not a planar virtual joint. Bound mobile
+  # paths explicitly in requests. This fraction is a configuration-space
+  # resolution, not a Cartesian clearance guarantee.
+  longest_valid_segment_fraction: 0.0002
   planner_configs:
     - RRTConnectkConfigDefault
     - RRTstarkConfigDefault
@@ -142,10 +142,11 @@ base_arm:
     - BiTRRTkConfigDefault
 base:
   default_planner_config: RRTConnectkConfigDefault
-  longest_valid_segment_fraction: 0.002
+  longest_valid_segment_fraction: 0.0002
   planner_configs:
     - RRTConnectkConfigDefault
 arm:
+  longest_valid_segment_fraction: 0.001
   default_planner_config: RRTConnectkConfigDefault
   planner_configs:
     - RRTConnectkConfigDefault
@@ -153,6 +154,7 @@ arm:
     - PRMstarkConfigDefault
     - BiTRRTkConfigDefault
 press_arm:
+  longest_valid_segment_fraction: 0.001
   default_planner_config: RRTConnectkConfigDefault
   planner_configs:
     - RRTConnectkConfigDefault
@@ -161,5 +163,11 @@ press_arm:
     - BiTRRTkConfigDefault
 gripper:
   default_planner_config: RRTConnectkConfigDefault
+  planner_configs:
+    - RRTConnectkConfigDefault
+
+base_press_arm:
+  default_planner_config: RRTConnectkConfigDefault
+  longest_valid_segment_fraction: 0.0002
   planner_configs:
     - RRTConnectkConfigDefault

@@ -12,6 +12,8 @@
   <depend>homeplus_interfaces</depend>
   <depend>homeplus_vision</depend>
   <depend>rclpy</depend>
+  <depend>rcl_interfaces</depend>
+  <exec_depend>python3-serial</exec_depend>
   <depend>std_msgs</depend>
   <depend>std_srvs</depend>
   <depend>geometry_msgs</depend>
@@ -31,6 +33,8 @@
   <depend>xacro</depend>
   <depend>urdf</depend>
   <depend>homeplus_urdf_description</depend>
+
+  <test_depend>ament_cmake_test</test_depend>
 
   <export>
     <build_type>ament_cmake</build_type>

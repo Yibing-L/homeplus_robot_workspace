@@ -21,6 +21,16 @@ molmopoint:
     inference_rate: 0.5
     # Median valid depth in an 11x11 neighborhood; robust to D405 depth holes.
     depth_sample_radius_px: 5
+    rgbd_max_skew_sec: 0.035
+    max_observation_age_sec: 15.0
+    motion_settle_sec: 0.7
+    # Calibrate from the visible depth surface to the desired grasp center.
+    # Zero preserves the former detected point; do not assume a cup radius.
+    cup_surface_to_center_m: 0.0
+    cup_collision_radius_m: 0.065
+    cup_collision_height_m: 0.15
+    cup_min_radius_m: 0.025
+    cup_max_radius_m: 0.065
     # The D405 is hand-mounted. Do not spend CPU on images acquired while the
     # arm is moving, and never publish an in-flight frame after Arduino DONE.
     pause_during_motion: true

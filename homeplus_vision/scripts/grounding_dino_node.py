@@ -56,7 +56,7 @@ from rclpy.duration import Duration
 from rclpy.time import Time
 from rclpy.callback_groups import MutuallyExclusiveCallbackGroup, ReentrantCallbackGroup
 from rclpy.executors import MultiThreadedExecutor
-from rclpy.qos import qos_profile_sensor_data
+from rclpy.qos import qos_profile_sensor_data, QoSProfile, DurabilityPolicy
 from rcl_interfaces.msg import SetParametersResult
 from sensor_msgs.msg import Image, CameraInfo
 from geometry_msgs.msg import PoseStamped
@@ -68,6 +68,7 @@ import numpy as np
 import cv2
 import json
 import os
+import math
 import sys
 import threading
 import yaml
@@ -76,6 +77,10 @@ from pathlib import Path
 from typing import Optional, Tuple
 from PIL import Image as PILImage
 
+
+from collections import deque
+from copy import deepcopy
+from homeplus_vision.target_geometry import offset_surface_goal, fit_button_plane
 
 class MolmoPointNode(Node):
     def __init__(self):
@@ -124,9 +129,17 @@ class MolmoPointNode(Node):
         self.declare_parameter('world_frame', 'world')
         self.declare_parameter('tf_lookup_timeout_sec', 0.5)
         self.declare_parameter('depth_sample_radius_px', 5)
+        self.declare_parameter('rgbd_max_skew_sec', 0.035)
+        self.declare_parameter('max_observation_age_sec', 15.0)
+        self.declare_parameter('motion_settle_sec', 0.7)
         self.declare_parameter('mask_depth_near_quantile', 0.25)
         self.declare_parameter('mask_depth_cluster_margin_m', 0.04)
         self.declare_parameter('mask_depth_min_points', 40)
+        self.declare_parameter('cup_surface_to_center_m', 0.0)
+        self.declare_parameter('cup_collision_radius_m', 0.065)
+        self.declare_parameter('cup_collision_height_m', 0.15)
+        self.declare_parameter('cup_min_radius_m', 0.025)
+        self.declare_parameter('cup_max_radius_m', 0.065)
         self.declare_parameter(
             'target_audit_dir', str(workspace_root / 'detection_logs')
         )
@@ -235,6 +248,9 @@ class MolmoPointNode(Node):
         self.pose_pub = self.create_publisher(
             PoseStamped, str(self.get_parameter('pose_topic').value), 10
         )
+        self.task_pose_pubs = {task: self.create_publisher(PoseStamped,
+            f'/molmopoint/task_{task}/pose', 10) for task in (1, 2)}
+        self.geometry_pub = self.create_publisher(String, '/molmopoint/geometry', 10)
         self.mask_pub = self.create_publisher(
             Image, str(self.get_parameter('mask_topic').value), 10
         )
@@ -250,11 +266,11 @@ class MolmoPointNode(Node):
         self._inference_callback_group = MutuallyExclusiveCallbackGroup()
         self._state_lock = threading.Lock()
         self._config_lock = threading.Lock()
-        self._robot_moving = False
+        self._robot_moving = self.pause_during_motion
         self._motion_finished_stamp_ns = 0
         self._last_processed_color_stamp_ns = -1
 
-        self.tf_buffer = Buffer()
+        self.tf_buffer = Buffer(cache_time=Duration(seconds=60.0))
         self.tf_listener = TransformListener(self.tf_buffer, self)
 
         # Subscriptions
@@ -262,6 +278,7 @@ class MolmoPointNode(Node):
         self.latest_color = None
         self.latest_color_header = None
         self.latest_depth = None
+        self._depth_frames = deque(maxlen=60)
         self.camera_info = None
         self._have_logged_color = False
         self._have_logged_depth = False
@@ -284,7 +301,8 @@ class MolmoPointNode(Node):
         )
         if self.pause_during_motion:
             self.create_subscription(
-                Bool, self.motion_status_topic, self.motion_status_callback, 10,
+                Bool, self.motion_status_topic, self.motion_status_callback,
+                QoSProfile(depth=1, durability=DurabilityPolicy.TRANSIENT_LOCAL),
                 callback_group=self._sensor_callback_group,
             )
 
@@ -344,29 +362,20 @@ class MolmoPointNode(Node):
         return tasks
 
     def _on_set_parameters(self, parameters):
-        """Apply the pointing prompt safely while the model remains resident."""
-        caption = self.caption
-
-        for parameter in parameters:
-            if parameter.name == 'caption':
-                if not isinstance(parameter.value, str):
-                    return SetParametersResult(
-                        successful=False,
-                        reason='caption must be a string',
-                    )
-                caption = parameter.value.strip()
-                if not caption:
-                    return SetParametersResult(
-                        successful=False,
-                        reason='caption must contain at least one keyword',
-                    )
-        changed = caption != self.caption
-        if changed:
-            with self._config_lock:
-                self.caption = caption
-            self.get_logger().info(
-                f'Updated MolmoPoint prompt: "{caption}"'
-            )
+        with self._config_lock:
+            caption, task_id = self.caption, self.task_id
+            for parameter in parameters:
+                if parameter.name == 'task_id':
+                    if parameter.value not in self.tasks:
+                        return SetParametersResult(successful=False, reason='Unknown task_id')
+                    task_id = int(parameter.value)
+                    caption = self.tasks[task_id]['caption']
+                elif parameter.name == 'caption':
+                    if not isinstance(parameter.value, str) or not parameter.value.strip():
+                        return SetParametersResult(successful=False, reason='caption must be nonempty text')
+                    caption = parameter.value.strip()
+            self.caption, self.task_id = caption, task_id
+            self.task = self.tasks[task_id]
         return SetParametersResult(successful=True)
 
     def _configure_import_paths(self) -> None:
@@ -546,6 +555,14 @@ class MolmoPointNode(Node):
         self.enable_segmentation = True
 
     def image_callback(self, msg: Image):
+        ahead_sec = (self._header_stamp_ns(msg.header) - self.get_clock().now().nanoseconds) / 1e9
+        if ahead_sec > 0.1:
+            self.get_logger().error(
+                f'Camera timestamp is {ahead_sec:.3f} s ahead of ROS at receipt; '
+                'dropping frame. Check camera/host clock synchronization; '
+                'a latest-TF fallback would hide this timing error.',
+                throttle_duration_sec=5.0)
+            return
         color = self.bridge.imgmsg_to_cv2(msg, desired_encoding='bgr8')
         with self._state_lock:
             self.latest_color = color
@@ -557,6 +574,7 @@ class MolmoPointNode(Node):
     def depth_callback(self, msg: Image):
         with self._state_lock:
             self.latest_depth = msg
+            self._depth_frames.append(msg)
         if not self._have_logged_depth:
             self.get_logger().info(f"Received first depth frame on {self.depth_topic}")
             self._have_logged_depth = True
@@ -592,14 +610,16 @@ class MolmoPointNode(Node):
         with self._state_lock:
             return (
                 not self._robot_moving
-                and frame_stamp_ns > self._motion_finished_stamp_ns
+                and frame_stamp_ns > self._motion_finished_stamp_ns + int(float(self.get_parameter('motion_settle_sec').value) * 1e9)
+                and 0 <= self.get_clock().now().nanoseconds - frame_stamp_ns < int(float(self.get_parameter('max_observation_age_sec').value) * 1e9)
             )
 
     def detect_loop(self):
         with self._state_lock:
             color = self.latest_color
             header = self.latest_color_header
-            depth = self.latest_depth
+            depth = min(self._depth_frames, key=lambda d: abs(self._header_stamp_ns(d.header) -
+                        self._header_stamp_ns(header)), default=None) if header else None
             camera_info = self.camera_info
             robot_moving = self._robot_moving
             motion_finished_stamp_ns = self._motion_finished_stamp_ns
@@ -618,6 +638,8 @@ class MolmoPointNode(Node):
             return
 
         frame_stamp_ns = self._header_stamp_ns(header)
+        if depth is None or abs(self._header_stamp_ns(depth.header) - frame_stamp_ns) / 1e9 > float(self.get_parameter('rgbd_max_skew_sec').value):
+            return
         if self.pause_during_motion and (
             robot_moving or frame_stamp_ns <= motion_finished_stamp_ns
         ):
@@ -633,6 +655,14 @@ class MolmoPointNode(Node):
 
         with self._config_lock:
             caption = self.caption
+            task_id = self.task_id
+        try:
+            frame_tf = self.tf_buffer.lookup_transform(self.world_frame,
+                self.camera_frame or camera_info.header.frame_id, Time.from_msg(header.stamp),
+                timeout=self._tf_timeout)
+        except Exception as exc:
+            self.get_logger().warning(f'No acquisition-time camera transform: {exc}', throttle_duration_sec=5.0)
+            return
 
         try:
             detections = self.run_model_inference(img_resized, caption)
@@ -673,7 +703,7 @@ class MolmoPointNode(Node):
                         center_v = int(np.mean(mask_ys))
                         mask_msg = self.bridge.cv2_to_imgmsg(full_mask, encoding='mono8')
                         mask_msg.header = header
-                        self.mask_pub.publish(mask_msg)
+                        # Published only after geometry and final motion/config checks.
 
             mask_center_payload = {
                 "label": d["label"],
@@ -684,28 +714,73 @@ class MolmoPointNode(Node):
             }
 
             point_3d = None
+            geometry = None
+            approach = None
             depth_source = None
             depth_point_count = 0
-            if self.publish_poses and depth is not None:
-                if full_mask is not None:
-                    mask_estimate = self._estimate_point_from_mask_depth(
-                        depth, full_mask, camera_info
-                    )
-                    if mask_estimate is not None:
-                        X, Y, Z, center_u, center_v, depth_point_count = mask_estimate
-                        point_3d = (X, Y, Z)
-                        depth_source = "segmented_depth_cloud"
-
-                if point_3d is None:
-                    depth_h, depth_w = depth.height, depth.width
-                    u_depth = int(center_u * (depth_w / self.target_w))
-                    v_depth = int(center_v * (depth_h / self.target_h))
-                    z_center = self._read_depth_at_pixel(depth, u_depth, v_depth)
-                    if z_center is not None:
-                        point_3d = self._backproject_pixel_to_3d(
-                            center_u, center_v, z_center, camera_info
-                        )
-                        depth_source = "center_patch_fallback"
+            geometry_diagnostics = {}
+            if self.publish_poses and depth is not None and full_mask is not None:
+                arr = self.bridge.imgmsg_to_cv2(depth, desired_encoding='passthrough')
+                z = arr.astype(np.float64) * (0.001 if arr.dtype == np.uint16 else 1.0)
+                mask = cv2.resize(full_mask, (depth.width, depth.height), interpolation=cv2.INTER_NEAREST) > 0
+                mask = cv2.erode(mask.astype(np.uint8), np.ones((3, 3), np.uint8)) > 0
+                rows, cols = np.nonzero(mask & np.isfinite(z) & (z > 0.12) & (z < 2.0))
+                fx = camera_info.k[0] * depth.width / camera_info.width
+                fy = camera_info.k[4] * depth.height / camera_info.height
+                cx = camera_info.k[2] * depth.width / camera_info.width
+                cy = camera_info.k[5] * depth.height / camera_info.height
+                ranges = z[rows, cols]
+                points = np.column_stack(((cols-cx)*ranges/fx, (rows-cy)*ranges/fy, ranges))
+                rotation, translation = self._transform_matrix(frame_tf)
+                if task_id == 1 and caption == self.tasks[1]['caption']:
+                    estimate = self._estimate_point_from_mask_depth(depth, full_mask, camera_info)
+                    if estimate is not None:
+                        surface_world = rotation @ np.asarray(estimate[:3]) + translation
+                        try:
+                            world_center, approach = offset_surface_goal(surface_world, translation,
+                                float(self.get_parameter('cup_surface_to_center_m').value))
+                            point_3d = tuple(rotation.T @ (world_center - translation))
+                            center_u, center_v = estimate[3:5]
+                            geometry = {
+                                'radius': float(self.get_parameter('cup_collision_radius_m').value),
+                                'height': float(self.get_parameter('cup_collision_height_m').value),
+                                'source': 'configured_collision_envelope',
+                            }
+                            # The detection is a front surface, not the object
+                            # center. Anchor the envelope behind that surface;
+                            # never extend a guessed radius toward the palm.
+                            collision_center = surface_world + geometry['radius'] * approach
+                            collision_center[2] -= 0.15 * geometry['height']
+                            geometry['collision_center'] = collision_center.tolist()
+                            depth_source = 'segmented_depth_with_center_offset'
+                        except ValueError as exc:
+                            geometry_diagnostics['reason'] = str(exc)
+                elif task_id == 2 and caption == self.tasks[2]['caption']:
+                    u = d['point'][0] * depth.width / self.target_w
+                    v = d['point'][1] * depth.height / self.target_h
+                    local = (abs(cols-u) <= 15) & (abs(rows-v) <= 15)
+                    estimate = fit_button_plane(points[local], [(u-cx)/fx, (v-cy)/fy, 1.0])
+                    if estimate is not None:
+                        point_3d, normal = estimate
+                        approach = rotation @ normal
+                        geometry = {'normal': approach.tolist()}
+                        depth_source = 'button_plane_ray_intersection'
+                else:
+                    estimate = self._estimate_point_from_mask_depth(depth, full_mask, camera_info)
+                    if estimate is not None:
+                        point_3d = estimate[:3]
+                        depth_source = 'segmented_depth_cloud'
+                depth_point_count = len(points)
+            # Manipulation targets must never silently fall back to background
+            # depth or a view-dependent visible-surface centroid.
+            with self._config_lock:
+                unchanged = caption == self.caption and task_id == self.task_id
+            if not unchanged or not self._frame_is_publishable(frame_stamp_ns):
+                return
+            if full_mask is not None:
+                mask_msg = self.bridge.cv2_to_imgmsg(full_mask, encoding='mono8')
+                mask_msg.header = deepcopy(header)
+                self.mask_pub.publish(mask_msg)
 
             mask_center_payload["pixel"] = {"u": center_u, "v": center_v}
 
@@ -714,7 +789,7 @@ class MolmoPointNode(Node):
                 camera_frame = self.camera_frame or camera_info.header.frame_id
 
                 pose_cam = PoseStamped()
-                pose_cam.header = header
+                pose_cam.header = deepcopy(header)
                 pose_cam.header.frame_id = camera_frame
                 pose_cam.pose.position.x = X
                 pose_cam.pose.position.y = Y
@@ -731,9 +806,26 @@ class MolmoPointNode(Node):
                     f"source={depth_source}, points={depth_point_count})"
                 )
 
-                pose_world = self._transform_pose_to_world(pose_cam)
+                pose_world = self._transform_pose_to_world(pose_cam, frame_tf)
                 if pose_world is not None:
+                    if approach is not None:
+                        length = np.linalg.norm(approach)
+                        if length < 1e-6:
+                            continue
+                        approach /= length
+                        yaw = math.atan2(approach[1], approach[0])
+                        pitch = math.atan2(-approach[2], math.hypot(approach[0], approach[1]))
+                        pose_world.pose.orientation.x = -math.sin(pitch/2) * math.sin(yaw/2)
+                        pose_world.pose.orientation.y = math.sin(pitch/2) * math.cos(yaw/2)
+                        pose_world.pose.orientation.z = math.cos(pitch/2) * math.sin(yaw/2)
+                        pose_world.pose.orientation.w = math.cos(pitch/2) * math.cos(yaw/2)
                     self.pose_pub.publish(pose_world)
+                    if task_id in self.task_pose_pubs and caption == self.tasks[task_id]['caption']:
+                        self.task_pose_pubs[task_id].publish(pose_world)
+                    if geometry is not None:
+                        geometry.update(task_id=task_id, stamp_ns=frame_stamp_ns,
+                            center=[pose_world.pose.position.x, pose_world.pose.position.y, pose_world.pose.position.z])
+                        self.geometry_pub.publish(String(data=json.dumps(geometry)))
                     pw = pose_world.pose.position
                     mask_center_payload["point_3d_world"] = {"x": pw.x, "y": pw.y, "z": pw.z}
                     self.get_logger().info(
@@ -743,7 +835,10 @@ class MolmoPointNode(Node):
             elif self.publish_poses:
                 self.get_logger().info(
                     f"Target {d['label']} detected at pixel=({center_u}, {center_v}), "
-                    f"but no valid depth was available"
+                    f"but depth/geometry was insufficient for a reliable 3-D target: "
+                    f"{geometry_diagnostics.get('reason', 'missing mask/depth or rejected surface fit')}; "
+                    f"model_point={d['point']}, valid_depth_points={depth_point_count}, "
+                    f"mask_pixels={int(np.count_nonzero(full_mask)) if full_mask is not None else 0}"
                 )
             else:
                 self.get_logger().info(
@@ -793,33 +888,28 @@ class MolmoPointNode(Node):
                 throttle_duration_sec=5.0,
             )
 
-    def _transform_pose_to_world(self, pose_cam: PoseStamped) -> Optional[PoseStamped]:
-        src_frame = pose_cam.header.frame_id
+    @staticmethod
+    def _transform_matrix(tf_msg):
+        q = tf_msg.transform.rotation
+        x, y, z, w = q.x, q.y, q.z, q.w
+        rotation = np.array([[1-2*(y*y+z*z), 2*(x*y-z*w), 2*(x*z+y*w)],
+                             [2*(x*y+z*w), 1-2*(x*x+z*z), 2*(y*z-x*w)],
+                             [2*(x*z-y*w), 2*(y*z+x*w), 1-2*(x*x+y*y)]])
+        t = tf_msg.transform.translation
+        return rotation, np.array([t.x, t.y, t.z])
+
+    def _transform_pose_to_world(self, pose_cam, tf_msg=None):
         try:
-            # VLM inference can lag camera stamps by several seconds, while this
-            # robot's TF tree is effectively static unless joint states change.
-            # Use the latest available transform to avoid extrapolation errors.
-            tf_msg = self.tf_buffer.lookup_transform(
-                self.world_frame,
-                src_frame,
-                Time(),
-                timeout=self._tf_timeout,
-            )
-        except Exception as e:
-            self.get_logger().warn(
-                f'Could not transform pose from {src_frame} to {self.world_frame}: {e}. '
-                '2D detections still work. For hand_camera_* frames, make sure '
-                'the robot TF chain '
-                f'is connected by publishing /joint_states (for example via the Arduino bridge or '
-                f'PUBLISH_JOINT_STATES=true bash scripts/run_robot_tf.sh).',
-                throttle_duration_sec=2.0,
-            )
+            if tf_msg is None:
+                tf_msg = self.tf_buffer.lookup_transform(self.world_frame, pose_cam.header.frame_id,
+                    Time.from_msg(pose_cam.header.stamp), timeout=self._tf_timeout)
+            world = tf2_geometry_msgs.do_transform_pose_stamped(pose_cam, tf_msg)
+            world.header.frame_id = self.world_frame
+            world.header.stamp = pose_cam.header.stamp
+            return world
+        except Exception as exc:
+            self.get_logger().warning(f'Acquisition-time transform unavailable: {exc}')
             return None
-        pose_world = tf2_geometry_msgs.do_transform_pose_stamped(
-            pose_cam, tf_msg)
-        pose_world.header.frame_id = self.world_frame
-        pose_world.header.stamp = tf_msg.header.stamp
-        return pose_world
 
     # Scale XYZ to the resized image.
     def _backproject_pixel_to_3d(

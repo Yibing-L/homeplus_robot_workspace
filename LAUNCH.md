@@ -9,6 +9,16 @@ source install/setup.bash
 bash scripts/setup_molmopoint.sh --download-model
 ```
 
+## Firmware compatibility
+
+This workspace now requires STATE4 streaming firmware from
+`ARDUINO_FIRMWARE_UPDATED.txt`. Build and flash the matching sketch separately;
+the source changes do not flash the board. The matching Arduino IDE sketch is
+`firmware/homeplus_controller/homeplus_controller.ino`. Restart Terminal 3 after
+uploading. The bridge refuses streamed motion with older STATE2 firmware.
+See `PLANNING_PIPELINE.md` for the protocol, regression tests and remaining
+calibration requirements. Hardware acknowledgements must remain enabled.
+
 ## Launch (3 terminals)
 
 ### Terminal 1 — Robot TF
@@ -82,7 +92,8 @@ the map is rebuilt from the settled hand-camera pose after `DONE`.
 Check Arduino is connected:
 
 ```bash
-ros2 topic echo /arduino/ack
+ros2 topic echo /hardware/joint_states
+ros2 topic echo /arduino/ready
 ```
 
 Check detection is working (place coffee cup in camera view):
@@ -98,25 +109,15 @@ ros2 topic pub --once /gesture_control/command homeplus_interfaces/msg/GestureCo
   "{gesture_id: 1, gesture_label: 'test', confidence: 0.9, command_name: 'pick_up_coffee', command_type: 'sequence'}"
 ```
 
-After each MoveIt plan appears in RViz, approve it before the executor sends it
-to Arduino:
-
-```bash
-ros2 topic pub --once /gesture_control/approve_planned_path std_msgs/msg/Bool "{data: true}"
-```
-
-Reject the displayed plan without sending it:
-
-```bash
-ros2 topic pub --once /gesture_control/approve_planned_path std_msgs/msg/Bool "{data: false}"
-```
-
-`pick_up_coffee` contains four planned pose stages (pre-grasp, final approach,
-lift, and retreat), so expect to approve four displayed paths in RViz.
+The configured task sequences execute their planned stages automatically. For
+manual review, set `require_trajectory_approval: true` on the relevant steps in
+`gesture_execution_map.yaml`; publish a Bool on
+`/gesture_control/approve_planned_path` to approve/reject that displayed stage.
+The executor validates the current state and path again before sending motion.
 
 ## Press a Square Button
 
-Start MolmoPoint with task ID 2 so its prompt is exactly `square button`:
+The executor selects detector task 2 automatically when pressing. To preview its detections before triggering:
 
 ```bash
 bash scripts/run_vision.sh task_id:=2
@@ -133,7 +134,8 @@ The sequence sets the gripper to 70 degrees, retracts the arm before any base
 repositioning, approaches the detection, refines the button pose from the
 settled close view, places the dedicated 70-degree single-fingertip `press_tcp`
 at that refreshed target, pauses for one second, and retreats. Its motion stages
-do not require separate RViz approval.
+do not require separate RViz approval. Contact uses a fixed-base Cartesian path;
+no button activation/force sensor is available to confirm activation.
 
 ## Launch Arguments
 
@@ -142,8 +144,8 @@ do not require separate RViz approval.
 | `arduino_port` | `auto` | Serial port for Arduino, or auto-detect |
 | `arduino_baud` | `115200` | Serial baud; must match firmware `Serial.begin(...)` |
 | `run_arduino` | `true` | Launch Arduino serial bridge |
-| `wait_for_hardware_ack` | `true` | Wait for Arduino `DONE`; set false only without hardware |
-| `continue_on_arduino_timeout` | `false` | Assume final state after timeout (unsafe on hardware) |
+| `wait_for_hardware_ack` | `true` | Wait for Arduino `DONE`; must remain true for this hardware executor |
+| `continue_on_arduino_timeout` | `false` | Must remain false; timeouts retain measured state and abort |
 | `use_octomap` | `true` | Enable target-filtered OctoMap collision avoidance |
 | `enable_moveit_planning` | `true` | Enable MoveIt planning in executor |
 | `launch_moveit` | `true` | Launch MoveIt stack |

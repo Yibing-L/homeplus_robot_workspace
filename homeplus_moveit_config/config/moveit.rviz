@@ -359,6 +359,88 @@ Visualization Manager:
         Show Robot Visual: true
       Value: true
       Velocity_Scaling_Factor: 0.1
+    - Class: moveit_rviz_plugin/RobotState
+      Name: Rejected IK (diagnostic only)
+      Enabled: true
+      Robot Description: robot_description
+      Robot State Topic: /planning_debug/rejected_state
+      Robot Alpha: 0.45
+      Visual Enabled: true
+      Collision Enabled: true
+    - Class: rviz_default_plugins/MarkerArray
+      Name: Collision points and labels
+      Enabled: true
+      Marker Topic:
+        Value: /planning_debug/contacts
+        Depth: 1
+        Durability Policy: Transient Local
+        Reliability Policy: Reliable
+        History Policy: Keep Last
+    - Class: rviz_default_plugins/PointCloud2
+      Name: Camera obstacle cloud
+      Enabled: true
+      Alpha: 0.65
+      Color Transformer: FlatColor
+      Color: 100; 170; 255
+      Position Transformer: XYZ
+      Style: Points
+      Size (Pixels): 3
+      Topic:
+        Value: /obstacle_cloud
+        Depth: 1
+        Durability Policy: Volatile
+        Reliability Policy: Best Effort
+        History Policy: Keep Last
+    - Class: rviz_default_plugins/PointCloud2
+      Name: Segmented cup cloud
+      Enabled: true
+      Alpha: 0.65
+      Color Transformer: FlatColor
+      Color: 0; 255; 100
+      Position Transformer: XYZ
+      Style: Points
+      Size (Pixels): 3
+      Topic:
+        Value: /vision/clouds/d405/target
+        Depth: 1
+        Durability Policy: Volatile
+        Reliability Policy: Best Effort
+        History Policy: Keep Last
+    - Class: rviz_default_plugins/PointCloud2
+      Name: Full camera cloud (optional)
+      Enabled: false
+      Alpha: 0.65
+      Color Transformer: FlatColor
+      Color: 180; 180; 180
+      Position Transformer: XYZ
+      Style: Points
+      Size (Pixels): 3
+      Topic:
+        Value: /vision/clouds/d405/full
+        Depth: 1
+        Durability Policy: Volatile
+        Reliability Policy: Best Effort
+        History Policy: Keep Last
+    - Class: rviz_default_plugins/Image
+      Name: Camera detection image
+      Enabled: true
+      Transport Hint: raw
+      Topic:
+        Value: /molmopoint/debug_image
+        Depth: 1
+        Durability Policy: Volatile
+        Reliability Policy: Best Effort
+        History Policy: Keep Last
+    - Class: rviz_default_plugins/Image
+      Name: Cup segmentation mask
+      Enabled: true
+      Transport Hint: raw
+      Topic:
+        Value: /object_mask
+        Depth: 1
+        Durability Policy: Volatile
+        Reliability Policy: Best Effort
+        History Policy: Keep Last
   Enabled: true
   Global Options:
     Background Color: 48; 48; 48

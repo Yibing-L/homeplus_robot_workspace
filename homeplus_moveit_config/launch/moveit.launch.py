@@ -90,7 +90,7 @@ def _launch_setup(context):
 
         # Launch Arduino serial reader 
         ExecuteProcess(
-            cmd=['python3', os.path.join(homeplus_moveit_pkg, 'scripts', 'arduino_reader.py'), '--port', 'auto', '--baud', '9600'],
+            cmd=['python3', os.path.join(homeplus_moveit_pkg, 'scripts', 'arduino_reader.py'), '--port', 'auto', '--baud', '115200'],
             output='screen',
             condition=IfCondition(run_arduino_reader)
         ),
