@@ -234,7 +234,7 @@ commands:
         position_tolerance_z_m: 0.005
         use_orientation_constraint: true
         orientation_tolerance_rad: 0.05
-        safe_z_candidate_offsets_m: [0.0]
+        safe_z_candidate_offsets_m: [0.0, 0.02, 0.04]
         max_replanning_attempts: 3
         base_goal_tcp_x_min_m: 0.50
         base_goal_tcp_x_max_m: 0.70
@@ -260,7 +260,16 @@ commands:
 
       - name: align_refined_grasp
         type: pose
-        group_name: arm
+        # The arm moves in one vertical plane; only the base can absorb the
+        # sideways/yaw correction from the close-view refinement.
+        group_name: base_arm
+        max_base_goal_translation_m: 0.20
+        max_base_goal_y_translation_m: 0.10
+        max_base_goal_rotation_rad: 0.20
+        # Seed IK by carrying the base along with the target shift so the
+        # pre-grasp arm pose stays a valid starting point.
+        seed_base_shift: true
+        ik_candidate_attempts: 24
         link_name: grasp_tcp
         frame_id: world
         target: detected
@@ -271,7 +280,7 @@ commands:
         position_tolerance_m: 0.005
         orientation_tolerance_rad: 0.04
         use_orientation_constraint: true
-        require_trajectory_approval: false
+        require_trajectory_approval: true
         clear_octomap_before_plan: true
         max_replanning_attempts: 2
 

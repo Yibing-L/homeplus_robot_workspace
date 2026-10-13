@@ -41,12 +41,19 @@ Parameters (declared):
 - world_frame: TF parent frame for published poses (default world); use odom,
   world, base_link, etc. as in your TF tree
 - tf_lookup_timeout_sec: max wait for each TF lookup (default 0.5)
+- remote_inference_url: if non-empty (e.g. http://192.168.64.1:8765), skip local
+  model loading and call the remote /point and /segment endpoints instead
+- remote_timeout_sec: HTTP timeout for each remote call (default 30)
+- debug_dump_dir: if non-empty, save each inferred cycle's RGB-D/K/TF inputs as
+  .npz for offline replay with tests/detector_replay.py
 
 Outputs:
 - /molmopoint/detections (std_msgs/String) JSON list of pointed targets
 - /molmopoint/debug_image (sensor_msgs/Image) annotated image
 - /molmopoint_pose_world (geometry_msgs/PoseStamped) 3D target in world_frame
 - /molmopoint/point (std_msgs/String) point plus optional camera/world 3D data
+- /molmopoint/diagnostics (std_msgs/String) per-cycle JSON: stage reached and
+  the reason the cycle ended, with timing/mask/depth/TF counters
 """
 
 import rclpy
@@ -66,11 +73,15 @@ import tf2_geometry_msgs
 from cv_bridge import CvBridge
 import numpy as np
 import cv2
+import base64
 import json
 import os
 import math
 import sys
 import threading
+import time
+import urllib.error
+import urllib.request
 import yaml
 from datetime import datetime
 from pathlib import Path
@@ -83,6 +94,20 @@ from copy import deepcopy
 from homeplus_vision.target_geometry import offset_surface_goal, fit_button_plane
 
 class MolmoPointNode(Node):
+    # Defaults for state used by diagnostics, so partially constructed nodes
+    # (offline tests use __new__) keep working.
+    remote_inference_url = ''
+    remote_timeout_sec = 30.0
+    debug_dump_dir = ''
+    diagnostics_pub = None
+    _future_frames_dropped = 0
+    _motion_status_msgs = 0
+    _motion_still_seen = False
+    _diag_last_key = None
+    _diag_last_log = None
+    _last_inference_info = None
+    _last_segment_info = None
+
     def __init__(self):
         os.environ["HYDRA_FULL_ERROR"] = "1"
         super().__init__('molmopoint')
@@ -140,6 +165,8 @@ class MolmoPointNode(Node):
         self.declare_parameter('cup_collision_height_m', 0.15)
         self.declare_parameter('cup_min_radius_m', 0.025)
         self.declare_parameter('cup_max_radius_m', 0.065)
+        self.declare_parameter('cup_height_from_mask_extent', False)
+        self.declare_parameter('approach_reference_frame', '')
         self.declare_parameter(
             'target_audit_dir', str(workspace_root / 'detection_logs')
         )
@@ -150,6 +177,12 @@ class MolmoPointNode(Node):
         self.declare_parameter('mask_center_topic', '/molmopoint/point')
         self.declare_parameter('pause_during_motion', True)
         self.declare_parameter('motion_status_topic', '/arduino/status')
+        # Empty runs MolmoPoint/SAM2 in-process. Otherwise POST /point and
+        # /segment to this server (parallel_prompts/CONTRACT.md).
+        self.declare_parameter('remote_inference_url', '')
+        self.declare_parameter('remote_timeout_sec', 30.0)
+        self.declare_parameter('diagnostics_topic', '/molmopoint/diagnostics')
+        self.declare_parameter('debug_dump_dir', '')
 
         self.device = str(self.get_parameter('device').value).strip()
         self.model_name_or_path = str(
@@ -223,6 +256,15 @@ class MolmoPointNode(Node):
         self.motion_status_topic = str(
             self.get_parameter('motion_status_topic').value
         )
+        self.remote_inference_url = str(
+            self.get_parameter('remote_inference_url').value
+        ).strip()
+        self.remote_timeout_sec = max(
+            1.0, float(self.get_parameter('remote_timeout_sec').value)
+        )
+        self.debug_dump_dir = str(
+            self.get_parameter('debug_dump_dir').value
+        ).strip()
         target_audit_dir = Path(
             str(self.get_parameter('target_audit_dir').value)
         ).expanduser()
@@ -256,6 +298,9 @@ class MolmoPointNode(Node):
         )
         self.mask_center_pub = self.create_publisher(
             String, str(self.get_parameter('mask_center_topic').value), 10
+        )
+        self.diagnostics_pub = self.create_publisher(
+            String, str(self.get_parameter('diagnostics_topic').value), 10
         )
 
         # VLM inference may take longer than the nominal timer period. Keep TF
@@ -322,10 +367,25 @@ class MolmoPointNode(Node):
         # Model setup. Transformers is imported lazily so ROS tools can inspect
         # this package even when the dedicated MolmoPoint environment is absent.
         self._configure_import_paths()
-        self._init_molmopoint()
+        if self.remote_inference_url:
+            self.enable_segmentation = True
+            self._check_remote_health()
+        else:
+            self._init_molmopoint()
 
-        if self.publish_poses:
-            self._init_sam2()
+            if self.publish_poses:
+                self._init_sam2()
+        if self.publish_poses and not self.enable_segmentation:
+            self.get_logger().error(
+                'SAM2 segmentation is unavailable, but every 3-D target path '
+                'requires a mask: no pose will ever be published. Fix the SAM2 '
+                'install/checkpoint or set remote_inference_url.'
+            )
+        if self.pause_during_motion:
+            self.get_logger().info(
+                f'Detection starts paused until {self.motion_status_topic} '
+                'reports the arm is still (Bool true)'
+            )
 
         self.timer = self.create_timer(
             1.0 / max(self.inference_rate, 0.1),
@@ -334,6 +394,7 @@ class MolmoPointNode(Node):
         )
         self.get_logger().info(
             f'MolmoPointNode initialized: model={self.model_name_or_path}, '
+            f"inference={self.remote_inference_url or 'local'}, "
             f'quantization={self.quantization}, caption="{self.caption}", '
             f'world_frame="{self.world_frame}", '
             f"segmentation={'on' if self.enable_segmentation else 'off'}"
@@ -557,6 +618,7 @@ class MolmoPointNode(Node):
     def image_callback(self, msg: Image):
         ahead_sec = (self._header_stamp_ns(msg.header) - self.get_clock().now().nanoseconds) / 1e9
         if ahead_sec > 0.1:
+            self._future_frames_dropped += 1
             self.get_logger().error(
                 f'Camera timestamp is {ahead_sec:.3f} s ahead of ROS at receipt; '
                 'dropping frame. Check camera/host clock synchronization; '
@@ -588,6 +650,9 @@ class MolmoPointNode(Node):
 
     def motion_status_callback(self, msg: Bool):
         moving = not bool(msg.data)
+        self._motion_status_msgs += 1
+        if not moving:
+            self._motion_still_seen = True
         with self._state_lock:
             changed = moving != self._robot_moving
             self._robot_moving = moving
@@ -615,6 +680,7 @@ class MolmoPointNode(Node):
             )
 
     def detect_loop(self):
+        diag = self._new_cycle_diagnostics()
         with self._state_lock:
             color = self.latest_color
             header = self.latest_color_header
@@ -623,6 +689,7 @@ class MolmoPointNode(Node):
             camera_info = self.camera_info
             robot_moving = self._robot_moving
             motion_finished_stamp_ns = self._motion_finished_stamp_ns
+        diag['robot_moving'] = bool(robot_moving)
 
         if color is None or header is None or camera_info is None:
             if color is None or header is None:
@@ -635,19 +702,72 @@ class MolmoPointNode(Node):
                     f"Waiting for camera info on {self.camera_info_topic}",
                     throttle_duration_sec=5.0,
                 )
+            # Already logged above with its own throttle.
+            self._report_cycle(diag, 'inputs', 'waiting_for_color_or_camera_info')
             return
 
         frame_stamp_ns = self._header_stamp_ns(header)
-        if depth is None or abs(self._header_stamp_ns(depth.header) - frame_stamp_ns) / 1e9 > float(self.get_parameter('rgbd_max_skew_sec').value):
+        diag['stamp_ns'] = frame_stamp_ns
+        diag['frame_age_sec'] = round(
+            (self.get_clock().now().nanoseconds - frame_stamp_ns) / 1e9, 3
+        )
+        if depth is None:
+            self._report_cycle(
+                diag, 'inputs', 'no_depth_frame',
+                f"No depth frame received on {getattr(self, 'depth_topic', '?')}; "
+                'skipping cycle', 'warn')
+            return
+        rgbd_skew_sec = abs(self._header_stamp_ns(depth.header) - frame_stamp_ns) / 1e9
+        diag['rgbd_skew_sec'] = round(rgbd_skew_sec, 4)
+        max_skew_sec = float(self.get_parameter('rgbd_max_skew_sec').value)
+        if rgbd_skew_sec > max_skew_sec:
+            self._report_cycle(
+                diag, 'inputs', 'rgbd_skew',
+                f'Nearest depth frame is {rgbd_skew_sec * 1e3:.1f} ms from the '
+                f'color frame (rgbd_max_skew_sec={max_skew_sec}); skipping cycle',
+                'warn')
             return
         if self.pause_during_motion and (
             robot_moving or frame_stamp_ns <= motion_finished_stamp_ns
         ):
+            topic = getattr(self, 'motion_status_topic', '/arduino/status')
+            if robot_moving and not self._motion_status_msgs:
+                reason, level, message = 'motion_status_never_received', 'warn', (
+                    f'Detection paused: no message ever received on {topic} '
+                    '(pause_during_motion=true starts paused). Is arduino_reader '
+                    'running and publishing?')
+            elif robot_moving and not self._motion_still_seen:
+                reason, level, message = 'motion_status_never_still', 'warn', (
+                    f'Detection paused: {topic} has only reported false (moving/'
+                    'not ready); waiting for the first true (arm still). Check '
+                    'Arduino serial connection and settled feedback.')
+            elif robot_moving:
+                reason, level, message = 'robot_moving', 'info', (
+                    f'Detection paused: {topic} reports the arm is moving')
+            else:
+                reason, level, message = 'frame_before_motion_done', 'info', (
+                    'Skipping color frame stamped before the last motion '
+                    f'DONE ({(motion_finished_stamp_ns - frame_stamp_ns) / 1e9:.2f} s '
+                    'earlier); waiting for a fresh frame')
+            self._report_cycle(diag, 'motion_gate', reason, message, level)
             return
         with self._state_lock:
-            if frame_stamp_ns <= self._last_processed_color_stamp_ns:
-                return
-            self._last_processed_color_stamp_ns = frame_stamp_ns
+            already_processed = frame_stamp_ns <= self._last_processed_color_stamp_ns
+            if not already_processed:
+                self._last_processed_color_stamp_ns = frame_stamp_ns
+        if already_processed:
+            message = (
+                'No new color frame since the last cycle '
+                f"(latest frame age {diag['frame_age_sec']:.2f} s)"
+            )
+            if self._future_frames_dropped:
+                message += (
+                    f'; {self._future_frames_dropped} frame(s) dropped so far for '
+                    'camera timestamps ahead of the ROS clock'
+                )
+            diag['future_frames_dropped'] = self._future_frames_dropped
+            self._report_cycle(diag, 'frame_gate', 'frame_already_processed', message)
+            return
 
         self.get_logger().info("Running detection loop")
         # 1. Resize Color for Inference
@@ -656,34 +776,58 @@ class MolmoPointNode(Node):
         with self._config_lock:
             caption = self.caption
             task_id = self.task_id
+        diag['caption'] = caption
+        diag['task_id'] = task_id
         try:
             frame_tf = self.tf_buffer.lookup_transform(self.world_frame,
                 self.camera_frame or camera_info.header.frame_id, Time.from_msg(header.stamp),
                 timeout=self._tf_timeout)
         except Exception as exc:
-            self.get_logger().warning(f'No acquisition-time camera transform: {exc}', throttle_duration_sec=5.0)
+            diag['tf_ok'] = False
+            self._report_cycle(
+                diag, 'tf', 'tf_lookup_failed',
+                f'No acquisition-time camera transform {self.world_frame} <- '
+                f'{self.camera_frame or camera_info.header.frame_id} '
+                f"(frame age {diag['frame_age_sec']:.2f} s): {exc}", 'warn')
             return
+        diag['tf_ok'] = True
+        self._dump_cycle_inputs(color, depth, camera_info, frame_tf,
+                                frame_stamp_ns, caption, task_id)
 
+        debug_img = img_resized.copy()
+        inference_start = time.monotonic()
         try:
             detections = self.run_model_inference(img_resized, caption)
         except Exception as exc:
-            self.get_logger().error(f'MolmoPoint inference failed: {exc}')
+            diag['inference_sec'] = round(time.monotonic() - inference_start, 3)
+            self._report_cycle(
+                diag, 'inference', 'inference_failed',
+                f'MolmoPoint inference failed: {exc}', 'error', debug_img=debug_img)
             return
+        diag['inference_sec'] = round(time.monotonic() - inference_start, 3)
+        diag['n_model_points'] = len(detections)
+        diag.update(self._last_inference_info or {})
         if not self._frame_is_publishable(frame_stamp_ns):
-            self.get_logger().info(
-                'Discarding detection captured before robot motion completed'
-            )
+            reason, detail = self._unpublishable_reason(frame_stamp_ns)
+            self._draw_model_points(debug_img, detections)
+            self._report_cycle(
+                diag, 'publish_gate', reason,
+                f'Discarding detection captured before robot motion completed: {detail}',
+                'info', debug_img=debug_img)
             return
-        debug_img = img_resized.copy()
         self.detections_pub.publish(String(data=json.dumps(detections)))
 
+        targets = diag['targets'] = []
         for d in detections:
+            target_diag = {'model_point': list(d['point'])}
+            targets.append(target_diag)
             xmin, ymin, xmax, ymax = map(int, d["bbox"])
             xmin = max(0, min(xmin, self.target_w - 1))
             xmax = max(0, min(xmax, self.target_w))
             ymin = max(0, min(ymin, self.target_h - 1))
             ymax = max(0, min(ymax, self.target_h))
             if xmax <= xmin or ymax <= ymin:
+                target_diag['reason'] = 'degenerate_bbox'
                 continue
 
             center_u = int(d['point'][0])
@@ -691,19 +835,40 @@ class MolmoPointNode(Node):
             full_mask = None
 
             if self.enable_segmentation:
-                masks, _ = self.run_segmentation(
-                    img_resized,
-                    (center_u, center_v),
-                )
+                segment_start = time.monotonic()
+                try:
+                    masks, _ = self.run_segmentation(
+                        img_resized,
+                        (center_u, center_v),
+                    )
+                except Exception as exc:
+                    target_diag['segment_sec'] = round(time.monotonic() - segment_start, 3)
+                    self._draw_model_points(debug_img, detections)
+                    self._report_cycle(
+                        diag, 'segmentation', 'segmentation_failed',
+                        f'SAM2 segmentation failed: {exc}', 'error',
+                        debug_img=debug_img)
+                    if self.remote_inference_url:
+                        return
+                    raise
+                target_diag['segment_sec'] = round(time.monotonic() - segment_start, 3)
+                target_diag.update(self._last_segment_info or {})
+                target_diag['mask_pixels'] = 0
                 if masks is not None and len(masks) > 0:
                     full_mask = masks[0].astype(np.uint8) * 255
                     mask_ys, mask_xs = np.where(full_mask > 0)
+                    target_diag['mask_pixels'] = int(mask_xs.size)
                     if mask_xs.size > 0:
                         center_u = int(np.mean(mask_xs))
                         center_v = int(np.mean(mask_ys))
                         mask_msg = self.bridge.cv2_to_imgmsg(full_mask, encoding='mono8')
                         mask_msg.header = header
                         # Published only after geometry and final motion/config checks.
+                    self._draw_mask_overlay(debug_img, full_mask)
+                else:
+                    target_diag['reason'] = 'sam2_returned_no_mask'
+            else:
+                target_diag['reason'] = 'segmentation_disabled'
 
             mask_center_payload = {
                 "label": d["label"],
@@ -733,11 +898,38 @@ class MolmoPointNode(Node):
                 points = np.column_stack(((cols-cx)*ranges/fx, (rows-cy)*ranges/fy, ranges))
                 rotation, translation = self._transform_matrix(frame_tf)
                 if task_id == 1 and caption == self.tasks[1]['caption']:
-                    estimate = self._estimate_point_from_mask_depth(depth, full_mask, camera_info)
+                    estimate = self._estimate_point_from_mask_depth(
+                        depth, full_mask, camera_info, geometry_diagnostics)
                     if estimate is not None:
                         surface_world = rotation @ np.asarray(estimate[:3]) + translation
+                        if (self.get_parameter('cup_height_from_mask_extent').value
+                                and len(points) >= self.mask_depth_min_points):
+                            # The near-depth cluster is the rim when the hand
+                            # camera looks down, so take the grasp height from
+                            # the middle of the cup's measured vertical extent.
+                            heights = (points @ rotation.T + translation)[:, 2]
+                            bottom, top = np.quantile(heights, [0.05, 0.95])
+                            target_diag['cup_extent_z'] = [float(bottom), float(top)]
+                            target_diag['near_cluster_z'] = float(surface_world[2])
+                            surface_world[2] = 0.5 * (bottom + top)
+                        target_diag['surface_world'] = surface_world.tolist()
                         try:
-                            world_center, approach = offset_surface_goal(surface_world, translation,
+                            viewpoint = translation
+                            reference = str(self.get_parameter('approach_reference_frame').value).strip()
+                            if reference:
+                                # The hand camera sits beside the gripper; at close
+                                # range a camera-to-cup ray is yawed far off the
+                                # arm's line, so measure the approach from the TCP.
+                                try:
+                                    tcp_tf = self.tf_buffer.lookup_transform(
+                                        self.world_frame, reference,
+                                        Time.from_msg(header.stamp), timeout=self._tf_timeout)
+                                    t = tcp_tf.transform.translation
+                                    viewpoint = np.array([t.x, t.y, t.z])
+                                    target_diag['approach_reference'] = reference
+                                except Exception as exc:
+                                    target_diag['approach_reference'] = f'camera ({exc})'
+                            world_center, approach = offset_surface_goal(surface_world, viewpoint,
                                 float(self.get_parameter('cup_surface_to_center_m').value))
                             point_3d = tuple(rotation.T @ (world_center - translation))
                             center_u, center_v = estimate[3:5]
@@ -754,7 +946,7 @@ class MolmoPointNode(Node):
                             geometry['collision_center'] = collision_center.tolist()
                             depth_source = 'segmented_depth_with_center_offset'
                         except ValueError as exc:
-                            geometry_diagnostics['reason'] = str(exc)
+                            geometry_diagnostics['reason'] = f'offset_surface_goal: {exc}'
                 elif task_id == 2 and caption == self.tasks[2]['caption']:
                     u = d['point'][0] * depth.width / self.target_w
                     v = d['point'][1] * depth.height / self.target_h
@@ -765,17 +957,42 @@ class MolmoPointNode(Node):
                         approach = rotation @ normal
                         geometry = {'normal': approach.tolist()}
                         depth_source = 'button_plane_ray_intersection'
+                    else:
+                        geometry_diagnostics['reason'] = (
+                            'button plane fit rejected '
+                            f'({int(np.count_nonzero(local))} depth points within 15 px)'
+                        )
                 else:
-                    estimate = self._estimate_point_from_mask_depth(depth, full_mask, camera_info)
+                    estimate = self._estimate_point_from_mask_depth(
+                        depth, full_mask, camera_info, geometry_diagnostics)
                     if estimate is not None:
                         point_3d = estimate[:3]
                         depth_source = 'segmented_depth_cloud'
                 depth_point_count = len(points)
+                target_diag['valid_depth_points'] = depth_point_count
+                self._draw_depth_points(debug_img, geometry_diagnostics)
+            target_diag.update({
+                key: value for key, value in geometry_diagnostics.items()
+                if not key.startswith('_') and key != 'reason'
+            })
+            if 'reason' in geometry_diagnostics:
+                target_diag['reason'] = geometry_diagnostics['reason']
             # Manipulation targets must never silently fall back to background
             # depth or a view-dependent visible-surface centroid.
             with self._config_lock:
                 unchanged = caption == self.caption and task_id == self.task_id
             if not unchanged or not self._frame_is_publishable(frame_stamp_ns):
+                if not unchanged:
+                    reason = 'caption_or_task_changed'
+                    detail = (f'caption/task changed to "{self.caption}"/{self.task_id} '
+                              'during inference')
+                else:
+                    reason, detail = self._unpublishable_reason(frame_stamp_ns)
+                self._draw_model_points(debug_img, detections)
+                self._report_cycle(
+                    diag, 'publish_gate', reason,
+                    f'Discarding target before publishing: {detail}', 'info',
+                    debug_img=debug_img)
                 return
             if full_mask is not None:
                 mask_msg = self.bridge.cv2_to_imgmsg(full_mask, encoding='mono8')
@@ -783,10 +1000,13 @@ class MolmoPointNode(Node):
                 self.mask_pub.publish(mask_msg)
 
             mask_center_payload["pixel"] = {"u": center_u, "v": center_v}
+            target_diag['chosen_pixel'] = [int(center_u), int(center_v)]
 
             if self.publish_poses and point_3d is not None:
                 X, Y, Z = point_3d
                 camera_frame = self.camera_frame or camera_info.header.frame_id
+                target_diag['point_camera'] = [float(X), float(Y), float(Z)]
+                target_diag['depth_source'] = depth_source
 
                 pose_cam = PoseStamped()
                 pose_cam.header = deepcopy(header)
@@ -811,6 +1031,11 @@ class MolmoPointNode(Node):
                     if approach is not None:
                         length = np.linalg.norm(approach)
                         if length < 1e-6:
+                            target_diag['reason'] = 'degenerate_approach_vector'
+                            self.get_logger().warning(
+                                f"Target {d['label']}: approach vector has zero "
+                                'length; not publishing pose',
+                                throttle_duration_sec=5.0)
                             continue
                         approach /= length
                         yaw = math.atan2(approach[1], approach[0])
@@ -828,15 +1053,20 @@ class MolmoPointNode(Node):
                         self.geometry_pub.publish(String(data=json.dumps(geometry)))
                     pw = pose_world.pose.position
                     mask_center_payload["point_3d_world"] = {"x": pw.x, "y": pw.y, "z": pw.z}
+                    target_diag['point_world'] = [float(pw.x), float(pw.y), float(pw.z)]
+                    target_diag['pose_published'] = True
                     self.get_logger().info(
                         f"Target {d['label']} in {self.world_frame}: "
                         f"x={pw.x:.2f}m, y={pw.y:.2f}m, z={pw.z:.2f}m"
                     )
+                else:
+                    target_diag['reason'] = 'world_transform_failed'
             elif self.publish_poses:
+                target_diag.setdefault('reason', 'missing mask/depth or rejected surface fit')
                 self.get_logger().info(
                     f"Target {d['label']} detected at pixel=({center_u}, {center_v}), "
                     f"but depth/geometry was insufficient for a reliable 3-D target: "
-                    f"{geometry_diagnostics.get('reason', 'missing mask/depth or rejected surface fit')}; "
+                    f"{geometry_diagnostics.get('reason', target_diag['reason'])}; "
                     f"model_point={d['point']}, valid_depth_points={depth_point_count}, "
                     f"mask_pixels={int(np.count_nonzero(full_mask)) if full_mask is not None else 0}"
                 )
@@ -868,7 +1098,178 @@ class MolmoPointNode(Node):
                 cv2.LINE_AA,
             )
 
-        self.debug_img_pub.publish(self.bridge.cv2_to_imgmsg(debug_img, "bgr8"))
+        if not detections:
+            info = self._last_inference_info or {}
+            self._report_cycle(
+                diag, 'inference', 'no_model_points',
+                f'MolmoPoint returned no image-0 points for "{caption}" '
+                f"(raw points={info.get('raw_points', '?')}, "
+                f"text={info.get('generated_text', '')[:120]!r})",
+                'warn', debug_img=debug_img)
+        elif any(target.get('pose_published') for target in targets):
+            self._report_cycle(diag, 'done', 'pose_published', debug_img=debug_img)
+        elif not self.publish_poses:
+            self._report_cycle(diag, 'done', 'detected_poses_disabled', debug_img=debug_img)
+        else:
+            reason = targets[0].get('reason', 'no_pose')
+            self._report_cycle(
+                diag, 'geometry', reason,
+                f'No 3-D target published: {reason}; '
+                + ', '.join(f'{k}={targets[0][k]}' for k in (
+                    'model_point', 'mask_pixels', 'valid_depth_points',
+                    'mask_depth_valid', 'mask_depth_kept', 'near_depth_m')
+                    if k in targets[0]),
+                'warn', debug_img=debug_img)
+
+    # ------------------------------------------------------------------
+    # Diagnostics
+
+    def _new_cycle_diagnostics(self) -> dict:
+        return {
+            'backend': 'remote' if self.remote_inference_url else 'local',
+            'pause_during_motion': bool(getattr(self, 'pause_during_motion', False)),
+            'motion_status_msgs': self._motion_status_msgs,
+            'motion_still_seen': self._motion_still_seen,
+            'segmentation': bool(getattr(self, 'enable_segmentation', False)),
+            '_t0': time.monotonic(),
+        }
+
+    def _report_cycle(self, diag: dict, stage: str, reason: str,
+                      message: Optional[str] = None, level: str = 'info',
+                      debug_img=None) -> None:
+        """End a detection cycle: publish diagnostics and log why (throttled)."""
+        diag['stage'] = stage
+        diag['reason'] = reason
+        if message:
+            diag['detail'] = message
+        diag['cycle_sec'] = round(time.monotonic() - diag.pop('_t0', time.monotonic()), 3)
+        targets = diag.get('targets')
+        if targets:
+            for key, value in targets[0].items():
+                diag.setdefault(key, value)
+            if len(targets) == 1:
+                diag.pop('targets')
+        if debug_img is not None:
+            text = f'{stage}: {reason}'[:90]
+            cv2.putText(debug_img, text, (6, 18), cv2.FONT_HERSHEY_SIMPLEX, 0.5,
+                        (0, 0, 0), 3, cv2.LINE_AA)
+            cv2.putText(debug_img, text, (6, 18), cv2.FONT_HERSHEY_SIMPLEX, 0.5,
+                        (255, 255, 255), 1, cv2.LINE_AA)
+            self.debug_img_pub.publish(self.bridge.cv2_to_imgmsg(debug_img, "bgr8"))
+        if self.diagnostics_pub is not None:
+            self.diagnostics_pub.publish(
+                String(data=json.dumps(diag, default=self._json_default)))
+        if not message:
+            return
+        # Log every change of reason immediately; repeat a reason every 5 s.
+        key = (stage, reason)
+        now = time.monotonic()
+        if self._diag_last_log is None:
+            self._diag_last_log = {}
+        last = self._diag_last_log.get(key)
+        if key != self._diag_last_key or last is None or now - last >= 5.0:
+            self._diag_last_log[key] = now
+            # rclpy binds one severity to each logging call site, so every
+            # level needs its own call.
+            text = f'[{stage}/{reason}] {message}'
+            if level == 'error':
+                self.get_logger().error(text)
+            elif level in ('warn', 'warning'):
+                self.get_logger().warning(text)
+            else:
+                self.get_logger().info(text)
+        self._diag_last_key = key
+
+    @staticmethod
+    def _json_default(value):
+        if isinstance(value, np.generic):
+            return value.item()
+        if isinstance(value, np.ndarray):
+            return value.tolist()
+        return str(value)
+
+    def _unpublishable_reason(self, frame_stamp_ns: int) -> Tuple[str, str]:
+        """Name the _frame_is_publishable condition that failed."""
+        with self._state_lock:
+            moving = self._robot_moving
+            finished_ns = self._motion_finished_stamp_ns
+        settle_sec = float(self.get_parameter('motion_settle_sec').value)
+        max_age_sec = float(self.get_parameter('max_observation_age_sec').value)
+        age_sec = (self.get_clock().now().nanoseconds - frame_stamp_ns) / 1e9
+        if moving:
+            return 'robot_moving', 'arm reported moving during inference'
+        if frame_stamp_ns <= finished_ns + int(settle_sec * 1e9):
+            return 'frame_within_motion_settle', (
+                f'frame stamped {(frame_stamp_ns - finished_ns) / 1e9:.2f} s after '
+                f'motion DONE, motion_settle_sec={settle_sec}')
+        if age_sec < 0:
+            return 'frame_from_future', f'frame stamp is {-age_sec:.2f} s ahead of ROS clock'
+        if age_sec >= max_age_sec:
+            return 'frame_stale', (
+                f'frame age {age_sec:.2f} s >= max_observation_age_sec={max_age_sec}')
+        return 'not_publishable', 'publish gate failed'
+
+    def _draw_model_points(self, debug_img, detections) -> None:
+        for d in detections:
+            cv2.circle(debug_img, (int(d['point'][0]), int(d['point'][1])),
+                       9, (0, 0, 255), 2)
+
+    @staticmethod
+    def _draw_mask_overlay(debug_img, full_mask) -> None:
+        mask = full_mask > 0
+        if mask.shape != debug_img.shape[:2] or not mask.any():
+            return
+        debug_img[mask] = (
+            0.6 * debug_img[mask] + 0.4 * np.array([0, 255, 0])
+        ).astype(np.uint8)
+        contours, _ = cv2.findContours(
+            mask.astype(np.uint8), cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+        cv2.drawContours(debug_img, contours, -1, (0, 255, 0), 1)
+
+    def _draw_depth_points(self, debug_img, geometry_diagnostics: dict) -> None:
+        """Mark the near-depth mask pixels the 3-D estimate actually used."""
+        rows = geometry_diagnostics.get('_kept_rows')
+        cols = geometry_diagnostics.get('_kept_cols')
+        shape = geometry_diagnostics.get('_depth_shape')
+        if rows is None or cols is None or shape is None or len(rows) == 0:
+            return
+        step = max(4, len(rows) // 600)
+        us = (cols[::step] * self.target_w / shape[1]).astype(int)
+        vs = (rows[::step] * self.target_h / shape[0]).astype(int)
+        keep = (us >= 0) & (us < debug_img.shape[1]) & (vs >= 0) & (vs < debug_img.shape[0])
+        debug_img[vs[keep], us[keep]] = (0, 255, 255)
+
+    def _dump_cycle_inputs(self, color, depth, camera_info, frame_tf,
+                           frame_stamp_ns, caption, task_id) -> None:
+        """Save this cycle's inputs for tests/detector_replay.py."""
+        if not self.debug_dump_dir:
+            return
+        try:
+            out_dir = Path(self.debug_dump_dir).expanduser()
+            out_dir.mkdir(parents=True, exist_ok=True)
+            rotation, translation = self._transform_matrix(frame_tf)
+            world_from_camera = np.eye(4)
+            world_from_camera[:3, :3] = rotation
+            world_from_camera[:3, 3] = translation
+            np.savez_compressed(
+                out_dir / f'cycle_{frame_stamp_ns}.npz',
+                color=color,
+                depth=self.bridge.imgmsg_to_cv2(depth, desired_encoding='passthrough'),
+                depth_encoding=depth.encoding,
+                depth_stamp_ns=self._header_stamp_ns(depth.header),
+                K=np.asarray(camera_info.k, dtype=np.float64),
+                camera_width=int(camera_info.width),
+                camera_height=int(camera_info.height),
+                T_world_camera=world_from_camera,
+                stamp_ns=frame_stamp_ns,
+                caption=caption,
+                task_id=task_id,
+                camera_frame=self.camera_frame or camera_info.header.frame_id,
+                world_frame=self.world_frame,
+            )
+        except Exception as exc:
+            self.get_logger().warning(
+                f'Could not dump cycle inputs: {exc}', throttle_duration_sec=5.0)
 
     def _append_target_audit(self, payload: dict, header) -> None:
         """Persist camera/world target coordinates for later plan diagnosis."""
@@ -933,6 +1334,7 @@ class MolmoPointNode(Node):
         depth_msg: Image,
         mask: np.ndarray,
         cam_info: CameraInfo,
+        diagnostics: Optional[dict] = None,
     ) -> Optional[Tuple[float, float, float, int, int, int]]:
         """
         Estimate a robust visible-object centroid from the segmented depth.
@@ -941,7 +1343,12 @@ class MolmoPointNode(Node):
         center. Using a single center patch therefore biases the target toward
         the support surface. This method uses the complete segmented point set
         and keeps the coherent near-depth portion before taking its median.
+
+        If ``diagnostics`` is given it receives the point counts and, on
+        rejection, a ``reason``.
         """
+        if diagnostics is None:
+            diagnostics = {}
         try:
             depth_raw = self.bridge.imgmsg_to_cv2(
                 depth_msg, desired_encoding='passthrough'
@@ -959,7 +1366,14 @@ class MolmoPointNode(Node):
             ) > 0
             valid = depth_mask & np.isfinite(depth) & (depth > 0.1)
             rows, cols = np.nonzero(valid)
+            diagnostics['mask_pixels_depth_res'] = int(np.count_nonzero(depth_mask))
+            diagnostics['mask_depth_valid'] = int(rows.size)
             if rows.size < self.mask_depth_min_points:
+                diagnostics['reason'] = (
+                    f'too few valid depth pixels inside mask: {rows.size} < '
+                    f'mask_depth_min_points={self.mask_depth_min_points} '
+                    f'(mask has {diagnostics["mask_pixels_depth_res"]} px at depth resolution)'
+                )
                 return None
 
             ranges = depth[rows, cols]
@@ -970,7 +1384,14 @@ class MolmoPointNode(Node):
             rows = rows[keep]
             cols = cols[keep]
             ranges = ranges[keep]
+            diagnostics['near_depth_m'] = round(near_depth, 4)
+            diagnostics['mask_depth_kept'] = int(rows.size)
             if rows.size < self.mask_depth_min_points:
+                diagnostics['reason'] = (
+                    f'too few near-depth cluster points: {rows.size} < '
+                    f'mask_depth_min_points={self.mask_depth_min_points} '
+                    f'(near_depth={near_depth:.3f} m)'
+                )
                 return None
 
             info_width = max(1, int(cam_info.width))
@@ -982,7 +1403,11 @@ class MolmoPointNode(Node):
             cx = float(cam_info.k[2]) * scale_x
             cy = float(cam_info.k[5]) * scale_y
             if fx <= 0.0 or fy <= 0.0:
+                diagnostics['reason'] = f'invalid camera intrinsics fx={fx}, fy={fy}'
                 return None
+            diagnostics['_kept_rows'] = rows
+            diagnostics['_kept_cols'] = cols
+            diagnostics['_depth_shape'] = (height, width)
 
             x_points = (cols.astype(np.float32) - cx) * ranges / fx
             y_points = (rows.astype(np.float32) - cy) * ranges / fy
@@ -994,6 +1419,7 @@ class MolmoPointNode(Node):
             center_v = int(np.median(rows) * self.target_h / height)
             return x, y, z, center_u, center_v, int(rows.size)
         except Exception as exc:
+            diagnostics['reason'] = f'segmented depth estimate raised: {exc}'
             self.get_logger().warning(
                 f'Could not estimate target from segmented depth: {exc}',
                 throttle_duration_sec=5.0,
@@ -1028,6 +1454,57 @@ class MolmoPointNode(Node):
         image_np,
         caption,
     ):
+        if self.remote_inference_url:
+            prompt, generated_text, points = self._remote_point(image_np, caption)
+        else:
+            prompt, generated_text, points = self._local_point(image_np, caption)
+        h, w = image_np.shape[:2]
+        candidates = [
+            (int(object_id), int(image_index), float(x), float(y))
+            for object_id, image_index, x, y in points
+            if int(image_index) == 0
+        ]
+        self._last_inference_info = {
+            'raw_points': len(points),
+            'image0_points': len(candidates),
+            'generated_text': generated_text[:200],
+        }
+        if self.point_selection == 'closest_to_center':
+            candidates.sort(
+                key=lambda point: (point[2] - w / 2.0) ** 2
+                + (point[3] - h / 2.0) ** 2
+            )
+        candidates = candidates[:self.max_points]
+        radius = 12
+        detections = [
+            {
+                "label": caption,
+                # MolmoPoint returns constrained point tokens, not calibrated
+                # detector logits. Keep 1.0 solely for the legacy JSON schema.
+                "score": 1.0,
+                "backend": "molmopoint",
+                "object_id": object_id,
+                "point": [
+                    int(np.clip(round(x), 0, w - 1)),
+                    int(np.clip(round(y), 0, h - 1)),
+                ],
+                "bbox": [
+                    max(0, int(round(x)) - radius),
+                    max(0, int(round(y)) - radius),
+                    min(w, int(round(x)) + radius),
+                    min(h, int(round(y)) + radius),
+                ],
+            }
+            for object_id, _image_index, x, y in candidates
+        ]
+        self.get_logger().info(
+            f'MolmoPoint prompt="{prompt}" returned {len(detections)} point(s): '
+            f'{generated_text[:200]}'
+        )
+        return detections
+
+    def _local_point(self, image_np, caption):
+        """Run MolmoPoint in-process; return (prompt, generated_text, points)."""
         image_rgb = cv2.cvtColor(image_np, cv2.COLOR_BGR2RGB)
         image_pil = PILImage.fromarray(image_rgb)
         prompt = caption.strip()
@@ -1092,49 +1569,13 @@ class MolmoPointNode(Node):
             metadata['subpatch_mapping'],
             metadata['image_sizes'],
         )
-        h, w = image_np.shape[:2]
-        candidates = [
-            (int(object_id), int(image_index), float(x), float(y))
-            for object_id, image_index, x, y in points
-            if int(image_index) == 0
-        ]
-        if self.point_selection == 'closest_to_center':
-            candidates.sort(
-                key=lambda point: (point[2] - w / 2.0) ** 2
-                + (point[3] - h / 2.0) ** 2
-            )
-        candidates = candidates[:self.max_points]
-        radius = 12
-        detections = [
-            {
-                "label": caption,
-                # MolmoPoint returns constrained point tokens, not calibrated
-                # detector logits. Keep 1.0 solely for the legacy JSON schema.
-                "score": 1.0,
-                "backend": "molmopoint",
-                "object_id": object_id,
-                "point": [
-                    int(np.clip(round(x), 0, w - 1)),
-                    int(np.clip(round(y), 0, h - 1)),
-                ],
-                "bbox": [
-                    max(0, int(round(x)) - radius),
-                    max(0, int(round(y)) - radius),
-                    min(w, int(round(x)) + radius),
-                    min(h, int(round(y)) + radius),
-                ],
-            }
-            for object_id, _image_index, x, y in candidates
-        ]
-        self.get_logger().info(
-            f'MolmoPoint prompt="{prompt}" returned {len(detections)} point(s): '
-            f'{generated_text[:200]}'
-        )
-        return detections
+        return prompt, generated_text, points
 
     def run_segmentation(self, image_np, point):
         if not self.enable_segmentation:
             return [], []
+        if self.remote_inference_url:
+            return self._remote_segmentation(image_np, point)
         image_rgb = cv2.cvtColor(image_np, cv2.COLOR_BGR2RGB)
         self.sam2_model.set_image(image_rgb)
         masks, scores, _ = self.sam2_model.predict(
@@ -1146,6 +1587,100 @@ class MolmoPointNode(Node):
             return [], []
         best = int(np.argmax(scores))
         return masks[best:best + 1], scores[best:best + 1]
+
+    # ------------------------------------------------------------------
+    # Remote inference (parallel_prompts/CONTRACT.md). Stdlib only.
+
+    def _remote_call(self, path: str, payload: Optional[dict] = None,
+                     timeout: Optional[float] = None) -> dict:
+        url = self.remote_inference_url.rstrip('/') + path
+        data = None if payload is None else json.dumps(payload).encode('utf-8')
+        request = urllib.request.Request(
+            url, data=data, method='GET' if data is None else 'POST',
+            headers={} if data is None else {'Content-Type': 'application/json'},
+        )
+        # The server is on a private address; never route it through an
+        # http_proxy from the environment.
+        opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+        try:
+            with opener.open(request, timeout=timeout or self.remote_timeout_sec) as response:
+                return json.loads(response.read().decode('utf-8'))
+        except urllib.error.HTTPError as exc:
+            body = exc.read()[:300].decode('utf-8', 'replace')
+            raise RuntimeError(f'{url} returned HTTP {exc.code}: {body}') from exc
+        except urllib.error.URLError as exc:
+            raise RuntimeError(f'{url} unreachable: {exc.reason}') from exc
+
+    def _check_remote_health(self) -> None:
+        url = self.remote_inference_url
+        try:
+            health = self._remote_call('/health', timeout=5.0)
+        except Exception as exc:
+            self.get_logger().error(
+                f'Remote inference server not reachable at startup: {exc}. '
+                'Cycles will report inference_failed until it responds.'
+            )
+            return
+        self.get_logger().info(f'Remote inference server {url} health: {health}')
+        if not health.get('ok') or not health.get('molmopoint'):
+            self.get_logger().error(
+                f'Remote server {url} reports MolmoPoint not ready: {health}')
+        if not health.get('sam2'):
+            self.get_logger().error(
+                f'Remote server {url} reports SAM2 not loaded; /segment will '
+                'return no mask and no pose will be published.')
+
+    @staticmethod
+    def _encode_jpeg_b64(image_np) -> str:
+        ok, encoded = cv2.imencode(
+            '.jpg', image_np, [int(cv2.IMWRITE_JPEG_QUALITY), 95])
+        if not ok:
+            raise RuntimeError('JPEG encoding failed')
+        return base64.b64encode(encoded.tobytes()).decode('ascii')
+
+    def _remote_point(self, image_np, caption):
+        """POST /point; return (prompt, generated_text, points) like _local_point."""
+        response = self._remote_call('/point', {
+            'image_jpeg_b64': self._encode_jpeg_b64(image_np),
+            'caption': caption,
+            'max_new_tokens': self.max_new_tokens,
+        })
+        h, w = image_np.shape[:2]
+        image_size = response.get('image_size')
+        if image_size and list(image_size) != [w, h]:
+            raise RuntimeError(
+                f'/point image_size {image_size} does not match sent frame {[w, h]}')
+        return (
+            response.get('prompt', caption),
+            response.get('generated_text', ''),
+            response.get('points') or [],
+        )
+
+    def _remote_segmentation(self, image_np, point):
+        """POST /segment; return (masks, scores) shaped like the local SAM2 path."""
+        response = self._remote_call('/segment', {
+            'image_jpeg_b64': self._encode_jpeg_b64(image_np),
+            'point': [int(point[0]), int(point[1])],
+        })
+        self._last_segment_info = {
+            'sam2_score': response.get('score'),
+            'segment_server_sec': response.get('elapsed_sec'),
+        }
+        if not response.get('mask_png_b64'):
+            return [], []
+        mask = cv2.imdecode(
+            np.frombuffer(base64.b64decode(response['mask_png_b64']), np.uint8),
+            cv2.IMREAD_GRAYSCALE,
+        )
+        if mask is None:
+            raise RuntimeError('/segment returned an undecodable mask PNG')
+        h, w = image_np.shape[:2]
+        if mask.shape != (h, w):
+            raise RuntimeError(
+                f'/segment mask shape {mask.shape} does not match frame {(h, w)}')
+        score = response.get('score')
+        return (mask > 127)[None], np.asarray(
+            [0.0 if score is None else score], dtype=np.float32)
 
 
 def main(args=None):
