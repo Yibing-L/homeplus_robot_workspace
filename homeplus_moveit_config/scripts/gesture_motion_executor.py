@@ -491,7 +491,13 @@ class GestureMotionExecutor(Node):
         stability_tolerance_m: Optional[float] = None,
         max_refresh_shift_m: Optional[float] = None,
     ) -> Optional[PoseStamped]:
-        """Accept one fresh detection by default; multi-sample filtering is opt-in."""
+        """Accept one fresh detection by default; multi-sample filtering is opt-in.
+
+        With required > 1 the latest `required` samples must all lie within
+        `stability_tolerance_m` of each other (pairwise). An outlier is never
+        averaged in: it blocks acceptance until enough newer consistent samples
+        push it out of the window, and the result is their per-axis median.
+        """
         deadline = time.monotonic() + timeout_sec
         required = max(
             1,
@@ -583,7 +589,10 @@ class GestureMotionExecutor(Node):
                     stable_pose.pose.position.z = median_xyz[2]
                     self.get_logger().info(
                         f"  Detection stabilized from {required} samples "
-                        f"(max deviation {max_deviation:.3f} m)"
+                        f"(max deviation {max_deviation:.3f} m, cluster diameter "
+                        f"{diameter:.3f} m, limit {tolerance:.3f} m): "
+                        + ", ".join(f"({p.pose.position.x:.3f}, {p.pose.position.y:.3f}, "
+                                    f"{p.pose.position.z:.3f})" for p in candidates)
                     )
                     return stable_pose
             now = time.monotonic()
@@ -1333,6 +1342,7 @@ class GestureMotionExecutor(Node):
                         self.detection_min_stable_samples,
                     )
                 ),
+                stability_tolerance_m=sequence_cfg.get("detection_stability_tolerance_m"),
             )
             if detected_pose is None:
                 self._abort_sequence(
@@ -1477,16 +1487,19 @@ class GestureMotionExecutor(Node):
                     detection_topic,
                     timeout,
                     reference_pose=detected_pose,
+                    # Step keys override the sequence's, which override the node's.
                     required_samples=int(
                         effective_step.get(
                             "detection_min_stable_samples",
-                            self.detection_min_stable_samples,
+                            sequence_cfg.get(
+                                "detection_min_stable_samples",
+                                self.detection_min_stable_samples,
+                            ),
                         )
                     ),
-                    stability_tolerance_m=(
-                        float(effective_step["detection_stability_tolerance_m"])
-                        if "detection_stability_tolerance_m" in effective_step
-                        else None
+                    stability_tolerance_m=effective_step.get(
+                        "detection_stability_tolerance_m",
+                        sequence_cfg.get("detection_stability_tolerance_m"),
                     ),
                     max_refresh_shift_m=(
                         float(effective_step["detection_max_refresh_shift_m"])

@@ -192,7 +192,11 @@ commands:
     task_id: 1
     detection_topic: /molmopoint/task_1/pose
     detection_timeout_sec: 30.0
-    detection_min_stable_samples: 1
+    # Plan only from a consistent view: three samples whose pairwise spread is
+    # within 2 cm (the lateral budget, see refine_target). Outliers delay
+    # acceptance; they are never averaged in.
+    detection_min_stable_samples: 3
+    detection_stability_tolerance_m: 0.02
     max_replanning_attempts: 5
     steps:
       - name: open_gripper
@@ -249,10 +253,10 @@ commands:
         # The hand-mounted view can be temporarily occluded immediately after
         # motion. Wait for a stable cluster instead of accepting the first
         # low-confidence pose from a different object/background surface.
-        # MolmoPoint runs asynchronously at the configured inference rate, and
-        # Wait for one fresh observation with usable depth.
+        # MolmoPoint runs asynchronously at the configured inference rate
+        # (0.5 Hz), so three samples take about 6 s of the 30 s budget.
         detection_timeout_sec: 30.0
-        detection_min_stable_samples: 1
+        detection_min_stable_samples: 3
         # The initial distant view can report the table/bottom of the cup. Use
         # the new segmented-depth estimate from the close view for Z instead
         # of preserving that stale, often below-table initial measurement.
