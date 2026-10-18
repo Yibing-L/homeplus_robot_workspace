@@ -26,6 +26,7 @@ install(
     scripts/gesture_motion_executor.py
     scripts/cloud_builder.py
     scripts/arduino_reader.py
+    scripts/planar_reach.py
     scripts/replay_trajectory.py
   DESTINATION lib/${PROJECT_NAME}
 )

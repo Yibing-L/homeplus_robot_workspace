@@ -50,6 +50,8 @@ from std_srvs.srv import Empty
 from trajectory_msgs.msg import JointTrajectoryPoint
 from tf2_ros import Buffer, TransformListener
 
+from planar_reach import PlanarArm, arm_plane_error, fixed_link_height, plan_base_placements, wrap
+
 # Joint order that the Arduino expects for trajectory waypoints
 TRAJECTORY_JOINT_ORDER = [
     "base_x", "base_y", "base_theta",
@@ -177,6 +179,7 @@ class GestureMotionExecutor(Node):
         self.declare_parameter("clear_octomap_service", "/clear_octomap")
         self.declare_parameter("octomap_clear_timeout_sec", 2.0)
         self.declare_parameter("octomap_rebuild_wait_sec", 1.2)
+        self.declare_parameter("robot_description_topic", "/robot_description")
 
         execution_map_path = str(self.get_parameter("execution_map_path").value)
         if not execution_map_path:
@@ -331,6 +334,15 @@ class GestureMotionExecutor(Node):
         self._cup_geometry = None
         self._cup_collision_object = None
         self._holding_cup = False
+        self._base_link_height = 0.0
+        # Arm reach model for deliberate base placement, built from the URDF.
+        self._robot_description: Optional[str] = None
+        self._planar_arms: Dict[str, PlanarArm] = {}
+        self.create_subscription(
+            String, str(self.get_parameter("robot_description_topic").value),
+            self._robot_description_callback,
+            QoSProfile(depth=1, durability=DurabilityPolicy.TRANSIENT_LOCAL),
+            callback_group=self.cb_group)
         self.create_subscription(String, '/molmopoint/geometry', self._geometry_callback, 10, callback_group=self.cb_group)
         self.ik_client = self.create_client(GetPositionIK, '/compute_ik', callback_group=self.cb_group)
         self.fk_client = self.create_client(GetPositionFK, '/compute_fk', callback_group=self.cb_group)
@@ -986,7 +998,7 @@ class GestureMotionExecutor(Node):
         if not isinstance(command_cfg, dict):
             return [f"{name}: command must be a mapping"]
 
-        allowed = set("endpoint_profile name type group_name joints value frame_id position orientation rpy_deg target steps task_id detection_topic detection_timeout_sec detection_min_stable_samples detection_stability_tolerance_m detection_max_refresh_shift_m max_replanning_attempts max_attempts settle_sec require_trajectory_approval planner_id allowed_planning_time num_planning_attempts link_name offset_x offset_y offset_z offset_frame orientation_from_detection gripper_value final_gripper_value position_tolerance_m position_tolerance_xy_m position_tolerance_z_m use_orientation_constraint orientation_tolerance_rad orientation_tolerance_x_rad orientation_tolerance_y_rad orientation_tolerance_z_rad safe_z_candidate_offsets_m base_goal_tcp_x_min_m base_goal_tcp_x_max_m base_goal_tcp_y_max_m max_base_goal_rotation_rad max_base_goal_translation_m max_base_goal_y_translation_m preserve_reference_z maintain_orientation_during_path post_delay_sec cartesian mobile_standoff lookahead_offsets velocity_scaling acceleration_scaling clear_octomap_before_plan octomap_clear_timeout_sec octomap_rebuild_wait_sec ik_candidate_attempts attach_cup joint_tolerance hardcoded_detection_pose hardcoded_detection_frame planning_service_timeout_sec phase_allowed_planning_time phase_num_planning_attempts phase_joint_tolerance continue_on_arduino_timeout".split())
+        allowed = set("endpoint_profile name type group_name joints value frame_id position orientation rpy_deg target steps task_id detection_topic detection_timeout_sec detection_min_stable_samples detection_stability_tolerance_m detection_max_refresh_shift_m max_replanning_attempts max_attempts settle_sec require_trajectory_approval planner_id allowed_planning_time num_planning_attempts link_name offset_x offset_y offset_z offset_frame orientation_from_detection gripper_value final_gripper_value position_tolerance_m position_tolerance_xy_m position_tolerance_z_m use_orientation_constraint orientation_tolerance_rad orientation_tolerance_x_rad orientation_tolerance_y_rad orientation_tolerance_z_rad safe_z_candidate_offsets_m base_goal_tcp_x_min_m base_goal_tcp_x_max_m base_goal_tcp_y_max_m max_base_goal_rotation_rad max_base_goal_translation_m max_base_goal_y_translation_m preserve_reference_z maintain_orientation_during_path post_delay_sec cartesian mobile_standoff lookahead_offsets velocity_scaling acceleration_scaling clear_octomap_before_plan octomap_clear_timeout_sec octomap_rebuild_wait_sec ik_candidate_attempts attach_cup joint_tolerance hardcoded_detection_pose hardcoded_detection_frame planning_service_timeout_sec phase_allowed_planning_time phase_num_planning_attempts phase_joint_tolerance continue_on_arduino_timeout base_placement".split())
         if command_cfg.get('endpoint_profile', 'precise') not in ('precise', 'transit'):
             errors.append(f'{name}: endpoint_profile must be precise or transit')
         if command_cfg.get('cartesian') and command_cfg.get('endpoint_profile') == 'transit':
@@ -1036,6 +1048,27 @@ class GestureMotionExecutor(Node):
             ):
                 errors.append(f"{name}: orientation must contain four numbers")
 
+        placement = command_cfg.get('base_placement')
+        if placement is not None:
+            allowed_placement = {'heading_offsets_deg', 'min_reach_margin_m',
+                                 'joint_limit_margin_rad', 'base_motion'}
+            if not isinstance(placement, dict):
+                errors.append(f'{name}: base_placement must be a mapping')
+            else:
+                if set(placement) - allowed_placement:
+                    errors.append(f'{name}: unsupported base_placement keys: '
+                                  f'{sorted(set(placement) - allowed_placement)}')
+                if placement.get('base_motion', 'combined') not in ('combined', 'turn_then_drive'):
+                    errors.append(f'{name}: base_placement.base_motion must be combined or turn_then_drive')
+                for key in ('min_reach_margin_m', 'joint_limit_margin_rad'):
+                    if key in placement and float(placement[key]) < 0.0:
+                        errors.append(f'{name}: base_placement.{key} must be nonnegative')
+            if not command_cfg.get('mobile_standoff') or command_cfg.get('group_name') not in ('base_arm', 'base_press_arm'):
+                errors.append(f'{name}: base_placement requires mobile_standoff and a mobile-base group')
+            if command_cfg.get('target') != 'detected':
+                errors.append(f'{name}: base_placement requires target: detected')
+            if any(k in command_cfg for k in ('base_goal_tcp_x_min_m', 'base_goal_tcp_x_max_m', 'base_goal_tcp_y_max_m')):
+                errors.append(f'{name}: base_placement computes the base pose; remove base_goal_tcp_* bounds')
         if action_type == "joint_state" and not command_cfg.get("joints"):
             errors.append(f"{name}: joint_state requires a non-empty joints mapping")
 
@@ -1537,66 +1570,71 @@ class GestureMotionExecutor(Node):
                     return
 
                 pose_msg = self._build_pose_message(effective_step)
-                candidate_z_offsets = [
-                    float(value)
-                    for value in effective_step.get(
-                        "safe_z_candidate_offsets_m", [0.0]
-                    )
-                ]
-                if not candidate_z_offsets:
-                    candidate_z_offsets = [0.0]
+                if effective_step.get("base_placement"):
+                    candidate_pose = self._plan_with_base_placement(
+                        step_name, effective_step, detected_pose, steps, i)
+                    planning_succeeded = candidate_pose is not None
+                else:
+                    candidate_z_offsets = [
+                        float(value)
+                        for value in effective_step.get(
+                            "safe_z_candidate_offsets_m", [0.0]
+                        )
+                    ]
+                    if not candidate_z_offsets:
+                        candidate_z_offsets = [0.0]
 
-                max_replanning_attempts = max(
-                    1,
-                    int(
-                        effective_step.get(
-                            "max_replanning_attempts",
-                            sequence_cfg.get("max_replanning_attempts", 1),
-                        )
-                    ),
-                )
-                planning_succeeded = False
-                for planning_attempt in range(1, max_replanning_attempts + 1):
-                    candidate_index = min(
-                        planning_attempt - 1, len(candidate_z_offsets) - 1
+                    max_replanning_attempts = max(
+                        1,
+                        int(
+                            effective_step.get(
+                                "max_replanning_attempts",
+                                sequence_cfg.get("max_replanning_attempts", 1),
+                            )
+                        ),
                     )
-                    candidate_z_offset = candidate_z_offsets[candidate_index]
-                    candidate_pose = deepcopy(pose_msg)
-                    candidate_pose.pose.position.z += candidate_z_offset
-                    self.target_pose_pub.publish(candidate_pose)
-                    if max_replanning_attempts > 1:
-                        self.get_logger().info(
-                            f"  Planning {step_name}: outer attempt "
-                            f"{planning_attempt}/{max_replanning_attempts}, "
-                            f"safe candidate z={candidate_pose.pose.position.z:.3f} m "
-                            f"(offset +{candidate_z_offset:.3f} m)"
+                    planning_succeeded = False
+                    for planning_attempt in range(1, max_replanning_attempts + 1):
+                        candidate_index = min(
+                            planning_attempt - 1, len(candidate_z_offsets) - 1
                         )
-                    attempt_step = effective_step
-                    if planning_attempt > 1:
-                        # The first attempt already cleared the map and waited
-                        # for a fresh cloud. Rebuilding the same scene on every
-                        # stochastic OMPL retry adds latency and can reinsert
-                        # the same target-edge noise that just caused failure.
-                        attempt_step = dict(effective_step)
-                        attempt_step["clear_octomap_before_plan"] = False
-                        self.get_logger().info(
-                            f"  Reusing prepared OctoMap for {step_name} retry"
+                        candidate_z_offset = candidate_z_offsets[candidate_index]
+                        candidate_pose = deepcopy(pose_msg)
+                        candidate_pose.pose.position.z += candidate_z_offset
+                        self.target_pose_pub.publish(candidate_pose)
+                        if max_replanning_attempts > 1:
+                            self.get_logger().info(
+                                f"  Planning {step_name}: outer attempt "
+                                f"{planning_attempt}/{max_replanning_attempts}, "
+                                f"safe candidate z={candidate_pose.pose.position.z:.3f} m "
+                                f"(offset +{candidate_z_offset:.3f} m)"
+                            )
+                        attempt_step = effective_step
+                        if planning_attempt > 1:
+                            # The first attempt already cleared the map and waited
+                            # for a fresh cloud. Rebuilding the same scene on every
+                            # stochastic OMPL retry adds latency and can reinsert
+                            # the same target-edge noise that just caused failure.
+                            attempt_step = dict(effective_step)
+                            attempt_step["clear_octomap_before_plan"] = False
+                            self.get_logger().info(
+                                f"  Reusing prepared OctoMap for {step_name} retry"
+                            )
+                        context = self._plan_pose(
+                            step_name, candidate_pose, attempt_step
                         )
-                    context = self._plan_pose(
-                        step_name, candidate_pose, attempt_step
-                    )
-                    if context is not None and self._wait_for_plan(context, attempt_step):
-                        planning_succeeded = True
-                        break
+                        if context is not None and self._wait_for_plan(context, attempt_step):
+                            planning_succeeded = True
+                            break
 
-                    retryable = context is None or context.retryable_failure
-                    if not retryable or planning_attempt >= max_replanning_attempts:
-                        break
-                    self.get_logger().warn(
-                        f"  Replanning {step_name} after MoveIt failure "
-                        f"({planning_attempt}/{max_replanning_attempts})"
-                    )
-                    time.sleep(0.2)
+                        retryable = context is None or context.retryable_failure
+                        if not retryable or planning_attempt >= max_replanning_attempts:
+                            break
+                        self.get_logger().warn(
+                            f"  Replanning {step_name} after MoveIt failure "
+                            f"({planning_attempt}/{max_replanning_attempts})"
+                        )
+                        time.sleep(0.2)
 
                 if not planning_succeeded:
                     self._abort_sequence(sequence_name, step_name, "planning/execution failed")
@@ -2193,7 +2231,6 @@ class GestureMotionExecutor(Node):
         self._queue_pending_joint_state(values, "gripper command")
         self.arduino_cmd_pub.publish(String(data=f"CMD {self._command_id} {waypoint}"))
         self.get_logger().info(f"Sent gripper waypoint to Arduino: {waypoint}")
-
     # ------------------------------------------------------------------
     # Gripper value note: 0 = fully open, 90 = closed
     # Arduino expects 10 space-separated values per waypoint:
@@ -2629,6 +2666,207 @@ class GestureMotionExecutor(Node):
                 tolerance_above=0.0001, tolerance_below=0.0001, weight=1.0))
         return goal
 
+    # ------------------------------------------------------------------
+    # Deliberate base placement. The arm's pitch joints move the TCP in one
+    # vertical plane beside base_link; it cannot shift the gripper sideways
+    # or yaw it, so a level grasp is fixed by where the base stands.
+    # ------------------------------------------------------------------
+    def _robot_description_callback(self, msg: String) -> None:
+        self._robot_description = msg.data
+        self._planar_arms = {}
+
+    def _arm_model(self, link: Optional[str] = None) -> Optional[PlanarArm]:
+        link = link or self.end_effector_link
+        if link not in self._planar_arms:
+            if self._robot_description is None:
+                self.get_logger().error('Arm reach model needs the URDF; nothing received on /robot_description')
+                return None
+            try:
+                arm = PlanarArm.from_urdf(self._robot_description, 'base_link', link)
+                self._base_link_height = fixed_link_height(self._robot_description, 'base_link')
+            except Exception as exc:
+                self.get_logger().error(f'Arm reach model for {link} unavailable: {exc}')
+                return None
+            self._planar_arms[link] = arm
+            self.get_logger().info(
+                f'Arm reach model for {link}: pitch joints '
+                f'{[j.name for j in arm.pitch_joints]}, roll held at 0 '
+                f'{[j.name for j in arm.roll_joints]}, arm plane {arm.lateral_offset:+.4f} m '
+                f'left of base_link')
+        return self._planar_arms[link]
+
+    def _measured_base(self):
+        q = dict(zip(self.latest_joint_state.name, self.latest_joint_state.position))
+        return q['base_x'], q['base_y'], q['base_theta']
+
+    @staticmethod
+    def _yaw_orientation(yaw: float) -> List[float]:
+        return [0.0, 0.0, math.sin(yaw / 2), math.cos(yaw / 2)]
+
+    def _resolve_in_arm_plane(self, step: Dict, detected: PoseStamped) -> Optional[Dict]:
+        """Fixed-base target: gripper heading = measured base heading, and the
+        target moved sideways into the arm plane. The sideways residual is
+        bounded by the refine step's max_arm_plane_error_m check."""
+        link = step.get('link_name', self.end_effector_link)
+        arm = self._arm_model(link)
+        if arm is None:
+            return None
+        self._require_fresh_state()
+        bx, by, heading = self._measured_base()
+        p = detected.pose.position
+        error, forward = arm_plane_error(bx, by, heading, (p.x, p.y), arm.lateral_offset)
+        ox = float(step.get('offset_x', 0.0))
+        oz = float(step.get('offset_z', 0.0))
+        c, sn = math.cos(heading), math.sin(heading)
+        resolved = dict(step)
+        resolved['position'] = [p.x + sn * error + c * ox, p.y - c * error + sn * ox, p.z + oz]
+        resolved['orientation'] = self._yaw_orientation(heading)
+        resolved.pop('rpy_deg', None)
+        resolved['frame_id'] = self.base_frame
+        height = p.z + oz - self._base_link_height
+        solutions = arm.solve_level(forward + ox, height)
+        self.get_logger().info(
+            f'  In-plane target at measured base ({bx:.3f}, {by:.3f}, {heading:.3f}): '
+            f'{forward + ox:.3f} m ahead, height {height:.3f} m, target was '
+            f'{error * 1000:+.1f} mm off the arm plane; {len(solutions)} arm solution(s)')
+        if not solutions:
+            return None
+        current = dict(zip(self.latest_joint_state.name, self.latest_joint_state.position))
+        best = min(solutions, key=lambda q: sum((q[n] - current[n]) ** 2 for n in ARM_JOINT_NAMES))
+        resolved['_preferred_arm_state'] = self._joint_state_with_updates(
+            {n: best[n] for n in ARM_JOINT_NAMES})
+        return resolved
+
+    def _arm_reach_offsets(self, steps: List[Dict], index: int):
+        """(forward, up) TCP offsets from the target, in the approach frame,
+        for this step and the fixed-base arm steps that follow it, in order."""
+        step = steps[index]
+        link = step.get('link_name', self.end_effector_link)
+        previous = (float(step.get('offset_x', 0.0)), float(step.get('offset_z', 0.0)))
+        offsets = [previous]
+        for later in steps[index + 1:]:
+            if later.get('type') != 'pose':
+                continue
+            if later.get('group_name') not in ('arm', 'press_arm') or later.get('link_name', self.end_effector_link) != link:
+                break
+            if abs(float(later.get('offset_y', 0.0))) > 1e-9:
+                raise ValueError(f"{later.get('name')}: the arm cannot reach sideways offsets")
+            dx, dz = float(later.get('offset_x', 0.0)), float(later.get('offset_z', 0.0))
+            if later.get('target') == 'detected':
+                previous = (dx, dz)
+            elif later.get('target') == 'previous_pose':
+                previous = (previous[0] + dx, previous[1] + dz)
+            else:
+                break
+            offsets.append(previous)
+        return offsets
+
+    def _plan_with_base_placement(self, name, step, detected_pose, steps, index):
+        """Place the base from geometry, then plan base and arm motions.
+
+        Heading points the arm plane at the target from the current base
+        position; the reach is the centre of the forward interval in which the
+        arm alone reaches every later fixed-base waypoint level. MoveIt checks
+        each candidate for collisions and limits before anything moves.
+        Returns the planned pose on success, otherwise None.
+        """
+        link = step.get('link_name', self.end_effector_link)
+        arm = self._arm_model(link)
+        if arm is None:
+            return None
+        settings = step['base_placement']
+        try:
+            offsets = self._arm_reach_offsets(steps, index)
+        except ValueError as exc:
+            self.get_logger().error(f'{name}: {exc}')
+            return None
+        self._require_fresh_state()
+        bx, by, theta = self._measured_base()
+        p = detected_pose.pose.position
+        placements = plan_base_placements(
+            arm, (p.x, p.y, p.z), (bx, by, theta), offsets,
+            heading_offsets=[math.radians(float(v)) for v in settings.get('heading_offsets_deg', [0.0])],
+            min_margin=float(settings.get('min_reach_margin_m', 0.03)),
+            limit_margin=float(settings.get('joint_limit_margin_rad', 0.05)),
+            base_height=self._base_link_height)
+        self.get_logger().info(
+            f'{name}: base placement for target ({p.x:.3f}, {p.y:.3f}, {p.z:.3f}) from base '
+            f'({bx:.3f}, {by:.3f}, {theta:.3f}); arm waypoints (forward, up) {offsets}; '
+            f'{len(placements)} candidate(s)')
+        if not placements:
+            self.get_logger().error(
+                f'{name}: the arm alone cannot reach the waypoints level at this height with '
+                f'{float(settings.get("min_reach_margin_m", 0.03)):.3f} m margin; no motion sent')
+            return None
+        groups: Dict[float, list] = {}
+        for placement in placements:
+            groups.setdefault(round(placement.heading, 6), []).append(placement)
+        state = {'base_moved': False}
+        ox = float(step.get('offset_x', 0.0))
+        oz = float(step.get('offset_z', 0.0))
+        for attempt, group in enumerate(groups.values()):
+            heading = theta + wrap(group[0].heading - theta)
+            pose = PoseStamped()
+            pose.header.frame_id = self.base_frame
+            pose.header.stamp = self.get_clock().now().to_msg()
+            pose.pose.position.x = p.x + math.cos(heading) * ox
+            pose.pose.position.y = p.y + math.sin(heading) * ox
+            pose.pose.position.z = p.z + oz
+            (pose.pose.orientation.x, pose.pose.orientation.y,
+             pose.pose.orientation.z, pose.pose.orientation.w) = self._yaw_orientation(heading)
+            for placement in group:
+                self.get_logger().info(
+                    f'  candidate heading {heading:.3f} rad ({math.degrees(placement.heading_offset):+.0f} deg): '
+                    f'base ({placement.base_x:.3f}, {placement.base_y:.3f}), target {placement.forward:.3f} m '
+                    f'ahead, reach margin {placement.margin:.3f} m, arm '
+                    + ', '.join(f'{n}={placement.arm[n]:.3f}' for n in ARM_JOINT_NAMES))
+            cfg = dict(step)
+            cfg['position'] = [pose.pose.position.x, pose.pose.position.y, pose.pose.position.z]
+            cfg['orientation'] = self._yaw_orientation(heading)
+            cfg['_placement_candidates'] = [
+                self._joint_state_with_updates({'base_x': pl.base_x, 'base_y': pl.base_y,
+                                                'base_theta': heading,
+                                                **{n: pl.arm[n] for n in ARM_JOINT_NAMES}})
+                for pl in group]
+            cfg['_placement_target'] = deepcopy(detected_pose)
+            cfg['_placement_state'] = state
+            if attempt:
+                cfg['clear_octomap_before_plan'] = False
+            self.target_pose_pub.publish(pose)
+            context = self._plan_pose(name, pose, cfg)
+            if context is not None and self._wait_for_plan(context, cfg):
+                return pose
+            if state['base_moved']:
+                # Never wander to another heading after the base has moved.
+                self.get_logger().error(f'{name}: arm planning failed after base placement')
+                return None
+        return None
+
+    def _validated_placements(self, pose, cfg, constraints):
+        """Keep geometric placements that MoveIt confirms: FK agrees with the
+        reach model, and the state is collision-free and meets the goal."""
+        group = cfg.get('group_name', self.default_group_name)
+        link = cfg.get('link_name', self.end_effector_link)
+        accepted = []
+        rejected = {}
+        for candidate in cfg['_placement_candidates']:
+            fk = self._fk_pose(candidate, link, pose.header.frame_id)
+            if fk is None:
+                rejected['fk_unavailable'] = rejected.get('fk_unavailable', 0) + 1
+                continue
+            mismatch = math.dist((fk.pose.position.x, fk.pose.position.y, fk.pose.position.z),
+                                 (pose.pose.position.x, pose.pose.position.y, pose.pose.position.z))
+            if mismatch > 0.002:
+                self.get_logger().error(f'  reach model and MoveIt FK disagree by {mismatch * 1000:.1f} mm')
+                rejected['model_mismatch'] = rejected.get('model_mismatch', 0) + 1
+                continue
+            if not self._state_valid(candidate, group, constraints, log=True):
+                rejected['collision_or_constraint'] = rejected.get('collision_or_constraint', 0) + 1
+                continue
+            accepted.append(candidate)
+        self.get_logger().info(f'Placement check {group}: {len(accepted)} valid, rejected={rejected}')
+        return accepted
+
     def _ik_candidates(self, pose, cfg, constraints):
         group = cfg.get('group_name', self.default_group_name)
         names = self._group_joints(group)
@@ -2833,8 +3071,20 @@ class GestureMotionExecutor(Node):
                         self._diagnose_cartesian_failure(name, path, continuation)
                     continue
             q = dict(zip(candidate.name, candidate.position))
-            trajectory = self._plan_joint_phase(f'{name}/base', 'base', self.latest_joint_state,
-                                               {n: q[n] for n in BASE_JOINT_NAMES}, {})
+            goal = {n: q[n] for n in BASE_JOINT_NAMES}
+            phases = [(f'{name}/base', goal)]
+            if (cfg.get('base_placement') or {}).get('base_motion') == 'turn_then_drive':
+                # Turn in place, then drive: with the placement heading the
+                # drive is straight ahead, so the wheels never turn and
+                # translate at once. Both phases are checked before moving.
+                here = dict(zip(self.latest_joint_state.name, self.latest_joint_state.position))
+                turn = {'base_x': here['base_x'], 'base_y': here['base_y'], 'base_theta': goal['base_theta']}
+                phases = [(f'{name}/base_turn', turn), (f'{name}/base_drive', goal)]
+            trajectory = self._plan_joint_phase(phases[0][0], 'base', self.latest_joint_state, phases[0][1], {})
+            if trajectory is not None and len(phases) > 1:
+                after_turn = self._joint_state_with_updates(phases[0][1])
+                if self._plan_joint_phase(phases[1][0], 'base', after_turn, phases[1][1], {}) is None:
+                    trajectory = None
             if trajectory is None:
                 rejected('base path planning failed')
                 continue
@@ -2844,16 +3094,42 @@ class GestureMotionExecutor(Node):
             self.get_logger().error(f'{name}: no base candidate supports the collision-checked fixed-base approach; rejections={rejections}; no motion sent')
             return None
         base_cfg = {k: v for k, v in cfg.items() if k not in ('_goal_constraints', '_path_constraints')}
-        context = self._execute_preplanned(f'{name}/base', selected, {**base_cfg, 'group_name': 'base'})
-        if not context.success or not self._wait_for_arduino_done(90.0, f'{name}/base'):
-            self.stop_pub.publish(Bool(data=True))
-            raise RuntimeError(f'{name}: base positioning failed')
+        for index, (label, target) in enumerate(phases):
+            if index:
+                # Later phases start from the measured state the previous one reached.
+                selected = self._plan_joint_phase(label, 'base', self.latest_joint_state, target, {})
+                if selected is None:
+                    self.stop_pub.publish(Bool(data=True))
+                    raise RuntimeError(f'{label}: no base path from the measured state')
+            if '_placement_state' in cfg:
+                cfg['_placement_state']['base_moved'] = True
+            context = self._execute_preplanned(label, selected, {**base_cfg, 'group_name': 'base'})
+            if not context.success or not self._wait_for_arduino_done(90.0, label):
+                self.stop_pub.publish(Bool(data=True))
+                raise RuntimeError(f'{name}: base positioning failed')
+        measured = dict(zip(self.latest_joint_state.name, self.latest_joint_state.position))
+        dx, dy = measured['base_x'] - goal['base_x'], measured['base_y'] - goal['base_y']
+        c, sn = math.cos(goal['base_theta']), math.sin(goal['base_theta'])
+        self.get_logger().info(
+            f'{name}: base planned ({goal["base_x"]:.4f}, {goal["base_y"]:.4f}, {goal["base_theta"]:.4f}) '
+            f'measured ({measured["base_x"]:.4f}, {measured["base_y"]:.4f}, {measured["base_theta"]:.4f}): '
+            f'error forward {(c * dx + sn * dy) * 1000:+.1f} mm, sideways {(-sn * dx + c * dy) * 1000:+.1f} mm, '
+            f'heading {math.degrees(wrap(measured["base_theta"] - goal["base_theta"])):+.2f} deg (odometry)')
         # Replan the arm from actual reached base state, not the candidate state.
         arm_cfg = {**cfg, 'group_name': arm_group, 'mobile_standoff': False,
                    '_preferred_arm_state': deepcopy(candidate)}
         for key in ('base_goal_tcp_x_min_m', 'base_goal_tcp_x_max_m', 'base_goal_tcp_y_max_m',
-                    'max_base_goal_rotation_rad', 'max_base_goal_translation_m'):
+                    'max_base_goal_rotation_rad', 'max_base_goal_translation_m',
+                    '_placement_candidates', '_placement_state', 'base_placement'):
             arm_cfg.pop(key, None)
+        if '_placement_target' in cfg:
+            # The arm cannot yaw or strafe: aim it along the reached base
+            # heading, inside the reached arm plane.
+            resolved = self._resolve_in_arm_plane(arm_cfg, cfg['_placement_target'])
+            if resolved is None:
+                raise RuntimeError(f'{name}: pre-grasp unreachable from the reached base pose')
+            arm_cfg = resolved
+            pose = self._build_pose_message(resolved)
         return self._plan_pose(name + '/arm', pose, arm_cfg)
 
     def _diagnose_cartesian_failure(self, name, path, failed):
@@ -3010,7 +3286,10 @@ class GestureMotionExecutor(Node):
         if not self._state_valid(goal.request.start_state.joint_state, goal.request.group_name,
                                  goal.request.path_constraints, log=True):
             return None
-        candidates = self._ik_candidates(pose_msg, command_cfg, constraints)
+        if '_placement_candidates' in command_cfg:
+            candidates = self._validated_placements(pose_msg, command_cfg, constraints)
+        else:
+            candidates = self._ik_candidates(pose_msg, command_cfg, constraints)
         if not candidates:
             self.get_logger().error(f'{name}: no valid IK goal (reach, orientation, base bounds or collision); RRT not called')
             return None
