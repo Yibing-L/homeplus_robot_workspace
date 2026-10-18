@@ -977,7 +977,7 @@ class GestureMotionExecutor(Node):
         if not isinstance(command_cfg, dict):
             return [f"{name}: command must be a mapping"]
 
-        allowed = set("endpoint_profile name type group_name joints value frame_id position orientation rpy_deg target steps task_id detection_topic detection_timeout_sec detection_min_stable_samples detection_stability_tolerance_m detection_max_refresh_shift_m max_replanning_attempts max_attempts settle_sec require_trajectory_approval planner_id allowed_planning_time num_planning_attempts link_name offset_x offset_y offset_z offset_frame orientation_from_detection gripper_value final_gripper_value position_tolerance_m position_tolerance_xy_m position_tolerance_z_m use_orientation_constraint orientation_tolerance_rad orientation_tolerance_x_rad orientation_tolerance_y_rad orientation_tolerance_z_rad safe_z_candidate_offsets_m base_goal_tcp_x_min_m base_goal_tcp_x_max_m base_goal_tcp_y_max_m max_base_goal_rotation_rad max_base_goal_translation_m max_base_goal_y_translation_m preserve_reference_z maintain_orientation_during_path post_delay_sec cartesian mobile_standoff lookahead_offsets velocity_scaling acceleration_scaling clear_octomap_before_plan octomap_clear_timeout_sec octomap_rebuild_wait_sec ik_candidate_attempts seed_base_shift attach_cup joint_tolerance hardcoded_detection_pose hardcoded_detection_frame planning_service_timeout_sec phase_allowed_planning_time phase_num_planning_attempts phase_joint_tolerance continue_on_arduino_timeout".split())
+        allowed = set("endpoint_profile name type group_name joints value frame_id position orientation rpy_deg target steps task_id detection_topic detection_timeout_sec detection_min_stable_samples detection_stability_tolerance_m detection_max_refresh_shift_m max_replanning_attempts max_attempts settle_sec require_trajectory_approval planner_id allowed_planning_time num_planning_attempts link_name offset_x offset_y offset_z offset_frame orientation_from_detection gripper_value final_gripper_value position_tolerance_m position_tolerance_xy_m position_tolerance_z_m use_orientation_constraint orientation_tolerance_rad orientation_tolerance_x_rad orientation_tolerance_y_rad orientation_tolerance_z_rad safe_z_candidate_offsets_m base_goal_tcp_x_min_m base_goal_tcp_x_max_m base_goal_tcp_y_max_m max_base_goal_rotation_rad max_base_goal_translation_m max_base_goal_y_translation_m preserve_reference_z maintain_orientation_during_path post_delay_sec cartesian mobile_standoff lookahead_offsets velocity_scaling acceleration_scaling clear_octomap_before_plan octomap_clear_timeout_sec octomap_rebuild_wait_sec ik_candidate_attempts attach_cup joint_tolerance hardcoded_detection_pose hardcoded_detection_frame planning_service_timeout_sec phase_allowed_planning_time phase_num_planning_attempts phase_joint_tolerance continue_on_arduino_timeout".split())
         if command_cfg.get('endpoint_profile', 'precise') not in ('precise', 'transit'):
             errors.append(f'{name}: endpoint_profile must be precise or transit')
         if command_cfg.get('cartesian') and command_cfg.get('endpoint_profile') == 'transit':
@@ -2616,39 +2616,6 @@ class GestureMotionExecutor(Node):
                 tolerance_above=0.0001, tolerance_below=0.0001, weight=1.0))
         return goal
 
-    def _base_shift_seed(self, start, pose, cfg):
-        """Base pose that carries the measured TCP onto the target without
-        moving the arm: rotate by the yaw change, then translate."""
-        link = cfg.get('link_name', self.end_effector_link)
-        tcp = self._fk_pose(start, link, pose.header.frame_id)
-        if tcp is None:
-            self.get_logger().warning(f'Base-shift seed unavailable: FK for {link} failed')
-            return None
-        q = dict(zip(start.name, start.position))
-
-        def yaw(o):
-            return math.atan2(2*(o.w*o.z + o.x*o.y), 1 - 2*(o.y*o.y + o.z*o.z))
-
-        delta = yaw(pose.pose.orientation) - yaw(tcp.pose.orientation)
-        delta = math.atan2(math.sin(delta), math.cos(delta))
-        # The grasp_tcp axes do not encode the approach yaw reliably, so a
-        # large apparent yaw change is a frame artefact: slide the base only
-        # and leave the residual rotation to the IK solver.
-        if abs(delta) > float(cfg.get('max_base_goal_rotation_rad', 0.1)) / 2:
-            delta = 0.0
-        c, s = math.cos(delta), math.sin(delta)
-        rx = tcp.pose.position.x - q['base_x']
-        ry = tcp.pose.position.y - q['base_y']
-        seed = {'base_x': pose.pose.position.x - (c*rx - s*ry),
-                'base_y': pose.pose.position.y - (s*rx + c*ry),
-                'base_theta': q['base_theta'] + delta}
-        self.get_logger().info(
-            f'  Base-shift IK seed: base ({q["base_x"]:.3f}, {q["base_y"]:.3f}, '
-            f'{q["base_theta"]:.3f}) -> ({seed["base_x"]:.3f}, {seed["base_y"]:.3f}, '
-            f'{seed["base_theta"]:.3f}); TCP z {tcp.pose.position.z:.3f} -> '
-            f'{pose.pose.position.z:.3f}')
-        return seed
-
     def _ik_candidates(self, pose, cfg, constraints):
         group = cfg.get('group_name', self.default_group_name)
         names = self._group_joints(group)
@@ -2666,9 +2633,6 @@ class GestureMotionExecutor(Node):
                 self.get_logger().info(f'IK preflight {group}: validated previous arm solution at measured base')
                 return [anchored]
         rng = random.Random(0)  # Reproducible seed candidates; OMPL itself remains stochastic.
-        shift_seed = None
-        if group in ('base_arm', 'base_press_arm') and cfg.get('seed_base_shift', False):
-            shift_seed = self._base_shift_seed(start, pose, cfg)
         accepted = []
         rejected = {}
         last_request = None
@@ -2677,14 +2641,7 @@ class GestureMotionExecutor(Node):
             q = dict(current)
             if preferred_values and group in ('arm', 'press_arm'):
                 q.update({n: preferred_values[n] for n in ARM_JOINT_NAMES if n in preferred_values})
-            if shift_seed is not None and index % 2 == 0:
-                # Even attempts start from the measured arm with the base
-                # carried along by the target shift; later ones add jitter.
-                q.update(shift_seed)
-                if index:
-                    for name in ARM_JOINT_NAMES:
-                        q[name] += rng.uniform(-0.05, 0.05)
-            elif index:
+            if index:
                 for name in ARM_JOINT_NAMES:
                     q[name] += rng.uniform(-0.3, 0.3)
                 for c in constraints.joint_constraints:
