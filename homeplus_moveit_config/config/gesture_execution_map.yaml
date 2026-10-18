@@ -269,10 +269,7 @@ commands:
         orientation_from_detection: true
         offset_frame: target
         offset_x: -0.20
-        # Grasp 2 cm above the cup's measured middle: at mid-cup the fingertips (~4 cm
-        # below grasp_tcp) overlap the padded table in the OctoMap. Proper fix: derive
-        # the height from the cup bottom + finger length (see PR notes).
-        offset_z: 0.02
+        offset_z: 0.0
         gripper_value: 0.0
         rpy_deg: [0.0, 0.0, 0.0]
         position_tolerance_m: 0.03
@@ -320,10 +317,6 @@ commands:
         orientation_from_detection: true
         offset_frame: target
         offset_x: -0.20
-        # Grasp 2 cm above the cup's measured middle: at mid-cup the fingertips (~4 cm
-        # below grasp_tcp) overlap the padded table in the OctoMap. Proper fix: derive
-        # the height from the cup bottom + finger length (see PR notes).
-        offset_z: 0.02
         gripper_value: 0.0
         position_tolerance_m: 0.005
         orientation_tolerance_rad: 0.04
@@ -344,10 +337,7 @@ commands:
         orientation_from_detection: true
         offset_frame: target
         offset_x: -0.01
-        # Grasp 2 cm above the cup's measured middle: at mid-cup the fingertips (~4 cm
-        # below grasp_tcp) overlap the padded table in the OctoMap. Proper fix: derive
-        # the height from the cup bottom + finger length (see PR notes).
-        offset_z: 0.02
+        offset_z: 0.0
         gripper_value: 0.0
         rpy_deg: [0.0, 0.0, 0.0]
         position_tolerance_m: 0.02
