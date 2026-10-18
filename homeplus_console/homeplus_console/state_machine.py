@@ -6,6 +6,7 @@ Every displayed value is three-valued; stale values become None with last_value 
 from __future__ import annotations
 
 import math
+import time
 from dataclasses import dataclass
 from itertools import combinations
 from typing import Any, Dict, List, Optional
@@ -359,6 +360,13 @@ def derive_motor_power(inp: Inputs, now: float, joints: Optional[Dict[str, float
                 "verified": m.motor_verified}
     if m.motor_verified:
         return {"value": "verified", "reasons": [], "verified": m.motor_verified}
+    # Without motor power this arm cannot hold itself up: it folds onto its lower limits
+    # (seen on every power loss on 2026-10-18). Fresh readings of an upright arm are
+    # therefore evidence of power, e.g. after a console restart when nothing has moved yet.
+    el, sh = joints["joint_elbow"], joints["joint_shoulder"]
+    if ready and abs(el) <= cfg["upright_deg"] and abs(sh) <= cfg["upright_deg"]:
+        return {"value": "verified", "reasons": [],
+                "verified": {"at": time.time(), "how": "arm holding upright against gravity"}}
     return {"value": "unverified", "reasons": [{"kind": "nothing_moved", "text": "Nothing has moved since the bridge started."}],
             "verified": None}
 

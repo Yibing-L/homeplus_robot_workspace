@@ -377,3 +377,15 @@ def test_duplicate_nodes_and_tf_drops_surface(env):
     assert "tf-drops" in ids
     tf = next(c for c in s["components"] if c["id"] == "hp-tf")
     assert tf["health"] == "silent" and "TF missing" in tf["detail"]
+
+
+def test_upright_held_arm_counts_as_motor_power(env):
+    clock, store, tracker = env
+    store.update("/hardware/joint_states", dict(UPRIGHT), "j")
+    tracker.observe(clock())
+    tracker.mem.motor_verified = None  # e.g. console restarted, nothing has moved yet
+    s = derive(make(clock, store, tracker), clock(), 0)
+    assert s["motor_power"]["value"] in ("verified", "suspect")
+    if s["motor_power"]["value"] == "verified":
+        assert s["motor_power"]["verified"]["how"] in ("arm holding upright against gravity",
+                                                       "arm rose to upright after bridge start")
