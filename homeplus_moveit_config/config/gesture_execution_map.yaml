@@ -256,7 +256,7 @@ commands:
         # The initial distant view can report the table/bottom of the cup. Use
         # the new segmented-depth estimate from the close view for Z instead
         # of preserving that stale, often below-table initial measurement.
-        preserve_reference_z: false
+        preserve_reference_z: true
 
       - name: align_refined_grasp
         type: pose
