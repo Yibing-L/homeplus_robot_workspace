@@ -56,6 +56,7 @@ class Memory:
     state_onsets: Dict[str, float] = field(default_factory=dict)
     last_result_seen_t: Optional[float] = None
     zero_supported: bool = False
+    tf_drops: Deque[float] = field(default_factory=lambda: deque(maxlen=500))
 
 
 class Tracker:
@@ -119,6 +120,8 @@ class Tracker:
             elif name == "/molmopoint/diagnostics":
                 m.cycles.append({"t": t, "stage": value.get("stage"), "reason": value.get("reason"),
                                  "detail": value.get("detail"), "pose": None, "task_id": value.get("task_id")})
+            elif name == "tf/drop":
+                m.tf_drops.append(t)
             elif name.startswith("/molmopoint/task_") and name.endswith("/pose"):
                 if m.cycles and m.cycles[-1]["pose"] is None and t - m.cycles[-1]["t"] < 1.0:
                     m.cycles[-1]["pose"] = (value["x"], value["y"], value["z"])

@@ -100,9 +100,19 @@ class Vision(Node):
         d.data = (np.full((60, 80), 500 + self.n % 50, dtype=np.uint16)).tobytes()
         self.depth.publish(d)
 
+class ObstacleCloud(Node):
+    """Logs the real d405_obstacle_cloud warning while /tmp/tf_drop exists."""
+    def __init__(self):
+        super().__init__("d405_obstacle_cloud")
+        self.create_timer(0.5, self.tick)
+    def tick(self):
+        import os
+        if os.path.exists("/tmp/tf_drop"):
+            self.get_logger().warning("Dropping depth frame: acquisition-time TF still missing after 0.5 s")
+
 def main():
     rclpy.init()
-    nodes = [Executor(), Vision()]
+    nodes = [Executor(), Vision(), ObstacleCloud()]
     ex = rclpy.executors.MultiThreadedExecutor()
     for n in nodes: ex.add_node(n)
     threading.Thread(target=ex.spin, daemon=True).start()

@@ -62,7 +62,9 @@ class Console:
             frame_seq={fid: (f.seq if (f := self.frames.get(fid)) else None) for fid, *_ in FEEDS},
             logs_recent=self.logs.since(0, limit=300), cfg=self.cfg, structured=self.io.structured,
             mode=self.io.mode, flow=None, requested_task=self.actions.requested_task,
-            foreign_publishers=(fp.value if (fp := self.store.get("graph/foreign")) and fp.fresh(now, 5.0) else []))
+            foreign_publishers=(fp.value if (fp := self.store.get("graph/foreign")) and fp.fresh(now, 5.0) else []),
+            external=(ex.value if (ex := self.store.get("graph/external")) and ex.fresh(now, 6.0) else {}),
+            graph_nodes=(gn.value if (gn := self.store.get("graph/nodes")) and gn.fresh(now, 6.0) else {}))
         state = derive(inputs, now, wall)
         onsets = self.tracker.mem.state_onsets
         if state["robot"]["state"] not in onsets:

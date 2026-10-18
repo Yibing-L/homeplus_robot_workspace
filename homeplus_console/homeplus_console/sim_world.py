@@ -146,6 +146,7 @@ class Faults:
     detector_scenario: str = "good"  # good | two_targets | none | stale_frames | garbage_z | high_first
     gpu_up: bool = True
     zero_supported: bool = True      # firmware/bridge ZERO command (§7.10)
+    external_bridge: bool = False    # an arduino_reader started outside the console (tmux launch) holds the port
 
 
 @dataclass
@@ -314,6 +315,11 @@ class SimWorld:
     def set_task_id(self, task_id: int) -> None:
         self.task_id = task_id
 
+    def external_instance(self, unit: str) -> List[str]:
+        if unit == "hp-bridge" and self.faults.external_bridge:
+            return ["$HOME/ttyArduino is open by pid 4242 (python3 arduino_reader.py --port $HOME/ttyArduino) [sim]"]
+        return []
+
     def zero(self) -> Optional[bool]:
         """§7.10 ZERO: odometry and held base target := current pose. None when unsupported."""
         with self._lock:
@@ -365,6 +371,8 @@ class SimWorld:
             if not hasattr(self.faults, name):
                 return {"ok": False, "error": f"unknown fault {name}"}
             setattr(self.faults, name, value)
+            if name == "external_bridge" and value:
+                self.supervisor.stop("hp-bridge")  # the tmux launch owns the bridge; the console's unit is down
             if name == "detector_scenario":
                 self._cycle_n = 0
             self.logs.add("sim", "INFO", f"fault {name} = {value}")
@@ -379,7 +387,18 @@ class SimWorld:
         units = self.supervisor.status()
         active = {u: s["active_state"] == "active" for u, s in units.items()}
         self._physics(now)
-        self._bridge(now, active["hp-bridge"])
+        # an externally started bridge keeps the Arduino running while the console's unit is down
+        self._bridge(now, active["hp-bridge"] or self.faults.external_bridge)
+        ext = {"hp-bridge": self.external_instance("hp-bridge")} if self.faults.external_bridge else {}
+        self.store.update("graph/external", ext, "/proc + ROS graph [sim]")
+        if self.faults.external_bridge and active["hp-bridge"]:
+            # what happened on the hardware: a second reader on the same pty garbles every line
+            if int(now * 2) != int((now - TICK) * 2):
+                self.logs.add(BRIDGE, "ERROR", "Arduino serial failure: bad STATE2 field count; "
+                              "last line='STATE4 0 42.0STATE4 0 42.001 -1.0 1.5'", source="ambiguous: 2 nodes named arduino_bridge")
+            self.store.update("graph/nodes", {"arduino_bridge": 2}, "ROS graph [sim]")
+        else:
+            self.store.update("graph/nodes", {"arduino_bridge": 1}, "ROS graph [sim]")
         self._executor(now, wall, active["hp-moveit"])
         self._cameras(now, wall, active["hp-camera-rx"])
         self._detector(now, wall, active["hp-vision"])

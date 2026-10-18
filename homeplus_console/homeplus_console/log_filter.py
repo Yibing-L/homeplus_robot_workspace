@@ -45,6 +45,7 @@ class LogLine:
     level: str
     text: str
     important: bool
+    source: str = "rosout"   # "rosout", "unit:<name>", "outside console", "ambiguous: …", "console"
 
 
 class LogBuffer:
@@ -53,13 +54,25 @@ class LogBuffer:
         self._lines: Deque[LogLine] = deque(maxlen=maxlen)
         self._seq = 0
 
-    def add(self, node: str, level: str, text: str, t_wall: Optional[float] = None) -> LogLine:
+    def add(self, node: str, level: str, text: str, t_wall: Optional[float] = None, source: Optional[str] = None) -> LogLine:
         important = level in ("WARN", "ERROR", "FATAL") or any(p.search(text) for p in IMPORTANT)
+        if source is None:
+            source = "console" if node in ("console", "sim") else "rosout"
         with self._lock:
             self._seq += 1
-            line = LogLine(self._seq, t_wall or time.time(), node, level, text, important)
+            line = LogLine(self._seq, t_wall or time.time(), node, level, text, important, source)
             self._lines.append(line)
             return line
+
+    def retag(self, node: str, since_wall: float, source: str) -> int:
+        """Re-attribute recent lines once it turns out two processes shared the node name."""
+        n = 0
+        with self._lock:
+            for line in self._lines:
+                if line.node == node and line.t_wall >= since_wall and not line.source.startswith("ambiguous"):
+                    line.source = source
+                    n += 1
+        return n
 
     def since(self, seq: int = 0, important_only: bool = False, limit: int = 500) -> List[Dict]:
         with self._lock:

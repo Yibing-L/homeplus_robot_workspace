@@ -200,6 +200,8 @@ class RosIO:
         self._bridge_info: Dict[str, Any] = {}
         self._session = 0
         self._node: Optional[Node] = None
+        self._graph: Dict[str, int] = {}
+        self._external: Dict[str, List[str]] = {}
 
     @property
     def structured(self) -> bool:
@@ -255,6 +257,7 @@ class RosIO:
         ex.add_node(n)
         threading.Thread(target=ex.spin, name="rclpy", daemon=True).start()
         self.supervisor.start_polling()
+        threading.Thread(target=self._probe_loop, name="probe", daemon=True).start()
         url = self.prof.get("gpu_health_url")
         if url:
             threading.Thread(target=self._gpu_loop, args=(url,), name="gpu-health", daemon=True).start()
@@ -325,11 +328,25 @@ class RosIO:
         f = self.frames.put_image(fid, img, now)
         self.store.update(f"img/{fid}", {"seq": f.seq}, topic)
 
+    def _source_for(self, node: str) -> str:
+        """Which process said this? ROS log lines carry only the node name, so say so when it's ambiguous."""
+        n = self._graph.get(node, 0)
+        if n > 1:
+            return f"ambiguous: {n} nodes named {node}"
+        unit = self.supervisor.node_unit(node)
+        if unit is None:
+            return "rosout"
+        if self._external.get(unit):
+            return "outside console" if not self.supervisor.is_active(unit) else f"ambiguous: {unit} + outside console"
+        return f"unit:{unit}" if self.supervisor.is_active(unit) else "rosout"
+
     def _on_rosout(self, m: Log) -> None:
         name = m.name.split(".")[-1]
         if name == "operator_console":
             return
-        line = self.logs.add(name, LEVEL.get(m.level, "INFO"), m.msg)
+        if "acquisition-time TF still missing" in m.msg:
+            self.store.push_event("tf/drop", name, "/rosout")
+        line = self.logs.add(name, LEVEL.get(m.level, "INFO"), m.msg, source=self._source_for(name))
         if name == "arduino_bridge" and not self._bridge_info and (
                 "waiting for firmware state feedback" in m.msg or "READY" in m.msg):
             # Without §7.4 a reopened port (= Arduino reset) is only visible in the log.
@@ -401,6 +418,33 @@ class RosIO:
             fut = self._getp.call_async(req)
             fut.add_done_callback(lambda f: f.result() and f.result().values and self.store.update(
                 "/molmopoint/task_id", f.result().values[0].integer_value, "/molmopoint task_id (GetParameters)"))
+
+    def _probe_loop(self) -> None:
+        """Every 2 s: ROS graph node counts and, per unit, evidence of an instance outside the console."""
+        while True:
+            try:
+                counts: Dict[str, int] = {}
+                for name, _ns in self._node.get_node_names_and_namespaces():
+                    counts[name] = counts.get(name, 0) + 1
+                for name, c in counts.items():
+                    if c > 1 and self._graph.get(name, 0) < 2:
+                        # discovery lags the duplicate's first lines; those can't be attributed either
+                        self.logs.retag(name, time.time() - 6.0, f"ambiguous: {c} nodes named {name}")
+                self._graph = counts
+                self.store.update("graph/nodes", counts, "ROS graph")
+                ext = {u: self.supervisor.external(u, counts) for u in self.supervisor.probes}
+                self._external = ext
+                self.store.update("graph/external", ext, "/proc + ROS graph")
+            except Exception as exc:  # noqa: BLE001 (a probe failure must not kill the loop)
+                self.logs.add("console", "WARN", f"probe failed: {exc!r}")
+            time.sleep(2.0)
+
+    def external_instance(self, unit: str) -> List[str]:
+        """Fresh check at action time (not the 2 s cache): is this component already running elsewhere?"""
+        counts: Dict[str, int] = {}
+        for name, _ns in self._node.get_node_names_and_namespaces():
+            counts[name] = counts.get(name, 0) + 1
+        return self.supervisor.external(unit, counts)
 
     def _gpu_loop(self, url: str) -> None:
         while True:

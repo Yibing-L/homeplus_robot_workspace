@@ -97,12 +97,14 @@ export interface Component {
   pid: number | null;
   uptime_s: number | null;
   restarts: number | null;
-  health: "ok" | "starting" | "silent" | "down" | "unknown";
+  health: "ok" | "external" | "starting" | "silent" | "down" | "unknown";
   detail: string;
   value: string | null;
   observed: { age: number | null; fresh: boolean; rate_hz: number; strip: string; source: string };
   last_error: { t: number; text: string } | null;
   observed_only: boolean;
+  external: string[];
+  start_block: string | null;
 }
 
 export interface Step {
@@ -269,6 +271,7 @@ export interface LogLine {
   level: string;
   text: string;
   important: boolean;
+  source: string;
 }
 
 export interface Fault {

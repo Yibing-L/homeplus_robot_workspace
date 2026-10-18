@@ -241,6 +241,8 @@ class ActionService:
             result = {"status": "rejected", "detail": f"unknown action {name}"}
         elif not gate["allowed"]:
             result = {"status": "rejected", "detail": gate["reason"]}
+        elif name in ("unit_start", "unit_restart") and (dup := self._duplicate_risk(name, unit, state)):
+            result = {"status": "rejected", "detail": dup}
         elif name in ("unit_start", "unit_restart") and unit == BRIDGE_UNIT and not self.cfg.get("serial_bridge"):
             result = {"status": "rejected",
                       "detail": "Opening the USB port resets the Arduino and its odometry: use the set-start flow."}
@@ -262,6 +264,27 @@ class ActionService:
         self.audit.write({**entry, "result": result, "phase": "after_send"})
         self._remember(request_id, result)
         return result
+
+    def _duplicate_risk(self, name: str, unit: Optional[str], state: Dict[str, Any]) -> Optional[str]:
+        """Never start a second instance of a component (hardware finding 2026-10-18: a console-started
+        arduino_reader joined one from a tmux launch on the same pty; the two split every serial line).
+        Checked fresh here, at execution time, whatever the UI showed."""
+        if not unit:
+            return None
+        try:
+            evidence = self.io.external_instance(unit)
+        except Exception as exc:  # noqa: BLE001 (can't tell = don't start)
+            return f"Can't verify that {unit} isn't already running ({exc!r}); not starting a possible duplicate."
+        comp = next((c for c in state["components"] if c["unit"] == unit), None)
+        own_active = bool(comp and comp["unit_state"] in ("active", "activating"))
+        if evidence and (name == "unit_start" or not own_active):
+            return (f"{unit} is already running outside the console: {evidence[0]}. Starting another would run "
+                    "two copies" + (" on one serial port." if unit == BRIDGE_UNIT else ".") +
+                    " Use the running one, or stop it first.")
+        if comp and not own_active and comp["observed"]["fresh"] and name == "unit_start":
+            return (f"{comp['observed']['source']} is live although {unit} is down: something outside the console "
+                    f"is running it. Not starting a duplicate.")
+        return None
 
     def _remember(self, rid: str, result: Dict[str, Any]) -> None:
         self._seen[rid] = result

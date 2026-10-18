@@ -36,6 +36,20 @@ async def main():
         boot0 = mega()["boot"]
         check("bridge_info: boot_id from firmware BOOT line", s["joints"]["session_id"] == boot0, f"{s['joints']['session_id']} vs {boot0}")
         check("bridge asked the firmware for its boot (ID)", mega()["ids"] >= 1)
+        # ---- hardware finding 2026-10-18: bridge live from outside, console unit down
+        br = next(c for c in s["components"] if c["unit"] == "hp-bridge")
+        check("live bridge with down unit shows 'running outside console'", br["health"] == "external", f"{br['health']}: {br['detail']}")
+        check("…and it is not BRIDGE_DOWN", s["robot"]["state"] != "BRIDGE_DOWN", s["robot"]["state"])
+        check("…and Start is blocked in the UI state", bool(br["start_block"]), br["start_block"] or "")
+        post("take_control")
+        r = post("unit_start", {"unit": "hp-bridge"})
+        check("unit_start refused while an external reader holds the port", r["status"] == "rejected"
+              and "already running outside the console" in r["detail"] and "arduino_reader" in r["detail"], r["detail"])
+        r = post("unit_restart", {"unit": "hp-bridge"})
+        check("unit_restart refused too", r["status"] == "rejected", r["detail"])
+        import subprocess
+        n = int(subprocess.run(["pgrep", "-fc", "^python3 .*arduino_reader"], capture_output=True, text=True).stdout.strip() or 0)
+        check("still exactly one arduino_reader", n == 1, str(n))
         check("latched /arduino/ready seen", s["joints"]["ready"] is True)
         check("degraded executor_state from status text", s["executor"]["fresh"] and s["degraded"] is not None, s["degraded"] or "")
         check("detector diagnostics + poses → window", s["perception"]["window"]["consecutive"] >= 3, s["perception"]["state"])
@@ -98,6 +112,23 @@ async def main():
         open("/tmp/fake_arduino.reset", "w").close()
         s = await wait(lambda s: s["origin"]["status"] == "lost", 40)
         check("firmware reboot (new BOOT id) loses the origin", s["origin"]["status"] == "lost", s["origin"]["lost_reason"] or "")
+        # ---- reproduce the incident: a second reader on the same pty (started by hand, not by the console)
+        open("/tmp/tf_drop", "w").close()
+        subprocess.Popen(["bash", "-c", "python3 /repo/homeplus_moveit_config/scripts/arduino_reader.py --port /tmp/ttyFAKE >> /tmp/bridge2.log 2>&1"])
+        s = await wait(lambda s: any(n["id"] == "dup-arduino_bridge" for n in s["next_actions"]), 40)
+        dup = next((n for n in s["next_actions"] if n["id"] == "dup-arduino_bridge"), None)
+        check("two arduino_bridge nodes flagged as a bad next action", dup is not None and dup["severity"] == "bad",
+              dup["problem"] if dup else "")
+        s = await wait(lambda s: any(l["source"].startswith("ambiguous") for l in s["logs"] if l["node"] == "arduino_bridge"), 20)
+        check("bridge log lines tagged ambiguous while two share the name",
+              any(l["source"].startswith("ambiguous") for l in s["logs"] if l["node"] == "arduino_bridge"),
+              str(sorted({l["source"] for l in s["logs"] if l["node"] == "arduino_bridge"})))
+        s = await wait(lambda s: any(n["id"] == "tf-drops" for n in s["next_actions"]), 20)
+        tf = next((n for n in s["next_actions"] if n["id"] == "tf-drops"), None)
+        check("TF-missing drops surface as a health warning", tf is not None, (tf or {}).get("fix", ""))
+        r = post("unit_start", {"unit": "hp-bridge"})
+        check("unit_start still refused with two readers live", r["status"] == "rejected", r["detail"])
+        subprocess.run(["bash", "-c", "pkill -n -f arduino_reader.py; rm -f /tmp/tf_drop"])
         post("return_to_start", {"inspected": True, "release_cup": True})
         await asyncio.sleep(2.5)
         names = [c[0] for c in robot()["commands"]]

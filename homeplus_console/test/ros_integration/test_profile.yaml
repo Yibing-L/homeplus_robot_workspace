@@ -1,3 +1,6 @@
-# no systemd in the container: units are observed only
+# Container profile: no systemd, so every unit reads as down; what's live must come from probes.
 serial_bridge: true
-units: {}
+units:
+  hp-bridge:
+    probe: {device: /tmp/ttyFAKE}
+    cmd: "python3 /repo/homeplus_moveit_config/scripts/arduino_reader.py --port /tmp/ttyFAKE"

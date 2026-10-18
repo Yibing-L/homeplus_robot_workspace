@@ -11,17 +11,17 @@ const STALE_AFTER: Record<string, number> = {
 function UnitButtons({ c, snap }: { c: Component; snap: Snapshot }) {
   const pending = useConsole((s) => s.pending);
   if (!c.unit) return <div className="muted">Observed only: the console doesn't run this process.</div>;
-  const bridge = c.unit === "hp-bridge";
   const a = snap.allowed;
   const tracked = [...snap.tracked_actions].reverse().find((t) => (t.args as { unit?: string }).unit === c.unit);
   const btn = (name: "unit_start" | "unit_stop" | "unit_restart", label: string) => {
-    const blockedBridge = bridge && name !== "unit_stop";
-    const ok = a[name]?.allowed && !blockedBridge;
+    // never offer to start a second copy of something already running (server refuses it too)
+    const dup = name !== "unit_stop" && c.start_block;
+    const ok = a[name]?.allowed && !dup;
     return (
       <button
         className="btn sm"
         disabled={!ok || !!pending[name]}
-        title={blockedBridge ? "Starting the bridge resets the Arduino and odometry: use Re-zero" : a[name]?.reason ?? ""}
+        title={dup ? c.start_block! : a[name]?.reason ?? ""}
         onClick={() => act(name, { unit: c.unit })}
       >
         {label}
@@ -32,14 +32,10 @@ function UnitButtons({ c, snap }: { c: Component; snap: Snapshot }) {
     <>
       <div className="btns">
         {btn("unit_start", "Start")}
-        {btn("unit_stop", bridge ? "Stop (sends STOP first)" : "Stop")}
+        {btn("unit_stop", c.unit === "hp-bridge" ? "Stop (sends STOP first)" : "Stop")}
         {btn("unit_restart", "Restart")}
-        {bridge && (
-          <button className="btn sm" disabled={!a.flow_rezero_start?.allowed} onClick={() => act("flow_rezero_start", { reason: "bridge restart requested" })}>
-            Re-zero…
-          </button>
-        )}
       </div>
+      {c.start_block && <div className="why-line">{c.start_block}</div>}
       {tracked && <div className={`result-line ${tracked.status}`}>{tracked.detail}</div>}
     </>
   );
@@ -56,13 +52,13 @@ function Row({ c, snap }: { c: Component; snap: Snapshot }) {
         aria-expanded={open}
         title={`${o.source} · last ${fmtAge(o.age)} ago · ${o.rate_hz.toFixed(1)} Hz (10 s)`}
       >
-        <span className={`mark ${c.health === "ok" ? "ok" : c.health === "starting" ? "starting" : c.health === "silent" ? "silent" : c.health === "down" ? "down" : "unknown"}`} aria-hidden />
+        <span className={`mark ${c.health === "ok" ? "ok" : c.health === "external" ? "external" : c.health === "starting" ? "starting" : c.health === "silent" ? "silent" : c.health === "down" ? "down" : "unknown"}`} aria-hidden />
         <span className="name">
           {c.label}
           <span className="sub">{c.health === "ok" ? c.unit ?? "observed" : c.detail}</span>
         </span>
         <span className="val mono">
-          {c.health === "ok" ? value : "—"}
+          {c.health === "ok" || c.health === "external" ? value ?? "live" : "—"}
           <small> · {o.age !== null ? fmtAge(o.age) : "never"}</small>
         </span>
         <TimeStrip strip={o.strip} staleAfter={STALE_AFTER[c.id] ?? 2} />
@@ -78,6 +74,13 @@ function Row({ c, snap }: { c: Component; snap: Snapshot }) {
           <div className="mono muted">
             observed {o.source}: {o.fresh ? "fresh" : "stale"}, last {fmtAge(o.age)} ago
           </div>
+          {c.external.length > 0 && (
+            <div className="mono" style={{ color: "var(--warn)" }}>
+              {c.external.map((e) => (
+                <div key={e}>{e}</div>
+              ))}
+            </div>
+          )}
           {c.last_error && (
             <div className="err">
               {fmtClock(c.last_error.t, true)} {c.last_error.text}

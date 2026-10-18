@@ -50,6 +50,8 @@ class Inputs:
     flow: Optional[Dict[str, Any]]
     requested_task: int
     foreign_publishers: List[str]
+    external: Dict[str, List[str]] = None       # unit → evidence it runs outside the console
+    graph_nodes: Dict[str, int] = None          # ROS node name → count (duplicates > 1)
 
 
 def _age(sig: Optional[Signal], now: float) -> Optional[float]:
@@ -152,9 +154,9 @@ def derive_perception(inp: Inputs, now: float) -> Dict[str, Any]:
         return {**base, "state": state, "title": title, "severity": sev, "detail": detail, "fix": fix}
 
     worst = max(a for a in (color_age, depth_age) if a is not None) if color_age is not None and depth_age is not None else None
-    if not rx_active or worst is None or worst > cfg["camera_fresh_sec"]:
-        why = "receiver unit hp-camera-rx is not running" if not rx_active else (
-            "no frames received yet" if worst is None else f"no frames for {fmt_age(worst)}")
+    if worst is None or worst > cfg["camera_fresh_sec"]:
+        why = ("no frames received yet" if worst is None else f"no frames for {fmt_age(worst)}") + (
+            " (receiver unit hp-camera-rx is not running)" if not rx_active else "")
         sender = ("Restart the camera sender on the Mac (sudo .venv/bin/python mac_sender.py --fps 5), then check "
                   "the D405 USB-C adapter." if cfg.get("remote_gpu", True) else "Restart hp-camera, then check the D405 USB cable.")
         return out("CAMERA_DOWN", "Camera down", "bad", f"D405 {why}.", sender if rx_active else "Start hp-camera-rx.")
@@ -162,10 +164,11 @@ def derive_perception(inp: Inputs, now: float) -> Dict[str, Any]:
         return out("CAMERA_FROZEN", "Camera frozen", "bad",
                    f"D405 frames identical for {fmt_age(frozen)} while still arriving: the sender is hung.",
                    "Restart the camera sender on the Mac (mac_sender.py).")
-    if not _unit_active(units, "hp-vision") or diag_age is None or diag_age > cfg["detector_down_sec"]:
+    if diag_age is None or diag_age > cfg["detector_down_sec"]:
         return out("DETECTOR_DOWN", "Detector down", "bad",
-                   "hp-vision is not running." if not _unit_active(units, "hp-vision")
-                   else f"No detector diagnostics for {fmt_age(diag_age)}.", "Restart hp-vision.")
+                   f"No detector diagnostics for {fmt_age(diag_age)}"
+                   + (" (hp-vision is not running)." if not _unit_active(units, "hp-vision") else "."),
+                   "Restart hp-vision.")
     if cfg.get("remote_gpu", True):
         gpu = S.get("gpu/health")
         if not _fresh(gpu, now, cfg["gpu_fresh_sec"]):
@@ -266,7 +269,13 @@ def derive_components(inp: Inputs, now: float, feeds: Dict[str, Dict[str, Any]])
         view = sig_view(sig, now, max_age, src)
         u = inp.units.get(unit) if unit else None
         ustate = u["active_state"] if u else None
-        if u is not None and ustate == "failed":
+        ext = (inp.external or {}).get(unit) or [] if unit else []
+        unit_down = u is not None and ustate in ("inactive", "failed", None)
+        if unit_down and (view["fresh"] or ext):
+            # Live, but not from the console's unit (tmux, another launch file, by hand). Never "not running".
+            health = "external" if view["fresh"] else "silent"
+            detail = "outside console" + ("" if view["fresh"] else f": no {src} for {fmt_age(view['age'])}")
+        elif u is not None and ustate == "failed":
             health, detail = "down", f"unit failed ({u.get('result')})"
         elif u is not None and ustate in ("inactive", None):
             health, detail = "down", "not running"
@@ -278,6 +287,10 @@ def derive_components(inp: Inputs, now: float, feeds: Dict[str, Dict[str, Any]])
                 f"no {src} for {fmt_age(view['age'])}" if view["age"] is not None else f"no {src} yet")
         else:
             health, detail = "ok", ""
+        if cid == "hp-tf" and health in ("ok", "external"):
+            drops = sum(1 for t in inp.mem.tf_drops if now - t <= 30.0)
+            if drops:
+                health, detail = "silent", f"{drops} depth frame{'s' if drops != 1 else ''} dropped in 30 s: TF missing"
         if cid == "hp-camera-rx" and health == "ok" and feeds["d405_color"]["status"] == "frozen":
             health, detail = "silent", f"frames frozen {fmt_age(feeds['d405_color']['frozen_sec'])}"
         if cid == "d455" and health == "ok" and feeds["d455_color"]["status"] == "frozen":
@@ -299,7 +312,11 @@ def derive_components(inp: Inputs, now: float, feeds: Dict[str, Dict[str, Any]])
                     "health": health, "detail": detail, "value": value,
                     "observed": {k: view[k] for k in ("age", "fresh", "rate_hz", "strip", "source")},
                     "last_error": {"t": err["t_wall"], "text": err["text"]} if err else None,
-                    "observed_only": unit is None})
+                    "observed_only": unit is None, "external": ext,
+                    # the server re-checks this at execution time; the UI uses it to disable Start
+                    "start_block": (f"Already running outside the console: {ext[0]}" if ext else
+                                    (f"Already live: {src} is fresh. Starting another would duplicate it."
+                                     if unit_down and view["fresh"] else None))})
     return out
 
 
@@ -375,8 +392,9 @@ def derive(inp: Inputs, now: float, wall: float) -> Dict[str, Any]:
     joints_age = _age(js, now)
     joints_fresh = joints_age is not None and joints_age <= cfg["joints_fresh_sec"]
     joints = js.value if joints_fresh else None
-    bridge_unit = _unit_active(inp.units, "hp-bridge")
-    bridge_down = not bridge_unit or joints_age is None or joints_age > cfg["bridge_down_sec"]
+    bridge_unit = _unit_active(inp.units, "hp-bridge") or bool((inp.external or {}).get("hp-bridge"))
+    # Joint telemetry decides; a down unit with live joints is a bridge running outside the console.
+    bridge_down = joints_age is None or joints_age > cfg["bridge_down_sec"]
     ready_sig, still_sig = S.get("/arduino/ready"), S.get("/arduino/status")
     # latched values only count while their liveness partner (joints) is fresh (§6.5)
     ready = (bool(ready_sig.value) if _fresh(ready_sig, now, cfg["ready_fresh_sec"]) else None) if joints_fresh else None
@@ -572,8 +590,38 @@ def derive(inp: Inputs, now: float, wall: float) -> Dict[str, Any]:
             age = feed_map["d405_color"]["age"]
             problem = f"Camera feed stalled {fmt_age(age)}" if age is not None else "Camera feed down"
         add("perception", perception["severity"], problem, perception["detail"], perception["fix"])
+    watched = {"arduino_bridge": "hp-bridge", "molmopoint": "hp-vision", "robot_state_publisher": "hp-tf",
+               "move_group": "hp-moveit", "gesture_motion_executor": "hp-moveit"}
+    for name, count in (inp.graph_nodes or {}).items():
+        if count > 1 and name in watched:
+            unit = watched[name]
+            managed = _unit_active(inp.units, unit) and unit in inp.units
+            add(f"dup-{name}", "bad", f"{count} {name} nodes running",
+                "Two processes run the same component" + (
+                    "; two Arduino readers on one serial port split every line and can corrupt commands." if name == "arduino_bridge" else "."),
+                f"Stop the console's {unit} (the external launch keeps running)." if managed else
+                "Stop the extra process (check tmux and other launch files).",
+                action={"name": "unit_stop", "args": {"unit": unit}, "label": f"Stop {unit}"} if managed else None)
     for c in components:
-        if c["health"] in ("down", "silent") and c["unit"] and c["unit"] not in ("hp-bridge",) and not any(
+        if c["unit"] and c["external"] and c["unit_state"] == "active":
+            add(f"twice-{c['id']}", "bad", f"{c['label']} running twice",
+                f"The console's {c['unit']} is up and {c['external'][0]}.",
+                f"Stop {c['unit']} or the outside process so only one remains.",
+                action={"name": "unit_stop", "args": {"unit": c["unit"]}, "label": f"Stop {c['unit']}"})
+    tf_drops = sum(1 for t in m.tf_drops if now - t <= 30.0)
+    if tf_drops:
+        gap = 0.0
+        if js is not None:
+            times = [t for t in js._recv_times if now - t <= 30.0]
+            gap = max((b - a for a, b in zip(times, times[1:])), default=0.0)
+        add("tf-drops", "warn", "TF missing: obstacle cloud dropping depth frames",
+            f"d405_obstacle_cloud dropped {tf_drops} depth frame{'s' if tf_drops != 1 else ''} in 30 s "
+            "(acquisition-time TF still missing after 0.5 s).",
+            (f"joint_states had gaps up to {gap:.1f} s in the same window, and robot_state_publisher builds TF from "
+             "them: check the Arduino bridge (duplicate readers, serial errors) first." if gap > 0.3 else
+             "joint_states were steady, so check robot_state_publisher (hp-tf) and the camera's TF frame."))
+    for c in components:
+        if c["health"] in ("down", "silent") and not c["external"] and c["unit"] and c["unit"] not in ("hp-bridge",) and not any(
                 n["id"] in ("executor", "perception") and c["unit"] in ("hp-moveit", "hp-vision", "hp-camera-rx") for n in nxt):
             add(f"unit-{c['id']}", "warn", f"{c['label']}: {c['detail']}", "",
                 f"Start {c['unit']}." if c["health"] == "down" else f"Restart {c['unit']}.",

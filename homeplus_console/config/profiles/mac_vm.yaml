@@ -22,5 +22,6 @@ units:
     cmd: "source /opt/ros/humble/setup.bash && source ~/ros2_ws/install/setup.bash && ros2 launch homeplus_moveit_config gesture_control.launch.py run_arduino:=false launch_obstacle_cloud:=false use_octomap:=true use_rviz:=false"
   hp-bridge:
     env: *env
+    probe: {device: "~/ttyArduino"}  # any process holding the port blocks a second reader
     # arduino_bridge.launch.py (§7.6) doesn't exist yet; until it does, run the node directly.
     cmd: "source /opt/ros/humble/setup.bash && source ~/ros2_ws/install/setup.bash && ros2 run homeplus_moveit_config arduino_reader.py --port $HOME/ttyArduino --baud 115200 --ros-args -r __node:=arduino_bridge"

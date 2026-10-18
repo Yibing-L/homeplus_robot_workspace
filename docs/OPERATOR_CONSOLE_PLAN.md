@@ -231,6 +231,19 @@ One pane per unit from `journalctl --user -u hp-X -o json -f`, plus a filtered "
 | Mac `mac_serial_server.sh` | socat `TCP-LISTEN:8767` ↔ `/dev/cu.usbmodem*` `hupcl=0` | observed only (M1–M2); `mac_agent` controls it in M3 | Restarting it is the Mac-profile way to force a reset-based re-zero when `ZERO` isn't available. |
 | `hp-foxglove` (optional) | `ros2 launch foxglove_bridge foxglove_bridge_launch.xml` | port open | View only |
 
+**Never start a duplicate** (hardware finding 2026-10-18). The console started a second `arduino_reader` on a pty that an external `gesture_control.launch.py` (tmux) already held, and the two readers split every serial line. Rules:
+- Component health comes from live signals. A unit that is down while its topic is fresh, or while a matching process or open device exists, shows **"outside console"**, never "not running".
+- `unit_start` / `unit_restart` are refused at execution time when a fresh probe finds the component running elsewhere. The probe checks:
+  - processes holding the unit's device (via `/proc/*/fd`, following symlinks such as `~/ttyArduino` → `/dev/pts/N`);
+  - processes matching the unit's command patterns;
+  - its ROS node names on the graph;
+  - or simply its topic being live.
+
+  Processes in the unit's own cgroup don't count.
+- Duplicate node names on the graph (e.g. two `arduino_bridge`) and "console unit + outside instance" are bad next actions with a Stop button.
+- `/rosout` lines are tagged with their source: `unit:<name>`, `outside console`, or `ambiguous: N nodes named X`, applied retroactively for the discovery lag.
+- `d405_obstacle_cloud` "acquisition-time TF still missing" drops are a TF health warning, correlated with `joint_states` gaps (TF is built from them).
+
 Supervisor implementation:
 - `systemd-run --user --unit=hp-X --collect --property=KillMode=control-group --property=TimeoutStopSec=10 -E … bash -lc '<cmd>'`.
 - Stop uses `systemctl --user stop`; status comes from `systemctl show`.

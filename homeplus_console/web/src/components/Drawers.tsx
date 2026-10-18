@@ -8,9 +8,11 @@ export function LogsDrawer({ snap, onClose }: { snap: Snapshot; onClose: () => v
   const [node, setNode] = useState("all");
   const [important, setImportant] = useState(true);
   const [q, setQ] = useState("");
+  const [source, setSource] = useState("all");
+  const sources = useMemo(() => Array.from(new Set(snap.logs.map((l) => l.source))).sort(), [snap.logs]);
   const nodes = useMemo(() => Array.from(new Set(snap.logs.map((l) => l.node))).sort(), [snap.logs]);
   const lines = snap.logs.filter(
-    (l) => (node === "all" || l.node === node) && (!important || l.important) && (!q || l.text.toLowerCase().includes(q.toLowerCase())),
+    (l) => (node === "all" || l.node === node) && (source === "all" || l.source === source) && (!important || l.important) && (!q || l.text.toLowerCase().includes(q.toLowerCase())),
   );
   return (
     <div className="drawer" onClick={onClose}>
@@ -20,6 +22,12 @@ export function LogsDrawer({ snap, onClose }: { snap: Snapshot; onClose: () => v
           <select value={node} onChange={(e) => setNode(e.target.value)} aria-label="Node">
             <option value="all">All nodes</option>
             {nodes.map((n) => (
+              <option key={n}>{n}</option>
+            ))}
+          </select>
+          <select value={source} onChange={(e) => setSource(e.target.value)} aria-label="Source process">
+            <option value="all">All sources</option>
+            {sources.map((n) => (
               <option key={n}>{n}</option>
             ))}
           </select>
@@ -39,7 +47,10 @@ export function LogsDrawer({ snap, onClose }: { snap: Snapshot; onClose: () => v
           {lines.map((l) => (
             <div key={l.seq} className={l.level}>
               <span>{fmtClock(l.t_wall, true)}</span>
-              <span className="node">{l.node}</span>
+              <span className="node" title={l.source}>
+                {l.node}
+                <small className={`src ${l.source.startsWith("ambiguous") ? "amb" : ""}`}>{l.source}</small>
+              </span>
               <span>{l.text}</span>
             </div>
           ))}
@@ -58,6 +69,7 @@ const TOGGLES: [string, string, string][] = [
   ["d455_alive", "D455 alive", "D455 dead"],
   ["gpu_up", "GPU server up", "GPU down"],
   ["zero_supported", "Firmware supports ZERO (§7.10)", ""],
+  ["external_bridge", "Bridge started outside the console (tmux)", ""],
 ];
 const SCENARIOS = ["good", "two_targets", "none", "stale_frames", "garbage_z", "high_first"];
 

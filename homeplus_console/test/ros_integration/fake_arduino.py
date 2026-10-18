@@ -6,6 +6,7 @@ import json, os, pty, random, time, tty
 master, slave = pty.openpty()
 tty.setraw(master)
 os.symlink(os.ttyname(slave), "/tmp/ttyFAKE") if not os.path.exists("/tmp/ttyFAKE") else None
+os.close(slave)  # like socat, hold only the master: the readers are the slave's only holders
 state = {"x": 42.0, "y": -1.0, "th": 1.5, "grip": 40.0, "hand": 0.0, "wrist": 0.0, "elbow": 60.0, "shoulder": 30.0}
 stats = {"stops": 0, "zeros": 0, "ids": 0, "boot": None}
 rx = b""

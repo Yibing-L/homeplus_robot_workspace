@@ -189,11 +189,19 @@ class FakeIO:
     mode = "sim"
     structured = True
 
-    def __init__(self):
+    def __init__(self, external=None):
         self.sent = []
+        self.external = external or {}
 
     class supervisor:  # noqa: N801
         units = ["hp-bridge", "hp-moveit"]
+
+        @staticmethod
+        def start(unit):
+            return {"result": "started"}
+
+    def external_instance(self, unit):
+        return self.external.get(unit, [])
 
     def publish_stop(self):
         self.sent.append("stop")
@@ -302,3 +310,57 @@ def test_console_started_after_boot_no_false_motor_suspect():
     tracker.observe(clock())
     s = derive(make(clock, store, tracker), clock(), 0)
     assert s["motor_power"]["value"] == "unverified", s["motor_power"]
+
+
+# ---------------------------------------------------------------------------- never start a duplicate (hardware 2026-10-18)
+UNITS_BRIDGE_DOWN = {**UNITS, "hp-bridge": dict(UNITS["hp-bridge"], active_state="inactive", sub_state="dead")}
+
+
+def test_live_bridge_with_down_unit_is_external_not_down(env):
+    clock, store, tracker = env
+    inp = make(clock, store, tracker)
+    inp.units = UNITS_BRIDGE_DOWN
+    s = derive(inp, clock(), 0)
+    bridge = next(c for c in s["components"] if c["unit"] == "hp-bridge")
+    assert bridge["health"] == "external" and "outside console" in bridge["detail"]
+    assert bridge["start_block"]
+    assert s["robot"]["state"] != "BRIDGE_DOWN"
+    assert not any(n["action"] and n["action"]["name"] == "unit_start" for n in s["next_actions"])
+
+
+def test_unit_start_refused_when_port_is_held_outside(env):
+    clock, store, tracker = env
+    io = FakeIO(external={"hp-bridge": ["~/ttyArduino is open by pid 4242 (python3 arduino_reader.py)"]})
+    svc = ActionService(io, tracker, Audit(Path(tempfile.mkdtemp())), CFG, LogBuffer())
+    inp = make(clock, store, tracker)
+    inp.units = UNITS_BRIDGE_DOWN
+    s = derive(inp, clock(), 0)
+    svc.handle("take_control", "t", "c1", "op", {}, s, clock())
+    r = svc.handle("unit_start", "u1", "c1", "op", {"unit": "hp-bridge"}, s, clock())
+    assert r["status"] == "rejected" and "already running outside the console" in r["detail"] and "pid 4242" in r["detail"]
+
+
+def test_unit_start_refused_when_topic_live_even_without_process_evidence(env):
+    clock, store, tracker = env
+    svc = ActionService(FakeIO(), tracker, Audit(Path(tempfile.mkdtemp())), CFG, LogBuffer())
+    inp = make(clock, store, tracker)
+    inp.units = UNITS_BRIDGE_DOWN
+    s = derive(inp, clock(), 0)
+    svc.handle("take_control", "t", "c1", "op", {}, s, clock())
+    r = svc.handle("unit_start", "u2", "c1", "op", {"unit": "hp-bridge"}, s, clock())
+    assert r["status"] == "rejected" and "live" in r["detail"]
+
+
+def test_duplicate_nodes_and_tf_drops_surface(env):
+    clock, store, tracker = env
+    for _ in range(3):
+        store.push_event("tf/drop", "d405_obstacle_cloud", "/rosout")
+    tracker.observe(clock())
+    inp = make(clock, store, tracker)
+    inp.graph_nodes = {"arduino_bridge": 2}
+    s = derive(inp, clock(), 0)
+    ids = {n["id"]: n for n in s["next_actions"]}
+    assert ids["dup-arduino_bridge"]["severity"] == "bad"
+    assert "tf-drops" in ids
+    tf = next(c for c in s["components"] if c["id"] == "hp-tf")
+    assert tf["health"] == "silent" and "TF missing" in tf["detail"]

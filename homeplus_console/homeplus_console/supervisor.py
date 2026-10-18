@@ -10,17 +10,35 @@ import shlex
 import subprocess
 import threading
 import time
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional
 
+from . import probe
 from .log_filter import LogBuffer
 
 SHOW = "ActiveState,SubState,MainPID,ExecMainStartTimestampMonotonic,NRestarts,Result"
+
+# How to recognise each component no matter who started it. A profile can extend these per unit with
+# `probe: {nodes: [...], procs: [...], device: path}`.
+DEFAULT_PROBES: Dict[str, Dict[str, Any]] = {
+    "hp-bridge": {"nodes": ["arduino_bridge"], "procs": [r"arduino_reader\.py"]},
+    "hp-vision": {"nodes": ["molmopoint"], "procs": [r"vision_pipeline\.launch\.py", r"grounding_dino_node"]},
+    "hp-tf": {"nodes": ["robot_state_publisher"], "procs": [r"state_publisher\.launch\.py"]},
+    "hp-moveit": {"nodes": ["move_group", "gesture_motion_executor"],
+                  "procs": [r"gesture_control\.launch\.py", r"/move_group(\s|$)"]},
+    "hp-camera-rx": {"nodes": [], "procs": [r"d405_vm_receiver\.py"]},
+    "hp-serial-vm": {"nodes": [], "procs": [r"vm_serial_client\.sh", r"socat .*ttyArduino"]},
+}
 
 
 class SystemdSupervisor:
     def __init__(self, units: Dict[str, Dict[str, Any]], logs: LogBuffer, ws_setup: str = ""):
         self.spec = units
         self.units: List[str] = list(units)
+        self.probes: Dict[str, Dict[str, Any]] = {}
+        for u in set(units) | set(DEFAULT_PROBES):
+            pr = dict(DEFAULT_PROBES.get(u, {"nodes": [], "procs": []}))
+            pr.update((units.get(u) or {}).get("probe") or {})
+            self.probes[u] = pr
         self.logs = logs
         self._lock = threading.Lock()
         self._status: Dict[str, Dict[str, Any]] = {u: self._empty() for u in self.units}
@@ -62,6 +80,35 @@ class SystemdSupervisor:
 
     def is_active(self, unit: str) -> bool:
         return self.status().get(unit, {}).get("active_state") == "active"
+
+    def external(self, unit: str, graph_nodes: Dict[str, int]) -> List[str]:
+        """Evidence that `unit`'s component is running outside its console unit. Empty = none found.
+        Processes inside the unit's own cgroup are not evidence; ROS node names only count while the
+        unit itself is down (when it's up, its own node has that name)."""
+        pr = self.probes.get(unit, {})
+        own = f"{unit}.service"
+        active = self.is_active(unit)
+        out: List[str] = []
+        seen = set()
+        if pr.get("device"):
+            holders = [h for h in probe.device_holders(pr["device"]) if probe.cgroup_unit(h["pid"]) != own]
+            if holders:
+                out.append(f"{pr['device']} is open by " + "; ".join(f"pid {h['pid']} ({h['cmd']})" for h in holders))
+                seen = {h["pid"] for h in holders}
+        for h in probe.processes_matching(pr.get("procs", [])):
+            if h["pid"] not in seen and probe.cgroup_unit(h["pid"]) != own:
+                out.append(f"pid {h['pid']} is running {h['cmd']}")
+        if not active:
+            for n in pr.get("nodes", []):
+                if graph_nodes.get(n):
+                    out.append(f"node /{n} is on the ROS graph")
+        return out
+
+    def node_unit(self, node: str) -> Optional[str]:
+        for u, pr in self.probes.items():
+            if node in pr.get("nodes", []):
+                return u
+        return None
 
     def start(self, unit: str) -> Dict[str, Any]:
         st = self.status().get(unit, {})
