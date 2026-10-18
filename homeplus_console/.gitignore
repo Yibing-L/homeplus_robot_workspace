@@ -1,0 +1,6 @@
+web/node_modules/
+__pycache__/
+*.pyc
+.pytest_cache/
+.impeccable/mocks/
+.impeccable/review/

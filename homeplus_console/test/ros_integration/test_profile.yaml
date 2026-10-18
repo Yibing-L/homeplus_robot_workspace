@@ -1,0 +1,3 @@
+# no systemd in the container: units are observed only
+serial_bridge: true
+units: {}

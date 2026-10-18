@@ -13,7 +13,8 @@ Grounded in branch `ev-closed-loop-pickup-fixes` (`homeplus_closed_loop`, HEAD `
 | Architecture | **One Python backend process on the ROS machine** (`rclpy` node + FastAPI/uvicorn + WebSocket) serving a static React UI. No rosbridge. Foxglove optional, for deep-dive visualization only and never for control. |
 | Source of truth | All robot state lives in the backend. The backend derives it from live topics, with a receipt time and age for every signal. The browser only renders snapshots, so it can't hold its own idea of the state. |
 | Process supervision | `systemd-run --user` transient units, one per component. Gives real "alive", restart, exit code and a journal per component, and survives a console restart. |
-| Biggest structural fix | **Run the Arduino bridge separately from MoveIt** (`gesture_control.launch.py run_arduino:=false` plus its own bridge unit). Restarting MoveIt then no longer resets the Arduino or base odometry. Restarting the bridge counts as a **re-zero**, and only the guided flow can do it. |
+| Biggest structural fix | **Run the Arduino bridge separately from MoveIt** (`gesture_control.launch.py run_arduino:=false` plus its own bridge unit). Restarting MoveIt then no longer resets the Arduino or base odometry. With the serial bridge (`tools/arduino_serial_bridge/`, `arduino_port:=$HOME/ttyArduino`) restarting `hp-bridge` reopens a pty, not the USB device, so it is **not** assumed to reset the Arduino; resets are detected from evidence (§5.3). |
+| Recovery without touching the robot (addendum) | **Return to start** (one click, M1), **Undo last step / sequence** (reverse replay of executed trajectories, M2), **Set start here** (re-zero where the robot stands: `ZERO` firmware command, reset as fallback), and an **Abort → recover** card that offers exactly those. See §5.4. |
 | Executor changes | Small and additive: a structured `executor_state` JSON (latched + 2 Hz), a plan preview JSON, approval scoped to a plan id, a cancel service, and a command request token. All existing topics keep working. |
 | E-stop | **The software can't observe it.** The UI never says "E-stopped". It shows *Motor power: verified / unverified / suspect* from observed motion, and operator declarations are labelled as declarations. A hardware sense line is an open question. |
 
@@ -135,7 +136,7 @@ The server re-checks these at execution time. The UI also disables the buttons, 
 | Reject plan | AWAITING APPROVAL | None |
 | Cancel sequence | RUNNING or AWAITING APPROVAL | None |
 | Start pickup (task 1) / Press button (task 2) | IDLE·READY + perception TARGET OK + preflight checklist (§5.2) all green + detector `task_id` matches + no foreign command publishers (or acknowledged) | Modal summarising the target and the first unapproved motion ("base will drive ≈ 0.42 m forward without approval") |
-| Home | IDLE (ready, joints fresh), not HARDWARE FAULT, not ODOMETRY ORIGIN LOST (home drives the base to (0,0,0), the reset origin) | Modal with "base will move X m" |
+| Home / **Return to start** (§5.4) | IDLE (ready, joints fresh), not HARDWARE FAULT, origin confirmed (home drives the base to (0,0,0), the origin) | Confirmation with distance, bearing, path sketch and the held-cup choice; then the plan's approval |
 | Gripper open/close | IDLE, bridge ready | Single confirm |
 | Clear octomap (`/clear_octomap`, std_srvs/Empty) | Executor idle (it clears the map itself during pose plans) | None |
 | Start/stop/restart component | See §5.1. `hp-bridge` restart **only** through the re-zero flow. | Per component |
@@ -225,7 +226,9 @@ One pane per unit from `journalctl --user -u hp-X -o json -f`, plus a filtered "
 | `hp-camera` (laptop) / `hp-camera-rx` (Mac) | laptop: realsense via `vision_pipeline` `enable_d405:=true`; Mac: `python3 ~/d405_vm_receiver.py` | color/depth fresh, not frozen | Mac sender runs on macOS: observed only in M1–M2, controlled by `mac_agent` in M3. |
 | `hp-vision` | `ros2 launch homeplus_vision vision_pipeline.launch.py side_mount:=left task_id:=<id> enable_target_detection:=true enable_gesture_detection:=false … enable_d405:=<profile>` | diagnostics fresh, `task_id` param matches | Task switch = set the `/molmopoint task_id` param (executor already does this). Changing it doesn't need a restart. |
 | `hp-moveit` | `ros2 launch homeplus_moveit_config gesture_control.launch.py run_arduino:=false launch_obstacle_cloud:=false use_octomap:=true use_rviz:=<profile>` | `/move_action` ready, `executor_state` fresh | **`run_arduino:=false` already exists in the launch file.** Restarting MoveIt is now harmless to odometry. `gesture_behavior` is also in this launch; see §9. |
-| `hp-bridge` | new `arduino_bridge.launch.py` (wraps the existing `arduino_reader.py` `--port --baud` node, same node name `arduino_bridge`) | joints fresh, ready | **Restart = Arduino reset = odometry re-zero.** Only the §5.3 flow can restart it. Plain "Stop" is allowed (it publishes STOP first). |
+| `hp-bridge` | new `arduino_bridge.launch.py` (wraps the existing `arduino_reader.py` `--port --baud` node, same node name `arduino_bridge`); Mac profile `--port $HOME/ttyArduino` | joints fresh, ready | **Mac profile (serial bridge):** restart reopens the VM pty only; allowed from the health panel when the executor is idle. Any Arduino reset it does cause is caught by the reset detector (§5.3), never assumed away. **Laptop profile (direct USB):** opening the port toggles DTR and resets the Mega, so restart = re-zero and only the §5.3 flow can do it. Plain "Stop" is allowed (it publishes STOP first). |
+| `hp-serial-vm` (Mac profile) | `tools/arduino_serial_bridge/vm_serial_client.sh` (socat pty `$HOME/ttyArduino` ↔ `TCP 192.168.64.1:8767`) | pty exists, bridge joints fresh | Restart is a link hiccup; the Mac side reopening `/dev/cu.usbmodem*` may raise DTR once (bench test, §9). |
+| Mac `mac_serial_server.sh` | socat `TCP-LISTEN:8767` ↔ `/dev/cu.usbmodem*` `hupcl=0` | observed only (M1–M2); `mac_agent` controls it in M3 | Restarting it is the Mac-profile way to force a reset-based re-zero when `ZERO` isn't available. |
 | `hp-foxglove` (optional) | `ros2 launch foxglove_bridge foxglove_bridge_launch.xml` | port open | View only |
 
 Supervisor implementation:
@@ -259,7 +262,26 @@ Operator-declared items, each a checkbox recorded in the audit log and reset aft
 - "area clear"
 - "robot at start spot" (unless the origin was just confirmed in the last 10 min)
 
-### 5.3 Guided "re-zero at start spot" flow
+### 5.3 Guided "Set start here" flow (replaces "re-zero at start spot")
+
+**Reset detection, not reset assumption.** A firmware reset is recognised from evidence only: a `READY*` line (bridge `FIRMWARE_RESTART`), odometry jumping to (0, 0, 0) from > 2 cm while joints stay fresh, or a new `bridge_info.boot_id` (§7.4, a firmware boot counter, separate from the bridge's per-open `session_id`). A ROS bridge restart without one of these keeps the origin.
+
+**Zero method**, chosen by capability, shown to the operator before they confirm:
+1. **`ZERO` command** (§7.10, preferred): odometry and the held base target become the current measured pose. No reset, no arm twitch, no E-stop needed if the robot is already where start should be.
+2. **Reset fallback**: laptop profile toggles DTR on the port (or restarts `hp-bridge`); Mac profile restarts `mac_serial_server.sh` (via `mac_agent` in M3, by hand before that). The firmware re-homes the arm upright, so the flow says "stand clear".
+
+**Flow:**
+1. Precondition: executor idle (else STOP + cancel).
+2. "Is the robot where start should be?" → **Zero here** or **I need to push it by hand**.
+3. Push branch only: "Press the E-stop" (declared, unverifiable) → "Push the robot to the new start spot". Reason: with motors powered, the base PID drives back to its held target.
+4. Zero via the chosen method. Observe: `base_x, base_y, base_theta` within 1 mm / 0.1° of 0 and joints fresh. Reset method: also the reset evidence above.
+5. Reset method + E-stop declared: the old cross-check applies (arm stays folded for 5 s → consistent; arm rises → "Motors are powered. The E-stop was NOT pressed.", recorded).
+6. Push branch: "Release the E-stop". Observe the base stays within 1 cm of 0 and (reset method) the arm reaches upright within 10 s.
+7. Origin confirmed (`origin_confirmed_at`, operator, `boot_id`, method). It invalidates automatically on reset evidence.
+
+The original reset-based re-zero procedure below remains the fallback when neither `ZERO` nor a remote reset is available.
+
+#### 5.3.1 Original reset-based re-zero (fallback)
 
 The flow is a server-side state machine. Each step **observes** before it advances, and the UI shows what it is waiting to observe.
 
@@ -275,6 +297,41 @@ The flow is a server-side state machine. Each step **observes** before it advanc
 7. Origin is marked confirmed (`origin_confirmed_at`, operator, bridge `session_id`). It invalidates automatically on any new session id.
 
 There's also a smaller **"Reconnect Arduino" flow** for USB drop-outs. Because reopening the port resets the Mega, it routes into this same flow. The UI says why.
+
+### 5.4 Recovery without touching the robot (addendum)
+
+Today a failed run ends with: press the E-stop, push the robot back, re-zero. These features replace that.
+
+**Return to start** (M1, one click + one confirmation)
+- Sends the existing `home` GestureCommand (`gesture_id 0`, `command_name 'home'`, `command_type 'joint_state'`). `home` plans one coordinated `base_arm` joint-state move to all zeros, so the base drives to odometry (0, 0, 0) and the arm goes upright.
+- Before sending, the console shows where zero is from here: distance, bearing and turn from fresh `/hardware/joint_states` `base_x/base_y/base_theta`, and a top-down sketch (robot now, start spot, straight path). It refuses when joints are stale or the origin is lost or unconfirmed: zero would not be the start spot.
+- Held cup: `home` does not open the gripper and plans with the cup attached. If `executor_state.holding_cup` (or an attached `detected_cup`) is true, the confirmation asks **Release the cup first** (default: send `gripper_open` as a single command, which detaches `detected_cup` in the executor when `grip ≤ 1°`, then `home`) or **Keep holding** (plans with the cup attached).
+- Same rules as all motion: `home` already requires approval (`require_trajectory_approval: true` globally), so the plan appears in the approval panel with its countdown. STOP and cancel apply.
+
+**Undo last step / Undo sequence** (M2)
+- **Undo stack** comes from the executor, not from guessing at CSV files. The `trajectory_logs/traj_*.csv` files are written at plan time, before approval, so rejected plans are in them too. §7.8 adds an executed-step record: `{undo_id, step, type, traj_file, start_joints, end_joints, gripper_before, t_done, endpoint_verified}`, published in `executor_state.undo_stack` (newest first).
+- **Undo** = the recorded joint trajectory reversed, newest step first, through the existing `_execute_preplanned` path. That gives the same approval → `_validate_executed_path` (collision re-check against the *current* planning scene, cup attached or not) → `_send_trajectory_to_arduino` chain as a normal plan. The approval panel labels it **UNDO · reverse replay of traj_move_to_pregrasp_….csv**.
+- **Gripper steps** undo by sending the previous gripper value (`gripper_before`, degrees). **Detect steps** have nothing to undo and are skipped with a note.
+- **Fallback**: if the measured state is farther from the recorded endpoint than the executor's start tolerance (0.01 m base, 0.04 rad joints, `_send_trajectory_to_arduino`), or the reversed path fails validation, the executor plans a fresh joint-space move to `start_joints` and says so ("fallback: fresh plan, base drifted 4.2 cm from the recorded endpoint").
+- `scripts/replay_trajectory.py` only visualises a CSV in RViz (`/display_planned_path`). The console reuses its CSV reader (`time_from_start` + `raw_<joint>` in Arduino order) for the preview, not for sending.
+
+**Set start here**: §5.3.
+
+**Abort → recover** (M1 for Return to start, M2 for Undo and Retry)
+- After an ABORTED/FAILED/CANCELLED result, the action band shows the step and reason, and exactly the next sensible actions:
+  - Undo sequence (*n* steps)
+  - Return to start
+  - Retry from step *k* (only if `executor_state.capabilities.resume`)
+- An "I've inspected the robot" check gates all three. Choosing one acknowledges the abort in the audit log.
+
+**Gating** (added to §3.4):
+
+| Action | Allowed when | Confirmation |
+|---|---|---|
+| Return to start | Executor idle; joints fresh and ready; origin confirmed; no unacknowledged HARDWARE FAULT | Confirmation showing distance and path, plus the cup choice; then the normal approval |
+| Undo step / sequence | Executor idle; `capabilities.undo`; stack non-empty; joints fresh | One confirmation listing the steps; each step's plan is then approved |
+| Retry from step k | `capabilities.resume`; last result aborted at step k | Confirmation |
+| Set start here | Executor idle, controlling client | Guided flow |
 
 ---
 
@@ -378,6 +435,13 @@ All changes are additive and backward compatible. Each is small and testable on 
 - **Approval policy.** Optional parameter `approval_policy: config | all_motion` (default `config`, so behaviour is unchanged). When `all_motion` is set, `require_trajectory_approval: false` on a step is ignored, and gripper steps also require approval. The console profile sets `all_motion` by default. This is Yibing's call; see §9.
 
 ### 7.4 Arduino bridge: session identity (`arduino_reader.py`, ~30 lines)
+
+**Status: implemented (2026-10-18), not yet flashed or run on hardware.**
+- The firmware prints `BOOT <id> ZERO` after `READY4` and in answer to `ID`.
+- The bridge sends `ID` once per port open, after the first STATE line.
+- Latched `/arduino/bridge_info` carries `session_id` (per open), `boot_id` (per firmware boot), `zero_supported`, `zero_count`, `firmware_restarts` and `last_error`.
+- Older firmware never answers `ID`, so `boot_id` stays null, `zero_supported` stays false, and the console falls back to log-derived resets.
+- The console keys the odometry origin on `boot_id`, so a ROS bridge restart or pty reopen without a reset keeps it.
 - Publish `/arduino/bridge_info` (String JSON, TRANSIENT_LOCAL), updated on change:
   - `session_id` (uuid4 generated each time the serial port opens, i.e. each Mega reset)
   - `port`, `opened_wall`, `compatible`, `protocol` (`STATE4`)
@@ -390,6 +454,38 @@ All changes are additive and backward compatible. Each is small and testable on 
 
 ### 7.6 New launch file
 `homeplus_moveit_config/launch/arduino_bridge.launch.py`: just the existing `arduino_bridge` Node block from `gesture_control.launch.py` (same args). Old usage still works because `run_arduino` defaults to `true`.
+
+### 7.8 Executor: executed-step record and undo (addendum, ~120 lines)
+- After each step reaches DONE (or "endpoint verified"), append to an in-memory stack and publish it in `executor_state.undo_stack`: `undo_id`, `step`, `type`, `traj_file` (the CSV `_record_planned_trajectory` wrote for that plan), `start_joints` and `end_joints` (measured, from `/hardware/joint_states` at send and at DONE), `gripper_before` (degrees), `t_done`, and `endpoint_verified`. Gripper steps record no trajectory.
+- New commands on `/gesture_control/command` (handled in `_run_command`, sharing the busy lock): `command_name: undo_step` and `undo_sequence`, `command_type: undo`.
+  - Each undo item reverses the recorded `RobotTrajectory`: reverse the point order and re-time it as `t' = T − t`.
+  - It is executed through `_execute_preplanned(f"undo_{step}", traj, cfg)` with `require_trajectory_approval: true`.
+  - If the start tolerance or `_validate_executed_path` fails, it plans with `_plan_joint_state(start_joints)` instead and publishes `undo_method: fallback_plan` with the reason.
+- The stack is cleared on a new sequence start and on any reset evidence: recorded odometry is meaningless after a re-zero.
+
+### 7.9 Executor: return_to_start (~30 lines)
+- A `return_to_start` command (or console-side composition): if holding, send `gripper_open` as a single command (it already detaches `detected_cup` at `grip ≤ 1`), wait DONE, then run `home`. Publishes `command: return_to_start` so the console can verify it.
+- M1 can do this console-side with two existing commands, sent one after the other. The executor command just makes it one busy span.
+
+### 7.10 Firmware + bridge: `ZERO` (addendum, ~25 + ~20 lines)
+
+**Status: implemented (2026-10-18), not yet flashed.** Host-compiled firmware tests cover:
+- odometry and target zeroed;
+- arm untouched;
+- base PIDs re-initialized;
+- refused while a trajectory is active (`ERROR 0 ZERO_BUSY`).
+
+Bridge replies:
+- `/arduino/zero` is rejected with `ERROR 0 ZERO_REJECTED` unless the bridge is idle and ready, and with `ERROR 0 ZERO_UNSUPPORTED` on old firmware.
+- `ZEROED <boot>` is forwarded on `/arduino/ack`.
+
+The integration test (`homeplus_console/test/ros_integration`) runs the real bridge against a pty fake Arduino.
+- **Firmware** (`homeplus_controller.ino` `loop()`, beside `PING`/`STOP`): `ZERO` → if `commandCount > 0` reply `ERROR 0 BUSY`, else set `x = y = theta = 0`, `target_x = target_y = target_theta = 0`, `dx = dy = dtheta = 0`, reset the settle counters and the base PID integrators (toggle the `pidX/Y/Th` mode), and print `ZEROED <boot_id>`. Encoder baselines `prev_nw…` stay, since they are deltas. The arm doesn't move.
+- **Bridge** (`arduino_reader.py`): `Bool /arduino/zero` subscription. Only when `ready` and idle (`active_id is None`, `tx is None`) does it write `\nZERO\n`; it forwards `ZEROED` to `/arduino/ack`. Add `zero_supported` and `boot_id` (from the firmware banner) to `/arduino/bridge_info`.
+- The reset-based path stays as the fallback (§5.3).
+
+### 7.11 Executor: resume (M2, optional)
+- `resume_from` (`sequence`, `step_index`): re-enter `_run_sequence` at step *k* after re-detection. Advertise it as `executor_state.capabilities.resume`. Without it, the console never shows Retry.
 
 ### 7.7 Detector (optional)
 If the raw model text isn't already in diagnostics, add `model_text` (e.g. "There are none.") so the UI can show *why* there is no target.
@@ -442,8 +538,8 @@ mac_agent/ (M3)          # FastAPI on macOS: mac_sender, tunnel, aws ec2 start/s
 | Milestone | Scope | Exit criterion |
 |---|---|---|
 | **M0 Foundations** (≈3 days) | §7.1, 7.3 (scoped approval + cancel), 7.4, 7.6; `fake_arduino` + `fake_detector`; sim launch | Sim pickup runs end-to-end with approvals over topics; unit tests green |
-| **M1 MVP** (≈1.5 weeks) | Backend signal store + state machine + supervisor (tf, camera-rx/camera, vision, moveit, bridge start/stop); STOP with verification; approve/reject with text summary + countdown; timeline (structured, with rosout detail); health panel; audit log; control lease; Start/Home with gating and request-token verification | Full pickup on hardware from the console alone, **no terminals except the Mac sender + tunnel** |
-| **M2 Safety depth** (≈1 week) | Camera/detection panel + detection window gate; preflight checklist; re-zero flow; motor-power-suspect detectors (boot-upright, clamp, idle drift); foreign-publisher warning; log panes; §7.2 preview + 2D top-down view; §7.5 config | Every failure mode in §8.5 produces the expected UI state on hardware |
+| **M1 MVP** (≈1.5 weeks) | Backend signal store + state machine + supervisor (tf, camera-rx/camera, vision, moveit, bridge start/stop, `hp-serial-vm`); STOP with verification; approve/reject with text summary + countdown; timeline (structured, with rosout detail); health panel; audit log; control lease; Start with gating and request-token verification; **Return to start** (§5.4, console-side gripper_open + home, cup choice, distance + top-down sketch); **Abort → recover** card (Return to start + acknowledge); **reset detection** (§5.3); live video panel (4b) | Full pickup on hardware from the console alone, **no terminals except the Mac sender + tunnel**, and a failed run recovered to the start spot without touching the robot |
+| **M2 Safety depth** (≈1 week) | Camera/detection panel + detection window gate; preflight checklist; **Set start here** flow (§5.3) with §7.10 `ZERO` firmware/bridge and the reset fallback; **Undo last step / sequence** (§7.8); Retry from step (§7.11, if accepted); motor-power-suspect detectors (boot-upright, clamp, idle drift); foreign-publisher warning; log panes; §7.2 preview + 2D top-down view; §7.5 config | Every failure mode in §8.5 produces the expected UI state on hardware; an aborted pickup is undone step by step on hardware |
 | **M3 Comfort** (≈1 week) | 3D trajectory preview; `mac_agent` (sender start/restart incl. segfault auto-detect, tunnel, AWS start/stop with **running-cost timer and "stop instance" reminder on shutdown**); `approval_policy: all_motion`; per-run report download | Mac profile needs zero terminals after starting the agent |
 | **M4 Hardening** | Rosbag regression suite, run on Yibing's laptop, docs | Two clean sessions by a second operator using only the UI |
 
@@ -511,3 +607,7 @@ mac_agent/ (M3)          # FastAPI on macOS: mac_sender, tunnel, aws ec2 start/s
 11. **Start spot definition.** Is there a physical mark? The re-zero flow assumes one. Could the console verify it, e.g. a fiducial seen by the D405?
 12. **Risk: the console becomes another thing that can crash.** Mitigations: units run under systemd independently of the console, and the executor keeps its own approval timeout. The physical E-stop stays the primary stop; the console STOP is secondary and says so.
 13. **Risk: false "suspect" alarms** from the idle-drift rule (e.g. the PWM-estimated wrist and gripper are noisy). Only elbow, shoulder and base, which are measured, feed the drift rule.
+14. **Does the serial bridge reset the Mega?** `mac_serial_server.sh` uses `hupcl=0`, but socat reopens `/dev/cu.usbmodem*` for each new TCP client, and opening usually raises DTR on macOS. Bench test: restart `vm_serial_client.sh`, then `hp-bridge`, and watch for `READY4` and odometry going to 0. The console detects resets either way; this decides whether a VM-side restart is harmless.
+15. **Undo semantics with a cup in hand.** Undoing `close_gripper_at_target` re-opens the gripper wherever the arm is. Should undo stop *before* gripper steps by default ("undo motion only"), so the cup isn't dropped mid-air?
+16. **Return to start with a cup.** The default is "release first". Is it ever right to drive home holding a full cup?
+17. **`ZERO` while E-stopped.** It zeroes the held target too, so releasing the E-stop afterwards shouldn't move the base. Please confirm on hardware that the base PID integrators really reset, or the base may creep.
