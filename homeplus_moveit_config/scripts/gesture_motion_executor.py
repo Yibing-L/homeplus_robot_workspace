@@ -96,6 +96,20 @@ MOVEIT_ERROR_NAMES = {
 }
 
 
+class _DryRunPublisher:
+    """Stands in for a hardware publisher when dry_run is set: logs, never sends."""
+
+    def __init__(self, node, topic):
+        self._node = node
+        self._topic = topic
+
+    def publish(self, msg):
+        text = str(getattr(msg, 'data', msg))
+        self._node.get_logger().info(
+            f'DRY RUN: not publishing on {self._topic}: {text[:160]}'
+            + ('...' if len(text) > 160 else ''))
+
+
 @dataclass
 class PlanContext:
     """State for one MoveGroup request.
@@ -179,6 +193,10 @@ class GestureMotionExecutor(Node):
         self.declare_parameter("clear_octomap_service", "/clear_octomap")
         self.declare_parameter("octomap_clear_timeout_sec", 2.0)
         self.declare_parameter("octomap_rebuild_wait_sec", 1.2)
+        # Plan and validate every step, but never publish to the Arduino:
+        # motions complete instantly on a virtual state overlaid on the
+        # measured feedback. Use a separate command topic from the live node.
+        self.declare_parameter("dry_run", False)
         self.declare_parameter("robot_description_topic", "/robot_description")
 
         execution_map_path = str(self.get_parameter("execution_map_path").value)
@@ -296,6 +314,12 @@ class GestureMotionExecutor(Node):
             String, "/arduino/command_queue", 10
         )
         self.stop_pub = self.create_publisher(Bool, "/arduino/stop", 10)
+        self.dry_run = bool(self.get_parameter("dry_run").value)
+        self._virtual_positions: Dict[str, float] = {}
+        if self.dry_run:
+            self.arduino_cmd_pub = _DryRunPublisher(self, "/arduino/command_queue")
+            self.stop_pub = _DryRunPublisher(self, "/arduino/stop")
+            self.get_logger().warn("DRY RUN: trajectories and gripper commands are never sent")
         self._hardware_ready = False
         self.create_subscription(Bool, "/arduino/ready", self._ready_callback,
             QoSProfile(depth=1, durability=DurabilityPolicy.TRANSIENT_LOCAL))
@@ -1184,7 +1208,10 @@ class GestureMotionExecutor(Node):
         age = (self.get_clock().now() - Time.from_msg(msg.header.stamp)).nanoseconds / 1e9
         if age < -0.1 or age > float(self.get_parameter('joint_state_max_age_sec').value):
             return
-        self.latest_joint_state = deepcopy(msg)
+        msg = deepcopy(msg)
+        if self.dry_run and self._virtual_positions:
+            msg.position = [self._virtual_positions.get(n, p) for n, p in zip(msg.name, msg.position)]
+        self.latest_joint_state = msg
         self._last_state_received = time.monotonic()
         self._joint_history.append((self._last_state_received, deepcopy(msg)))
 
@@ -1536,7 +1563,11 @@ class GestureMotionExecutor(Node):
                         )
                         time.sleep(settle_sec)
                     if effective_step.get('attach_cup', False):
-                        self._attach_cup()
+                        if self.dry_run:
+                            # Never leave a phantom attached cup in the live scene.
+                            self.get_logger().warn('DRY RUN: not attaching the cup collision object')
+                        else:
+                            self._attach_cup()
                     break
 
             elif step_type == "detect":
@@ -2007,6 +2038,8 @@ class GestureMotionExecutor(Node):
         prefix = 'TRANSIT' if endpoint_profile == 'transit' else 'STREAM'
         self.arduino_cmd_pub.publish(String(data=f'{prefix} {self._command_id} {queue}'))
         self.get_logger().info(f'{name}: streaming {len(arduino_waypoints)} samples as one motion ({duration:.2f}s)')
+        if self.dry_run:
+            self._complete_dry_run_motion(name, raw_waypoints[-1])
 
     def _extract_and_send_trajectory(self, name: str, planned_trajectory, command_cfg: Optional[Dict] = None) -> bool:
         """Extract, save, and send a MoveIt planned trajectory to Arduino."""
@@ -2294,6 +2327,17 @@ class GestureMotionExecutor(Node):
         self._queue_pending_joint_state(values, "gripper command")
         self.arduino_cmd_pub.publish(String(data=f"CMD {self._command_id} {waypoint}"))
         self.get_logger().info(f"Sent gripper waypoint to Arduino: {waypoint}")
+        if self.dry_run:
+            self._complete_dry_run_motion("gripper", values)
+
+    def _complete_dry_run_motion(self, name: str, final_values: List[float]) -> None:
+        """Pretend the hardware reached the commanded endpoint instantly."""
+        self._virtual_positions = dict(zip(TRAJECTORY_JOINT_ORDER, final_values))
+        self.get_logger().warn(
+            f"DRY RUN: {name} treated as executed; virtual state "
+            + ", ".join(f"{n}={v:.3f}" for n, v in self._virtual_positions.items()))
+        self._arduino_done_event.set()
+
     # ------------------------------------------------------------------
     # Gripper value note: 0 = fully open, 90 = closed
     # Arduino expects 10 space-separated values per waypoint:
