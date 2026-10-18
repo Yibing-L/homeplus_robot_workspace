@@ -225,7 +225,7 @@ def main():
     rclpy.init()
     node = Checker()
     failures = []
-    stats = dict(cases=0, placed=0, unreachable=0, approach_ok=0, arm_checks=0, arm_ok=0, kdl_ok=0,
+    stats = dict(cases=0, placed=0, replaced_lateral=0, replaced_reach=0, unreachable=0, approach_ok=0, arm_checks=0, arm_ok=0, kdl_ok=0,
                  grasp_ok=0, margins=[], forwards=[])
     try:
         deadline = time.time() + 120
@@ -253,7 +253,7 @@ def main():
                 arm, cup, case['base'], waypoints,
                 heading_offsets=[math.radians(v) for v in settings['heading_offsets_deg']],
                 min_margin=settings['min_reach_margin_m'], limit_margin=settings['joint_limit_margin_rad'],
-                base_height=base_height)
+                base_height=base_height, preference=settings.get('reach_preference', 'centre'))
             if not placements:
                 stats['unreachable'] += 1
                 print(f"{case['label']}: cup {cup} not reachable with margin (skipped)")
@@ -305,7 +305,12 @@ def main():
                 refined = (cup[0] + c * dfwd - s * dlat, cup[1] + s * dfwd + c * dlat, cup[2] + dz)
                 error, forward = arm_plane_error(bx, by, th, refined[:2], arm.lateral_offset)
                 if abs(error) > lateral_limit + 1e-9:
+                    stats['replaced_lateral'] += 1
                     continue  # refine_target would re-place the base instead
+                arm_points = [(forward + dx, refined[2] - base_height + dz) for dx, dz in waypoints[1:]]
+                if not any(arm.solve_path(arm_points, b, 0.0) is not None for b in (1, -1)):
+                    stats['replaced_reach'] += 1
+                    continue  # out of arm-only reach: refine_target re-places too
                 stats['arm_checks'] += 1
                 in_plane = (refined[0] + s * error, refined[1] - c * error, refined[2])
                 # refine_target moves the cup envelope to the refined pose.
@@ -373,7 +378,9 @@ def main():
               f"reach margin min {min(stats['margins']):.3f} m")
     checked = stats['arm_checks']
     print(f"arm-only steps 5-6: closed-form valid {stats['arm_ok']}, grasp approach {stats['grasp_ok']}, "
-          f"configured-solver /compute_ik {stats['kdl_ok']} (of {checked} perturbed goals, those beyond the lateral gate excluded)")
+          f"configured-solver /compute_ik {stats['kdl_ok']} (of {checked} perturbed goals; "
+          f"refine_target would re-place {stats['replaced_lateral']} for lateral error, "
+          f"{stats['replaced_reach']} for reach)")
     for failure in failures:
         print('FAIL', failure)
     return 1 if failures else 0

@@ -60,7 +60,8 @@ def plan(arm, cup, base, heading_offsets=None):
         heading_offsets=[math.radians(v) for v in (heading_offsets or settings['heading_offsets_deg'])],
         min_margin=settings['min_reach_margin_m'],
         limit_margin=settings['joint_limit_margin_rad'],
-        base_height=fixed_link_height(urdf_text()))
+        base_height=fixed_link_height(urdf_text()),
+        preference=settings.get('reach_preference', 'centre'))
 
 
 def tcp_world(arm, base_x, base_y, heading, q):
@@ -154,6 +155,24 @@ class PlacementTest(unittest.TestCase):
             print(f'\n  logged cup ({cx:.3f}, {cy:.3f}, {cz:.3f}) from base ({bx:.3f}, {by:.3f}, {byaw:.3f}):'
                   f' base -> ({best.base_x:.3f}, {best.base_y:.3f}, {best.heading:.3f}),'
                   f' cup {best.forward:.3f} m ahead, margin {best.margin:.3f} m', end='')
+
+    def test_near_preference(self):
+        """'near' keeps exactly the configured margin on the near side and
+        stands the base closer than 'centre' would."""
+        settings, _ = load_placement_settings()
+        self.assertEqual(settings['reach_preference'], 'near')
+        for bx, by, byaw, cx, cy, cz in LOGGED:
+            kwargs = dict(heading_offsets=[0.0], min_margin=settings['min_reach_margin_m'],
+                          limit_margin=settings['joint_limit_margin_rad'])
+            near = plan_base_placements(self.arm, (cx, cy, cz), (bx, by, byaw), WAYPOINTS, preference='near', **kwargs)
+            centre = plan_base_placements(self.arm, (cx, cy, cz), (bx, by, byaw), WAYPOINTS, **kwargs)
+            self.assertLess(near[0].forward, centre[0].forward)
+            self.assertGreaterEqual(near[0].margin, settings['min_reach_margin_m'] - 1e-9)
+            self.assertLess(near[0].margin, settings['min_reach_margin_m'] + 0.005 + 1e-9)
+            # Alternatives move away from the near limit, never closer to it.
+            self.assertEqual([p.forward for p in near], sorted(p.forward for p in near))
+            print(f'\n  near: cup ({cx:.3f}, {cy:.3f}, {cz:.3f}) {near[0].forward:.3f} m ahead '
+                  f'(pre-grasp TCP {near[0].forward + WAYPOINTS[0][0]:.3f}) vs centre {centre[0].forward:.3f}', end='')
 
     def test_direct_heading_drives_straight(self):
         """With the direct heading the base turns in place, then drives along
@@ -324,6 +343,34 @@ class ExecutorConfigTest(unittest.TestCase):
                 {'name': 'look', 'type': 'detect', 'max_arm_plane_error_m': 0.02, 'redo_from_step': 'later'},
                 {'name': 'later', 'type': 'gripper', 'value': 0.0}]})
         self.assertTrue(any('earlier step' in e for e in errors))
+
+    def test_refine_reach_check(self):
+        """refine_target re-places the base exactly when the remaining
+        arm-only waypoints leave the arm's joint limits (no extra margin: the
+        placement's joint_limit_margin_rad is not applied here)."""
+        module = _executor_module()
+        from geometry_msgs.msg import PoseStamped
+        _, steps = load_placement_settings()
+        arm = PlanarArm.from_urdf(urdf_text())
+        fake = SimpleNamespace(end_effector_link='grasp_tcp', _base_link_height=0.0,
+                               _arm_model=lambda link=None: arm)
+        fake._arm_reach_offsets = lambda s, k: module.GestureMotionExecutor._arm_reach_offsets(fake, s, k)
+        refine = next(i for i, s in enumerate(steps) if s['name'] == 'refine_target')
+        bx, by, byaw, cx, cy, cz = LOGGED[1]
+        placement = plan(arm, (cx, cy, cz), (bx, by, byaw))[0]
+        target = PoseStamped()
+        target.pose.position.z = cz
+        check = module.GestureMotionExecutor._arm_only_reachable
+        self.assertTrue(check(fake, steps, refine, target, placement.forward))
+        # Near-side limit of arm-only reach at zero joint margin.
+        remaining = WAYPOINTS[1:]
+        limit = next(f for f in np.arange(placement.forward, 0.0, -0.001)
+                     if not any(arm.solve_path([(f + dx, cz + dz) for dx, dz in remaining], b, 0.0)
+                                for b in (1, -1)))
+        print(f'\n  near placement {placement.forward:.3f} m; arm-only reach ends at {limit + 0.001:.3f} m '
+              f'(a close-up cup up to {(placement.forward - limit - 0.001) * 100:.1f} cm nearer needs no re-placement)', end='')
+        self.assertTrue(check(fake, steps, refine, target, limit + 0.002))
+        self.assertFalse(check(fake, steps, refine, target, limit - 0.002))
 
     def test_reach_offsets_follow_the_sequence(self):
         module = _executor_module()

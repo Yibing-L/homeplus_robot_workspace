@@ -1075,7 +1075,7 @@ class GestureMotionExecutor(Node):
         placement = command_cfg.get('base_placement')
         if placement is not None:
             allowed_placement = {'heading_offsets_deg', 'min_reach_margin_m',
-                                 'joint_limit_margin_rad', 'base_motion'}
+                                 'joint_limit_margin_rad', 'base_motion', 'reach_preference'}
             if not isinstance(placement, dict):
                 errors.append(f'{name}: base_placement must be a mapping')
             else:
@@ -1084,6 +1084,8 @@ class GestureMotionExecutor(Node):
                                   f'{sorted(set(placement) - allowed_placement)}')
                 if placement.get('base_motion', 'combined') not in ('combined', 'turn_then_drive'):
                     errors.append(f'{name}: base_placement.base_motion must be combined or turn_then_drive')
+                if placement.get('reach_preference', 'centre') not in ('centre', 'near'):
+                    errors.append(f'{name}: base_placement.reach_preference must be centre or near')
                 for key in ('min_reach_margin_m', 'joint_limit_margin_rad'):
                     if key in placement and float(placement[key]) < 0.0:
                         errors.append(f'{name}: base_placement.{key} must be nonnegative')
@@ -1637,18 +1639,21 @@ class GestureMotionExecutor(Node):
                         self._abort_sequence(sequence_name, step_name, "arm reach model unavailable")
                         return
                     error, forward = plane
+                    reachable = self._arm_only_reachable(steps, i, detected_pose, forward)
                     self.get_logger().info(
                         f"  {step_name}: target {error * 1000:+.1f} mm from the arm plane "
-                        f"(limit +/-{float(limit) * 1000:.0f} mm), {forward:.3f} m ahead of base_link"
+                        f"(limit +/-{float(limit) * 1000:.0f} mm), {forward:.3f} m ahead of base_link; "
+                        f"remaining arm-only waypoints {'reachable' if reachable else 'NOT reachable'}"
                     )
-                    if abs(error) > float(limit):
+                    if abs(error) > float(limit) or not reachable:
                         target_step = effective_step["redo_from_step"]
                         done = redos.get(step_name, 0)
                         allowed = int(effective_step.get("max_redos", 1))
                         if done >= allowed:
                             self._abort_sequence(
                                 sequence_name, step_name,
-                                f"target still {error * 1000:+.1f} mm off the arm plane after "
+                                f"target {error * 1000:+.1f} mm off the arm plane"
+                                f"{'' if reachable else ', out of arm-only reach'} after "
                                 f"{done} re-placement(s)")
                             return
                         redos[step_name] = done + 1
@@ -2817,6 +2822,19 @@ class GestureMotionExecutor(Node):
         p = target.pose.position
         return arm_plane_error(bx, by, heading, (p.x, p.y), arm.lateral_offset)
 
+    def _arm_only_reachable(self, steps, index, target: PoseStamped, forward: float) -> bool:
+        """Whether the fixed-base pose steps after `index` can reach their
+        waypoints level, from the measured base, for this target."""
+        later = next((k for k in range(index + 1, len(steps))
+                      if steps[k].get('type') == 'pose'), None)
+        if later is None or steps[later].get('group_name') not in ('arm', 'press_arm'):
+            return True
+        arm = self._arm_model(steps[later].get('link_name'))
+        offsets = self._arm_reach_offsets(steps, later)
+        height = target.pose.position.z - self._base_link_height
+        points = [(forward + dx, height + dz) for dx, dz in offsets]
+        return any(arm.solve_path(points, branch, 0.0) is not None for branch in (1, -1))
+
     @staticmethod
     def _yaw_orientation(yaw: float) -> List[float]:
         return [0.0, 0.0, math.sin(yaw / 2), math.cos(yaw / 2)]
@@ -2906,7 +2924,8 @@ class GestureMotionExecutor(Node):
             heading_offsets=[math.radians(float(v)) for v in settings.get('heading_offsets_deg', [0.0])],
             min_margin=float(settings.get('min_reach_margin_m', 0.03)),
             limit_margin=float(settings.get('joint_limit_margin_rad', 0.05)),
-            base_height=self._base_link_height)
+            base_height=self._base_link_height,
+            preference=str(settings.get('reach_preference', 'centre')))
         self.get_logger().info(
             f'{name}: base placement for target ({p.x:.3f}, {p.y:.3f}, {p.z:.3f}) from base '
             f'({bx:.3f}, {by:.3f}, {theta:.3f}); arm waypoints (forward, up) {offsets}; '

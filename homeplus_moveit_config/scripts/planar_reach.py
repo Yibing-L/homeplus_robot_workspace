@@ -257,17 +257,21 @@ def plan_base_placements(arm: PlanarArm, target: Sequence[float], base: Sequence
                          min_margin: float = 0.02, limit_margin: float = 0.05,
                          base_height: float = 0.0, grid: float = 0.005,
                          forward_alternatives: int = 3, alternative_spacing: float = 0.02,
-                         max_forward: float = 1.5) -> List[Placement]:
+                         max_forward: float = 1.5, preference: str = 'centre') -> List[Placement]:
     """Base poses from which the arm alone (roll joints at 0, tip level)
     reaches every waypoint target + (dx along heading, dz up) in
     `reach_offsets`, moving in straight lines between consecutive waypoints.
 
     For each heading the feasible set of target-forward distances is computed
-    on a grid; the centre of its widest interval maximises tolerance to base
-    and detection error in both directions. Alternatives (nearer the interval
-    centre first) are appended for collision fallback. Placements whose
-    interval half-width is below `min_margin` are not returned.
+    on a grid. preference 'centre' takes the centre of its widest interval,
+    maximising tolerance to base and detection error in both directions;
+    'near' takes the shortest reach that still leaves `min_margin` on the near
+    side (base closest to the target, arm least extended). Alternatives
+    (moving away from that choice) are appended for collision fallback.
+    Intervals narrower than 2 * `min_margin` are not used.
     """
+    if preference not in ('centre', 'near'):
+        raise ValueError(f'unknown reach preference {preference!r}')
     tx, ty, tz = target
     psi0 = placement_heading(base[:2], (tx, ty), arm.lateral_offset)
     height = tz - base_height
@@ -294,13 +298,19 @@ def plan_base_placements(arm: PlanarArm, target: Sequence[float], base: Sequence
             margin = (hi - lo) / 2
             if margin < min_margin:
                 continue
-            centre = (lo + hi) / 2
-            forwards = [centre]
-            for k in range(1, forward_alternatives + 1):
-                for sign in (1, -1):
-                    f = centre + sign * k * alternative_spacing
-                    if lo + min_margin / 2 <= f <= hi - min_margin / 2:
-                        forwards.append(f)
+            if preference == 'near':
+                # Grid-aligned so the near-side margin is never below min_margin.
+                start = lo + math.ceil(min_margin / grid - 1e-9) * grid
+                forwards = [start + k * alternative_spacing for k in range(forward_alternatives + 1)
+                            if start + k * alternative_spacing <= hi - min_margin + 1e-9]
+            else:
+                centre = (lo + hi) / 2
+                forwards = [centre]
+                for k in range(1, forward_alternatives + 1):
+                    for sign in (1, -1):
+                        f = centre + sign * k * alternative_spacing
+                        if lo + min_margin / 2 <= f <= hi - min_margin / 2:
+                            forwards.append(f)
             for f in forwards:
                 points = [(f + dx, height + dz) for dx, dz in reach_offsets]
                 solutions = arm.solve_path(points, branch, limit_margin)
@@ -314,8 +324,8 @@ def plan_base_placements(arm: PlanarArm, target: Sequence[float], base: Sequence
                     base_y=ty - s * f - c * d,
                     forward=f, margin=min(f - lo, hi - f),
                     arm=solutions[0], waypoints=solutions, heading_offset=offset))
-    # Prefer the direct heading, then the most central reach.
-    results.sort(key=lambda p: (abs(p.heading_offset), -p.margin))
+    # Prefer the direct heading, then the preferred reach (lists are ordered).
+    results.sort(key=lambda p: abs(p.heading_offset))
     return results
 
 

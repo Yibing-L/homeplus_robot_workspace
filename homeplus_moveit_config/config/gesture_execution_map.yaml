@@ -234,8 +234,14 @@ commands:
           # detections differ by several cm: keep 3 cm of reach either way.
           min_reach_margin_m: 0.03
           joint_limit_margin_rad: 0.05
-          # Turn in place, then drive straight; never turn while translating.
-          base_motion: turn_then_drive
+          # Shortest reach with that margin: pre-grasp TCP ~0.66 m ahead at
+          # cup height ~0.78 m (centre would be ~0.76 m), so the arm lifts the
+          # cup less extended. refine_target re-places the base if the
+          # close-up cup is then out of arm-only reach.
+          reach_preference: near
+          # One combined base motion, as before. turn_then_drive exists but is
+          # unused until wheel slip has been measured on hardware.
+          base_motion: combined
         # Check the approach in the pre-grasp scene. Lift/retreat are checked
         # after closure with the cup attached, not as a static world obstacle.
         lookahead_offsets: [[0.19, 0.0, 0.0]]
@@ -275,7 +281,8 @@ commands:
         # Closing the finger meshes on an 8 cm cup held fixed, both fingers
         # still touch it on opposite sides of its centre before 75 deg for
         # offsets up to 25 mm (tests/test_base_placement.py); 20 mm leaves
-        # 5 mm for detection noise. Further off, back off and re-place the
+        # 5 mm for detection noise. Further off, or if the remaining arm-only
+        # waypoints are out of reach from here, back off and re-place the
         # base from this close-up detection instead.
         max_arm_plane_error_m: 0.02
         redo_from_step: retract_arm_for_pickup
