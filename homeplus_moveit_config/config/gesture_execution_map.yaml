@@ -11,6 +11,23 @@ commands:
       joint_wrist: 0.0
       joint_hand: 0.0
 
+  # Recovery only, not for routine use: raise the arm to upright without moving
+  # the base or resetting the Arduino (a reset drops the arm while the firmware
+  # boots, and home would also drive the base back to odometry zero). Slow and
+  # endpoint-checked so the shoulder does not trip the 3 deg tracking limit.
+  arm_upright:
+    type: joint_state
+    group_name: arm
+    endpoint_profile: transit
+    velocity_scaling: 0.3
+    acceleration_scaling: 0.3
+    require_trajectory_approval: true
+    joints:
+      joint_shoulder: 0.0
+      joint_elbow: 0.0
+      joint_wrist: 0.0
+      joint_hand: 0.0
+
   reach_forward:
     type: pose
     frame_id: world
