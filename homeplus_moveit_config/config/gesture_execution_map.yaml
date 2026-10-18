@@ -271,6 +271,15 @@ commands:
         # the new segmented-depth estimate from the close view for Z instead
         # of preserving that stale, often below-table initial measurement.
         preserve_reference_z: true
+        # Steps 5-6 keep the base locked and cannot move the gripper sideways.
+        # Closing the finger meshes on an 8 cm cup held fixed, both fingers
+        # still touch it on opposite sides of its centre before 75 deg for
+        # offsets up to 25 mm (tests/test_base_placement.py); 20 mm leaves
+        # 5 mm for detection noise. Further off, back off and re-place the
+        # base from this close-up detection instead.
+        max_arm_plane_error_m: 0.02
+        redo_from_step: retract_arm_for_pickup
+        max_redos: 1
 
       - name: align_refined_grasp
         type: pose

@@ -998,7 +998,7 @@ class GestureMotionExecutor(Node):
         if not isinstance(command_cfg, dict):
             return [f"{name}: command must be a mapping"]
 
-        allowed = set("endpoint_profile name type group_name joints value frame_id position orientation rpy_deg target steps task_id detection_topic detection_timeout_sec detection_min_stable_samples detection_stability_tolerance_m detection_max_refresh_shift_m max_replanning_attempts max_attempts settle_sec require_trajectory_approval planner_id allowed_planning_time num_planning_attempts link_name offset_x offset_y offset_z offset_frame orientation_from_detection gripper_value final_gripper_value position_tolerance_m position_tolerance_xy_m position_tolerance_z_m use_orientation_constraint orientation_tolerance_rad orientation_tolerance_x_rad orientation_tolerance_y_rad orientation_tolerance_z_rad safe_z_candidate_offsets_m base_goal_tcp_x_min_m base_goal_tcp_x_max_m base_goal_tcp_y_max_m max_base_goal_rotation_rad max_base_goal_translation_m max_base_goal_y_translation_m preserve_reference_z maintain_orientation_during_path post_delay_sec cartesian mobile_standoff lookahead_offsets velocity_scaling acceleration_scaling clear_octomap_before_plan octomap_clear_timeout_sec octomap_rebuild_wait_sec ik_candidate_attempts attach_cup joint_tolerance hardcoded_detection_pose hardcoded_detection_frame planning_service_timeout_sec phase_allowed_planning_time phase_num_planning_attempts phase_joint_tolerance continue_on_arduino_timeout base_placement heading_from_base".split())
+        allowed = set("endpoint_profile name type group_name joints value frame_id position orientation rpy_deg target steps task_id detection_topic detection_timeout_sec detection_min_stable_samples detection_stability_tolerance_m detection_max_refresh_shift_m max_replanning_attempts max_attempts settle_sec require_trajectory_approval planner_id allowed_planning_time num_planning_attempts link_name offset_x offset_y offset_z offset_frame orientation_from_detection gripper_value final_gripper_value position_tolerance_m position_tolerance_xy_m position_tolerance_z_m use_orientation_constraint orientation_tolerance_rad orientation_tolerance_x_rad orientation_tolerance_y_rad orientation_tolerance_z_rad safe_z_candidate_offsets_m base_goal_tcp_x_min_m base_goal_tcp_x_max_m base_goal_tcp_y_max_m max_base_goal_rotation_rad max_base_goal_translation_m max_base_goal_y_translation_m preserve_reference_z maintain_orientation_during_path post_delay_sec cartesian mobile_standoff lookahead_offsets velocity_scaling acceleration_scaling clear_octomap_before_plan octomap_clear_timeout_sec octomap_rebuild_wait_sec ik_candidate_attempts attach_cup joint_tolerance hardcoded_detection_pose hardcoded_detection_frame planning_service_timeout_sec phase_allowed_planning_time phase_num_planning_attempts phase_joint_tolerance continue_on_arduino_timeout base_placement heading_from_base max_arm_plane_error_m redo_from_step max_redos".split())
         if command_cfg.get('endpoint_profile', 'precise') not in ('precise', 'transit'):
             errors.append(f'{name}: endpoint_profile must be precise or transit')
         if command_cfg.get('cartesian') and command_cfg.get('endpoint_profile') == 'transit':
@@ -1072,6 +1072,16 @@ class GestureMotionExecutor(Node):
         if command_cfg.get('heading_from_base'):
             if command_cfg.get('group_name') not in ('arm', 'press_arm') or command_cfg.get('target') != 'detected':
                 errors.append(f'{name}: heading_from_base requires a fixed-base arm group and target: detected')
+        if 'max_arm_plane_error_m' in command_cfg:
+            if action_type != 'detect' or float(command_cfg['max_arm_plane_error_m']) <= 0.0:
+                errors.append(f'{name}: max_arm_plane_error_m must be positive on a detect step')
+            if not command_cfg.get('redo_from_step'):
+                errors.append(f'{name}: max_arm_plane_error_m requires redo_from_step')
+        if 'max_redos' in command_cfg:
+            value = command_cfg['max_redos']
+            if not isinstance(value, int) or isinstance(value, bool) or value < 0:
+                errors.append(f'{name}: max_redos must be a nonnegative integer')
+
         if action_type == "joint_state" and not command_cfg.get("joints"):
             errors.append(f"{name}: joint_state requires a non-empty joints mapping")
 
@@ -1134,6 +1144,13 @@ class GestureMotionExecutor(Node):
                             f"{name}/{step_name}", step
                         )
                     )
+                names = [str(step.get("name", "")) if isinstance(step, dict) else "" for step in steps]
+                for index, step in enumerate(steps):
+                    if isinstance(step, dict) and step.get("redo_from_step") is not None:
+                        if step["redo_from_step"] not in names[:index]:
+                            errors.append(
+                                f"{name}/{names[index]}: redo_from_step must name an earlier step"
+                            )
                 uses_detection = any(
                     isinstance(step, dict)
                     and (step.get("target") == "detected" or step.get("type") == "detect")
@@ -1393,7 +1410,13 @@ class GestureMotionExecutor(Node):
                 raise RuntimeError('Cup remains attached; explicitly release/remove it before another pickup')
             self._update_cup_scene(detected_pose)
         last_successful_pose: Optional[PoseStamped] = None
-        for i, step in enumerate(steps):
+        redos: Dict[str, int] = {}
+        # A while loop so a detect step can send the sequence back to an
+        # earlier step (re-place the base from a better observation).
+        i = -1
+        while i + 1 < len(steps):
+            i += 1
+            step = steps[i]
             step_name = step.get("name", f"step_{i}")
             step_type = step.get("type", "command")
 
@@ -1573,6 +1596,36 @@ class GestureMotionExecutor(Node):
                         f"no stable detection on {detection_topic} within {timeout}s",
                     )
                     return
+
+                limit = effective_step.get("max_arm_plane_error_m")
+                if limit is not None:
+                    # The fixed-base steps cannot move the gripper sideways;
+                    # re-place the base rather than grasp off-centre.
+                    plane = self._arm_plane_offset(detected_pose, effective_step.get("link_name"))
+                    if plane is None:
+                        self._abort_sequence(sequence_name, step_name, "arm reach model unavailable")
+                        return
+                    error, forward = plane
+                    self.get_logger().info(
+                        f"  {step_name}: target {error * 1000:+.1f} mm from the arm plane "
+                        f"(limit +/-{float(limit) * 1000:.0f} mm), {forward:.3f} m ahead of base_link"
+                    )
+                    if abs(error) > float(limit):
+                        target_step = effective_step["redo_from_step"]
+                        done = redos.get(step_name, 0)
+                        allowed = int(effective_step.get("max_redos", 1))
+                        if done >= allowed:
+                            self._abort_sequence(
+                                sequence_name, step_name,
+                                f"target still {error * 1000:+.1f} mm off the arm plane after "
+                                f"{done} re-placement(s)")
+                            return
+                        redos[step_name] = done + 1
+                        self.get_logger().warn(
+                            f"  {step_name}: re-placing the base from the close-up detection; "
+                            f"redoing from {target_step} ({done + 1}/{allowed})")
+                        i = [str(st.get("name", "")) for st in steps].index(target_step) - 1
+                        continue
 
             elif step_type == "pose":
                 if not self.enable_moveit_planning or self.move_group_client is None:
@@ -2708,6 +2761,17 @@ class GestureMotionExecutor(Node):
     def _measured_base(self):
         q = dict(zip(self.latest_joint_state.name, self.latest_joint_state.position))
         return q['base_x'], q['base_y'], q['base_theta']
+
+    def _arm_plane_offset(self, target: PoseStamped, link: Optional[str] = None):
+        """(sideways error of the target from the arm plane, forward distance)
+        at the measured base pose."""
+        arm = self._arm_model(link)
+        if arm is None:
+            return None
+        self._require_fresh_state()
+        bx, by, heading = self._measured_base()
+        p = target.pose.position
+        return arm_plane_error(bx, by, heading, (p.x, p.y), arm.lateral_offset)
 
     @staticmethod
     def _yaw_orientation(yaw: float) -> List[float]:
