@@ -389,3 +389,13 @@ def test_upright_held_arm_counts_as_motor_power(env):
     if s["motor_power"]["value"] == "verified":
         assert s["motor_power"]["verified"]["how"] in ("arm holding upright against gravity",
                                                        "arm rose to upright after bridge start")
+
+
+def test_pose_before_cycle_report_is_paired(env):
+    clock, store, tracker = env
+    for i in range(3):
+        store.push_event("/molmopoint/task_1/pose", {"x": 1.08, "y": 0.34, "z": 0.76}, "p")
+        tracker.observe(clock())
+        store.push_event("/molmopoint/diagnostics", {"stage": "done", "reason": "pose_published", "task_id": 1}, "d")
+        tracker.observe(clock())
+    assert [c["pose"] for c in list(tracker.mem.cycles)[-3:]] == [(1.08, 0.34, 0.76)] * 3

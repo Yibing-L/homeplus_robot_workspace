@@ -47,6 +47,7 @@ class Memory:
     faults: List[Dict[str, Any]] = field(default_factory=list)
     abort_acked_t: Optional[float] = None
     motor_verified: Optional[Dict[str, Any]] = None
+    pending_pose: Optional[Any] = None  # (t, xyz) task pose waiting for its cycle report
     estop_declaration: Optional[Dict[str, Any]] = None
     declared: Dict[str, Optional[Dict[str, Any]]] = field(default_factory=lambda: {
         "one_target": None, "area_clear": None, "at_start_spot": None})
@@ -118,13 +119,24 @@ class Tracker:
             elif name == "/arduino/ack":
                 self._ack(value)
             elif name == "/molmopoint/diagnostics":
-                m.cycles.append({"t": t, "stage": value.get("stage"), "reason": value.get("reason"),
-                                 "detail": value.get("detail"), "pose": None, "task_id": value.get("task_id")})
+                cycle = {"t": t, "stage": value.get("stage"), "reason": value.get("reason"),
+                         "detail": value.get("detail"), "pose": None, "task_id": value.get("task_id")}
+                # The detector publishes the task pose BEFORE it reports the cycle, so the
+                # pose usually arrives first: pair them in either order.
+                pending = getattr(m, "pending_pose", None)
+                if cycle["stage"] == "done" and pending and abs(t - pending[0]) < 1.5:
+                    cycle["pose"] = pending[1]
+                    m.pending_pose = None
+                m.cycles.append(cycle)
             elif name == "tf/drop":
                 m.tf_drops.append(t)
             elif name.startswith("/molmopoint/task_") and name.endswith("/pose"):
-                if m.cycles and m.cycles[-1]["pose"] is None and t - m.cycles[-1]["t"] < 1.0:
-                    m.cycles[-1]["pose"] = (value["x"], value["y"], value["z"])
+                pose = (value["x"], value["y"], value["z"])
+                if m.cycles and m.cycles[-1]["pose"] is None and m.cycles[-1]["stage"] == "done" \
+                        and 0 <= t - m.cycles[-1]["t"] < 1.0:
+                    m.cycles[-1]["pose"] = pose
+                else:
+                    m.pending_pose = (t, pose)
         js = self.store.get("/hardware/joint_states")
         if js and js.value and js.age(now) is not None and js.age(now) < 1.0:
             j = js.value
