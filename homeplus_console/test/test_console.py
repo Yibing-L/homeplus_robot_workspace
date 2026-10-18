@@ -168,20 +168,31 @@ def test_window_spread_zband_two_clusters_nonfinite():
     now = 100.0
     ok = detection_window(good_cycles(now), now, CFG, 1)
     assert ok["ok"] and ok["consecutive"] == 4
+    # Height is the operator's judgment: an unusual but consistent height still passes.
     high = detection_window(good_cycles(now, z=0.96), now, CFG, 1)
-    assert not high["ok"] and any("outside" in r for r in high["reasons"])
+    assert high["ok"]
+    # Physically impossible poses (dead camera frames) never count.
     garbage = detection_window(good_cycles(now, z=-6.79), now, CFG, 1)
     assert not garbage["ok"]
+    # One stray detection is not a second object...
+    stray = good_cycles(now)
+    stray[1] = dict(stray[1], pose=(0.95, 0.42, 0.765))
+    w = detection_window(stray, now, CFG, 1)
+    assert not w["two_candidates"] and w["ok"] and w["consecutive"] == 3
+    # ...but two agreeing detections elsewhere are.
     two = good_cycles(now)
-    two[1] = dict(two[1], pose=(0.95, 0.42, 0.765))
+    two[0] = dict(two[0], pose=(0.95, 0.42, 0.765))
+    two[1] = dict(two[1], pose=(0.951, 0.421, 0.766))
     w = detection_window(two, now, CFG, 1)
     assert w["two_candidates"] and not w["ok"]
+    # A NaN pose is skipped like any failed cycle.
     nan = good_cycles(now)
     nan[-1] = dict(nan[-1], pose=(math.nan, 0.0, 0.76))
-    assert not detection_window(nan, now, CFG, 1)["ok"]
+    assert detection_window(nan, now, CFG, 1)["consecutive"] == 3
+    # Skipped cycles between agreeing detections don't reset the count.
     gap = good_cycles(now)
     gap[-2] = dict(gap[-2], stage="publish_gate", pose=None)
-    assert detection_window(gap, now, CFG, 1)["consecutive"] == 1
+    assert detection_window(gap, now, CFG, 1)["consecutive"] == 3
 
 
 # ---------------------------------------------------------------------------- actions (§6.2)

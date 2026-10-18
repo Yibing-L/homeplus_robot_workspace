@@ -91,43 +91,42 @@ def detection_window(cycles, now: float, cfg: Dict[str, Any], task_id: int) -> D
     recent = [c for c in cycles if now - c["t"] <= cfg["window_max_age_sec"]][-cfg["window_n"]:]
     samples = [{"x": c["pose"][0], "y": c["pose"][1], "z": c["pose"][2], "age": round(now - c["t"], 1)}
                for c in recent if c["pose"] is not None]
-    # trailing run of consecutive done cycles with poses
-    run = []
-    for c in reversed(recent):
-        if c["stage"] == "done" and c["pose"] is not None:
-            run.append(c)
-        else:
-            break
-    run.reverse()
-    pts = [c["pose"] for c in run]
-    all_finite = all(all(finite(v) for v in p) for p in pts)
-    spread = max((math.dist(a, b) for a, b in combinations(pts, 2)), default=0.0) if all_finite else None
-    zlo, zhi = cfg["z_band"]
-    z_ok = all_finite and all(zlo <= p[2] <= zhi for p in pts)
+    # Largest group of recent detections that agree within the spread limit. Skipped
+    # cycles (rgbd skew, stale frames) between them do not reset the count, matching the
+    # executor's own stability gate. Height plausibility is left to the operator.
+    done = [c["pose"] for c in recent
+            if c["stage"] == "done" and c["pose"] is not None and all(finite(v) for v in c["pose"])
+            and -0.2 <= c["pose"][2] <= 3.0]  # physically impossible (e.g. z = -6.79 m from dead frames)
+    pts = []
+    for anchor in done:
+        group = [p for p in done if math.dist(anchor, p) < cfg["window_spread_m"]]
+        if len(group) > len(pts):
+            pts = group
+    run = pts
+    all_finite = True
+    spread = max((math.dist(a, b) for a, b in combinations(pts, 2)), default=0.0)
     # two candidate objects: any pair of window samples farther apart than the cluster distance
     all_pts = [(s["x"], s["y"], s["z"]) for s in samples if all(finite(v) for v in (s["x"], s["y"], s["z"]))]
     two = False
     if len(all_pts) >= 2:
         far = max(math.dist(a, b) for a, b in combinations(all_pts, 2))
-        two = far > cfg["window_cluster_m"] and all(abs(p[2]) < 3 for p in all_pts)
+        # A second object needs its own agreeing pair; one stray detection is not a second cup.
+        others = [p for p in all_pts if not pts or math.dist(p, pts[0]) > cfg["window_cluster_m"]]
+        two = far > cfg["window_cluster_m"] and any(
+            math.dist(a, b) < cfg["window_spread_m"] for a, b in combinations(others, 2))
     n_ok = len(run) >= cfg["window_min_consecutive"]
-    ok = n_ok and all_finite and spread is not None and spread < cfg["window_spread_m"] and z_ok and not two
+    ok = n_ok and not two
     reasons = []
     if not n_ok:
-        reasons.append(f"{len(run)}/{cfg['window_min_consecutive']} consecutive detections")
-    if not all_finite:
-        reasons.append("non-finite pose")
-    if spread is not None and len(pts) >= 2 and spread >= cfg["window_spread_m"]:
-        reasons.append(f"spread {spread * 100:.1f} cm ≥ {cfg['window_spread_m'] * 100:.0f} cm")
-    if pts and all_finite and not z_ok:
-        bad = [p[2] for p in pts if not (zlo <= p[2] <= zhi)]
-        reasons.append(f"z {bad[-1]:.2f} m outside {zlo:.2f}–{zhi:.2f} m")
+        reasons.append(f"{len(run)}/{cfg['window_min_consecutive']} agreeing detections "
+                       f"(within {cfg['window_spread_m'] * 100:.0f} cm)")
     if two:
         reasons.append("two candidate objects")
     last = pts[-1] if pts else (all_pts[-1] if all_pts else None)
     return {"ok": ok, "consecutive": len(run), "required": cfg["window_min_consecutive"],
             "spread_cm": round(spread * 100, 1) if spread is not None and len(pts) >= 2 else None,
-            "z_band": [zlo, zhi], "z": round(last[2], 3) if last else None,
+            "z_band": list(cfg["z_band"]),  # display only; height is the operator's judgment
+            "z": round(last[2], 3) if last else None,
             "position": [round(v, 3) for v in last] if last else None,
             "two_candidates": two, "samples": samples, "reasons": reasons, "task_id": task_id}
 
@@ -442,7 +441,6 @@ def derive(inp: Inputs, now: float, wall: float) -> Dict[str, Any]:
              "" if joints_fresh else f"joints {fmt_age(joints_age)} old", "health"),
         item("still", "Arm still", arm_still is True, "" if arm_still else "arm moving or unknown", "health"),
         item("motors", "Motor power verified", motor["value"] == "verified", motor["value"], "motors"),
-        item("origin", "Odometry origin confirmed", origin["status"] == "confirmed", origin["status"], "origin"),
         item("faults", "No fault or unacknowledged abort", not faults_open and not abort_unacked, "", "next"),
         item("executor", "Executor idle and fresh", idle is True, "" if es_fresh else "executor_state stale", "timeline"),
         item("moveit", "MoveIt ready", _fresh(S.get("moveit/ready"), now, cfg["moveit_fresh_sec"]), "", "health"),
@@ -461,7 +459,7 @@ def derive(inp: Inputs, now: float, wall: float) -> Dict[str, Any]:
         {"id": k, "label": label, "ok": m.declared[k] is not None or (k == "at_start_spot" and bool(origin_recent)),
          "declared": m.declared[k], "auto": k == "at_start_spot" and bool(origin_recent) and m.declared[k] is None}
         for k, label in (("one_target", "One target object in view"), ("area_clear", "Area clear"),
-                         ("at_start_spot", "Robot at start spot"))]
+                         )]
 
     # ---------------- robot headline (§3.2), first match wins
     blockers = [p for p in preflight if not p["ok"]] + [d for d in declared if not d["ok"]]

@@ -461,7 +461,8 @@ class RosIO:
         out = []
         for topic in ("/gesture_control/command", "/gesture_control/approve_planned_path", "/arduino/command_queue"):
             for info in self._node.get_publishers_info_by_topic(topic):
-                if info.node_name not in ("operator_console", EXECUTOR_NODE):
+                # gesture_behavior is part of gesture_control.launch.py (gesture -> command).
+                if info.node_name not in ("operator_console", EXECUTOR_NODE, "gesture_behavior"):
                     out.append(f"{info.node_name} → {topic}")
         return out
 
