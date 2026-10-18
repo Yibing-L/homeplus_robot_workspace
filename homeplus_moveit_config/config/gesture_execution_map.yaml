@@ -275,6 +275,9 @@ commands:
       - name: align_refined_grasp
         type: pose
         group_name: arm
+        # Gripper heading = measured base heading (the arm cannot yaw); the
+        # refined target is taken in the arm plane (checked by refine_target).
+        heading_from_base: true
         link_name: grasp_tcp
         frame_id: world
         target: detected
@@ -296,6 +299,7 @@ commands:
         require_trajectory_approval: false
         frame_id: world
         group_name: arm
+        heading_from_base: true
         target: detected
         orientation_from_detection: true
         offset_frame: target
