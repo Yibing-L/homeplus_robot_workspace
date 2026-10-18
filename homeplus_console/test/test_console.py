@@ -138,7 +138,9 @@ def test_new_firmware_boot_loses_origin_but_bridge_restart_does_not(env):
     tracker.observe(clock())
     assert tracker.mem.origin["status"] == "lost"
     s = derive(make(clock, store, tracker), clock(), 0)
-    assert s["robot"]["state"] == "ORIGIN_LOST"
+    # Lost origin is a warning (pickup doesn't need it), not a robot state that blocks starting.
+    assert s["robot"]["state"] != "ORIGIN_LOST"
+    assert any(a["id"] == "origin" and a["severity"] == "warn" for a in s["next_actions"])
 
 
 def test_unexpected_odometry_jump_to_zero_loses_origin(env):

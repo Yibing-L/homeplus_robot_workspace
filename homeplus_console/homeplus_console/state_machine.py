@@ -468,12 +468,6 @@ def derive(inp: Inputs, now: float, wall: float) -> Dict[str, Any]:
         robot = {"state": "BRIDGE_DOWN", "title": "Bridge down", "severity": "bad", "sub": sub,
                  "detail": f"{sub} · joints {fmt_age(joints_age)} old" + (
                      " · sequence outcome UNKNOWN until the executor reports" if ex and ex.get("busy") else "")}
-    elif origin["status"] == "lost":
-        b = origin.get("base_at_reset") or {}
-        at = (f"robot believed it was at x {b.get('base_x', 0):+.2f} m, y {b.get('base_y', 0):+.2f} m at the reset"
-              if b else "position at reset unknown")
-        robot = {"state": "ORIGIN_LOST", "title": "Odometry origin lost", "severity": "bad",
-                 "sub": origin.get("lost_reason"), "detail": f"{origin.get('lost_reason')}; {at}."}
     elif faults_open:
         f = faults_open[-1]
         robot = {"state": "HARDWARE_FAULT", "title": "Hardware fault", "severity": "bad", "sub": f["code"],
@@ -541,9 +535,14 @@ def derive(inp: Inputs, now: float, wall: float) -> Dict[str, Any]:
                 "Joint feedback stopped during a sequence. The firmware watchdog halts queued motion after 1.5 s.",
                 "Use the physical E-stop if the robot is still moving.")
     if origin["status"] == "lost":
-        add("origin", "bad", "Odometry origin lost", robot["detail"] if robot["state"] == "ORIGIN_LOST" else origin.get("lost_reason") or "",
-            "Odometry is now zero wherever the robot stood. If it's on the start spot, set start here; if not, the "
-            "flow walks you through pushing it there first.", flow="set_start")
+        # A warning, not a robot state: pickup places the base from the current pose and
+        # does not need the old start spot. Only Return to start / home depend on it.
+        b = origin.get("base_at_reset") or {}
+        at = (f"robot believed it was at x {b.get('base_x', 0):+.2f} m, y {b.get('base_y', 0):+.2f} m at the reset"
+              if b else "position at reset unknown")
+        add("origin", "warn", "Odometry origin lost", f"{origin.get('lost_reason') or ''}; {at}.",
+            "Odometry is now zero wherever the robot stood. Pickup doesn't need it; Return to start does. "
+            "Set start here if the robot is on the start spot.", flow="set_start")
     elif origin["status"] == "unconfirmed":
         add("origin", "warn", "Odometry origin not confirmed",
             "The console hasn't seen this bridge session start at the start spot.",
