@@ -30,6 +30,10 @@ using std::max; using std::min; using std::abs; using std::isfinite;
 #define constrain(x,a,b) ((x)<(a)?(a):((x)>(b)?(b):(x)))
 unsigned long fakeTime = 1;
 unsigned long millis(){return fakeTime;}
+unsigned long micros(){return fakeTime*1000UL+7;}
+#define A0 54
+#define A1 55
+int analogRead(int pin){return pin==A0?517:203;}
 void delay(int){} void delayMicroseconds(int){}
 void pinMode(int,int){} void digitalWrite(int,int){} void analogWrite(int,int){}
 struct FakeSerial {
@@ -46,9 +50,12 @@ struct Servo {void attach(int){} void writeMicroseconds(int){}};
 struct Encoder {Encoder(int,int){} long read(){return 0;}};
 struct AS5600 {void begin(){} int readAngle(){return 2048;}};
 struct FakeWire {void begin(){} void beginTransmission(int){} void write(int){} void endTransmission(){}} Wire;
+int pidReinitCount = 0;
 struct PID {
+ int mode = MANUAL;
  PID(double*,double*,double*,double,double,double,int){}
- void SetSampleTime(int){} void SetOutputLimits(double,double){} void SetMode(int){}
+ void SetSampleTime(int){} void SetOutputLimits(double,double){}
+ void SetMode(int m){ if(m==AUTOMATIC && mode==MANUAL) pidReinitCount++; mode=m; }
  void SetTunings(double,double,double){} void Compute(){}
 };
 '''
@@ -60,7 +67,9 @@ def wire(queue, command_id=42):
 
 class FirmwareTests(unittest.TestCase):
     def test_compile_parser_timing_watchdog(self):
-        sketch=(ROOT/'ARDUINO_FIRMWARE_UPDATED.txt').read_text()
+        sketch=(ROOT/'firmware'/'homeplus_controller'/'homeplus_controller.ino').read_text()
+        # The uploaded copy must not drift from the sketch under test.
+        self.assertEqual(sketch,(ROOT/'ARDUINO_FIRMWARE_UPDATED.txt').read_text())
         sketch=re.sub(r'^#include.*\n','',sketch,flags=re.M)
         prototypes=[]
         for match in re.finditer(r'^(?:void|bool|float|int|int32_t)\s+\w+\([^;{}]*\)\s*\{',sketch,re.M):
@@ -186,6 +195,38 @@ int main(){
  fakeTime=18001;lastHostMillis=18001;lastArmPIDMillis=18001;
  loop();assert(commandCount==0);
  assert(Serial.out.str().find("SETTLE_TIMEOUT")!=std::string::npos);
+ // Boot identity: printed after READY4 and on request, with the ZERO capability.
+ assert(bootId!=0);
+ std::string bootLine="BOOT "+std::to_string(bootId)+" ZERO";
+ assert(Serial.out.str().find("READY4\n"+bootLine)!=std::string::npos);
+ stopAtCurrentState();
+ size_t mark=Serial.out.str().size();
+ Serial.input="ID\n";fakeTime=20000;lastHostMillis=20000;lastArmPIDMillis=20000;loop();
+ assert(Serial.out.str().find(bootLine,mark)!=std::string::npos);
+ // ZERO: odometry and the held base target become the current pose; the arm is untouched.
+ x=1234;y=-56;theta=78;target_x=1234;target_y=-56;target_theta=78;dx=dy=dtheta=0;
+ elbow_target=elbow_pos;shoulder_target=shoulder_pos;
+ float elbowBefore=elbow_pos,elbowTargetBefore=elbow_target;
+ int reinitBefore=pidReinitCount;
+ mark=Serial.out.str().size();
+ Serial.input="ZERO\n";fakeTime=20100;lastHostMillis=20100;lastArmPIDMillis=20100;loop();
+ assert(x==0 && y==0 && theta==0);
+ assert(target_x==0 && target_y==0 && target_theta==0);
+ assert(elbow_pos==elbowBefore && elbow_target==elbowTargetBefore);
+ assert(pidReinitCount==reinitBefore+3); // base PIDs re-initialized: no derivative kick, no stale integral
+ assert(Serial.out.str().find("ZEROED "+std::to_string(bootId),mark)!=std::string::npos);
+ assert(Serial.out.str().find("ERROR",mark)==std::string::npos);
+ assert(commandCount==0);
+ // ZERO never applies while a trajectory is active.
+ current_millis=21000;
+ char busy[]="FIRST";parseStreamPacket(busy);
+ assert(streamActive);
+ float xBefore=x,targetBefore=target_x;
+ mark=Serial.out.str().size();
+ zeroOdometry();  // same handler loop() dispatches "ZERO" to (routing is exercised above)
+ assert(x==xBefore && target_x==targetBefore && streamActive);
+ assert(Serial.out.str().find("ZERO_BUSY",mark)!=std::string::npos);
+ stopAtCurrentState();
 }
 '''.replace('MORE',stream(2,1,'0 0 0 0 0 0 0 0 0 0 4000')).replace('FIRST',first).replace('LAST',last).replace('GOOD',good).replace('MALFORMED',malformed).replace('BOUNDS',bad_limits).replace('CORRUPT',corrupt)
         with tempfile.TemporaryDirectory() as temp:

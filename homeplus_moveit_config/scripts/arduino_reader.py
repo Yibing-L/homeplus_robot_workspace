@@ -8,11 +8,14 @@ from collections import deque
 import binascii
 import argparse
 import glob
+import json
 import math
 import time
+import uuid
 
 import rclpy
 import serial
+from rclpy.executors import ExternalShutdownException
 from rclpy.node import Node
 from rclpy.qos import QoSProfile, DurabilityPolicy
 from sensor_msgs.msg import JointState
@@ -81,16 +84,29 @@ class ArduinoBridge(Node):
         self.ready = False
         self.serial_bytes_received = 0
         self.last_serial_line = ''
+        # Identity for the operator console: session_id changes on every port open, boot_id on every
+        # firmware boot. Same boot across a reopen = odometry intact; new boot = odometry re-zeroed.
+        self.session_id = None
+        self.opened_wall = None
+        self.boot_id = None
+        self.zero_supported = False
+        self.zero_pending = False
+        self.zero_count = 0
+        self.firmware_restarts = 0
+        self.last_error = None
+        self.id_requested = False
         self.joint_state_pub = self.create_publisher(JointState, '/joint_states', 10)
         self.hardware_state_pub = self.create_publisher(JointState, '/hardware/joint_states', 10)
         self.ack_pub = self.create_publisher(String, '/arduino/ack', 10)
         latched = QoSProfile(depth=1, durability=DurabilityPolicy.TRANSIENT_LOCAL)
         self.status_pub = self.create_publisher(Bool, '/arduino/status', latched)
         self.ready_pub = self.create_publisher(Bool, '/arduino/ready', latched)
+        self.info_pub = self.create_publisher(String, '/arduino/bridge_info', latched)
         self._set_ready(False)
         self.status_pub.publish(Bool(data=False))
         self.create_subscription(String, '/arduino/command_queue', self._command_queue_callback, 10)
         self.create_subscription(Bool, '/arduino/stop', self._stop_callback, 10)
+        self.create_subscription(Bool, '/arduino/zero', self._zero_callback, 10)
         self.create_timer(1.0 / max(20, read_hz), self._read_loop)
         self.create_timer(5.0, self._report_connection)
 
@@ -108,11 +124,35 @@ class ArduinoBridge(Node):
                 f'buffered bytes={len(self.rx)}, prefix={bytes(self.rx[:24])!r}. '
                 'Waiting without transmitting until firmware telemetry arrives.')
 
+    def _publish_info(self):
+        self.info_pub.publish(String(data=json.dumps({
+            'session_id': self.session_id, 'boot_id': self.boot_id, 'port': self.port,
+            'opened_wall': self.opened_wall, 'compatible': self.compatible,
+            'protocol': 'STATE4' if self.streaming_capable else None, 'last_error': self.last_error,
+            'firmware_restarts': self.firmware_restarts, 'zero_supported': self.zero_supported,
+            'zero_count': self.zero_count})))
+
+    def _zero_callback(self, msg):
+        """ZERO: odometry and held base target := current pose, without resetting the board."""
+        if not msg.data:
+            return
+        if not self.zero_supported:
+            self.ack_pub.publish(String(data='ERROR 0 ZERO_UNSUPPORTED firmware has no ZERO command'))
+            return
+        if self.ser is None or not self.compatible or not self.ready or self.active_id is not None \
+                or getattr(self, 'tx', None) is not None or self.zero_pending:
+            self.ack_pub.publish(String(data='ERROR 0 ZERO_REJECTED bridge not idle and ready'))
+            return
+        self.zero_pending = True
+        self.ser.write(b'\nZERO\n')
+        self.get_logger().info('ZERO sent: odometry and held base target to the current pose')
+
     def _set_ready(self, ready):
         self.ready = ready
         self.ready_pub.publish(Bool(data=ready))
 
     def _fail(self, reason):
+        self.last_error = reason
         if self.active_id is not None:
             self.ack_pub.publish(String(data=f'ERROR {self.active_id} {reason}'))
         self.active_id = None
@@ -146,6 +186,11 @@ class ArduinoBridge(Node):
                 self.compatible = False
                 self.serial_bytes_received = 0
                 self.last_serial_line = ''
+                self.session_id = uuid.uuid4().hex[:12]
+                self.opened_wall = time.time()
+                self.id_requested = False
+                self.zero_pending = False
+                self._publish_info()
                 self.get_logger().info(f'Connected {port} at {self.baud} baud; waiting for firmware state feedback')
             # Opening the serial port can reset the Mega. Do not send ASCII
             # into its bootloader: firmware streams STATE2 without a request.
@@ -213,11 +258,42 @@ class ArduinoBridge(Node):
                 # State transport is healthy. Idle boot may acquire perception;
                 # execution additionally checks measured stillness on the host.
                 self.get_logger().info(f'{fields[0]} detected; waiting for measured stillness')
+                self._publish_info()
+            if not self.id_requested and getattr(self, 'tx', None) is None:
+                # Ask which boot this is (a reopen without DTR keeps the same boot). Older
+                # firmware ignores it, and boot_id stays unknown.
+                self.ser.write(b'ID\n')
+                self.id_requested = True
+            return
+        if fields[0] == 'BOOT':
+            if len(fields) >= 2:
+                boot = fields[1]
+                if self.boot_id is not None and boot != self.boot_id:
+                    self.get_logger().warning(f'Firmware boot changed {self.boot_id} -> {boot}: odometry was reset')
+                self.boot_id = boot
+                self.zero_supported = 'ZERO' in fields[2:]
+                self._publish_info()
+            return
+        if fields[0] == 'ZEROED':
+            self.zero_pending = False
+            self.zero_count += 1
+            self.state_history.clear()  # positions jumped; stillness must be re-established
+            self.ack_pub.publish(String(data=line))
+            self.get_logger().info(f'ZEROED: odometry and held base target now at the current pose ({line})')
+            self._publish_info()
+            return
+        if fields[0] == 'ERROR' and len(fields) >= 3 and fields[2] == 'ZERO_BUSY':
+            self.zero_pending = False
+            self.ack_pub.publish(String(data=line))
             return
         if fields[0] in ('READY2', 'READY3', 'READY4'):
             if self.active_id is not None:
                 self._fail('FIRMWARE_RESTART')
             self.compatible = False
+            self.firmware_restarts += 1
+            self.boot_id = None  # the BOOT line that follows names the new boot
+            self.zero_pending = False
+            self._publish_info()
             return
         if fields[0] == 'RX4':
             tx = getattr(self, 'tx', None)
@@ -362,14 +438,15 @@ def main():
     node = ArduinoBridge(args.port, args.baud, args.rate)
     try:
         rclpy.spin(node)
-    except KeyboardInterrupt:
+    except (KeyboardInterrupt, ExternalShutdownException):
         pass
     finally:
         if node.ser:
             node.ser.write(b'\nSTOP\n')
             node.ser.close()
         node.destroy_node()
-        rclpy.shutdown()
+        if rclpy.ok():  # SIGTERM may already have shut the context down
+            rclpy.shutdown()
 
 
 if __name__ == '__main__':
