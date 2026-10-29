@@ -1,5 +1,9 @@
 # HomePlus manipulation pipeline
 
+Depth reconstruction now uses nvblox TSDF collision meshes. See
+`docs/NVBLOX_MAPPING.md` for installation, parameters and validation. The
+OctoMap descriptions below are historical unless explicitly updated.
+
 The executor now separates target geometry, goal feasibility, path planning and
 hardware completion. A successful motion plan is not evidence of a successful
 physical grasp or button activation.
@@ -77,11 +81,11 @@ and need benchmarking against measured hardware capability.
 
 Clouds retain image timestamps and require acquisition-time transforms; there is
 no latest-TF fallback. Motion invalidates old masks. The target-aware cloud waits
-for a valid mask and reports its acquisition stamp. Map preparation waits for a
-fresh masked cloud after clearing, rather than assuming a fixed sleep rebuilt
-the scene. That acknowledgement confirms cloud publication, not atomic insertion
-inside MoveIt; a short insertion allowance remains. Lift/retreat reuse the
-prepared world scene instead of clearing unseen obstacles again.
+for a valid mask. Map preparation calls `/nvblox/clear` (Trigger) and waits for
+`/vision/planning_map_ready` with the returned generation. Readiness requires
+at least three fresh integrated observations, a nonempty TSDF surface mesh, and
+successful application of that mesh to MoveIt's planning scene. Lift/retreat reuse
+the prepared world scene instead of clearing unseen obstacles again.
 
 The former 4/8 cm target-neighborhood erasure is disabled. Mask dilation is
 limited to two pixels. Nearby table/appliance geometry remains collision-active.

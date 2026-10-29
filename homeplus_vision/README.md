@@ -175,7 +175,7 @@ pipeline is running, launch gesture control without its legacy D405 cloud node:
 
 ```bash
 ros2 launch homeplus_moveit_config gesture_control.launch.py \
-  use_octomap:=true \
+  use_mapping:=true \
   launch_obstacle_cloud:=false
 ```
 

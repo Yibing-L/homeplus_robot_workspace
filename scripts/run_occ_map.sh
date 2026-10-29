@@ -8,9 +8,5 @@ source /opt/ros/humble/setup.bash
 source install/setup.bash
 set -u
 
-ros2 launch homeplus_moveit_config cloud_to_octomap.launch.py \
-  octomap_input_topic:=/obstacle_cloud \
-  depth_topic:=/cameras/d405/aligned_depth_to_color/image_raw \
-  camera_info_topic:=/cameras/d405/color/camera_info \
-  output_frame:="" \
-  octomap_frame:=world
+# Vision, robot TF and settled hardware status must already be available.
+exec ros2 launch homeplus_moveit_config nvblox_mapping.launch.py "$@"

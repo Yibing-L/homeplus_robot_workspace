@@ -80,3 +80,6 @@ Pipfile.lock
 trajectory_logs/
 detection_logs/
 target_logs/
+
+# Workspace-local native mapping dependencies
+/.deps/

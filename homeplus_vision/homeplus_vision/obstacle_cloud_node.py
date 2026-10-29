@@ -19,7 +19,7 @@
 # THE SOFTWARE.
 
 
-"""Build an OctoMap-ready obstacle cloud from one RGB-D camera."""
+"""Build a reconstruction-ready obstacle cloud from one RGB-D camera."""
 
 import json
 from typing import Optional
@@ -254,7 +254,7 @@ class ObstacleCloudNode(Node):
         elif was_active and not self.motion_active:
             self.motion_finished_ns = self.get_clock().now().nanoseconds
             self.get_logger().info(
-                "Hardware settled; clearing OctoMap before rebuilding the cloud"
+                "Hardware settled; waiting for a fresh target mask before rebuilding the cloud"
             )
             # Executor owns map rebuilding after a valid settled observation.
 

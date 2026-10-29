@@ -1,9 +1,11 @@
 #!/usr/bin/env python3
 
 from launch import LaunchDescription
-from launch.actions import DeclareLaunchArgument, TimerAction, ExecuteProcess, OpaqueFunction
+from launch.actions import DeclareLaunchArgument, TimerAction, ExecuteProcess, OpaqueFunction, RegisterEventHandler, EmitEvent
 from launch.substitutions import Command, LaunchConfiguration, PathJoinSubstitution
 from launch.conditions import IfCondition
+from launch.event_handlers import OnProcessExit
+from launch.events import Shutdown
 from launch_ros.actions import Node
 from launch_ros.parameter_descriptions import ParameterValue
 from moveit_configs_utils import MoveItConfigsBuilder
@@ -12,9 +14,10 @@ import yaml
 from ament_index_python.packages import get_package_share_directory
 
 def _launch_setup(context):
-    use_octomap = LaunchConfiguration('use_octomap').perform(context).lower() in (
-        'true', '1', 'yes', 'on'
-    )
+    use_mapping = LaunchConfiguration('use_octomap').perform(context).lower() in ('true', '1', 'yes', 'on')
+
+    if LaunchConfiguration('run_rebuild_map').perform(context).lower() in ('true', '1', 'yes', 'on'):
+        raise RuntimeError('run_rebuild_map is retired; the executor manages /nvblox/clear')
 
     # Paths and configurations
     homeplus_urdf_pkg = get_package_share_directory('homeplus_urdf_description')
@@ -52,29 +55,29 @@ def _launch_setup(context):
 
     moveit_config = builder.to_moveit_configs()
 
-    # OctoMap parameters — only passed to move_group when enabled
+    # OMPL consumes nvblox's collision meshes through ApplyPlanningScene.
+    # Do not load PointCloudOctomapUpdater: it would add a second obstacle map.
     move_group_params = [moveit_config.to_dict()]
-    if use_octomap:
-        octomap_sensors_path = os.path.join(
-            homeplus_moveit_pkg, 'config', 'octomap_sensors.yaml'
+    mapping_nodes = []
+    if use_mapping:
+        mapping_node = Node(
+            package='homeplus_nvblox', executable='nvblox_mapper', name='nvblox_mapper',
+            output='screen', parameters=[
+                os.path.join(get_package_share_directory('homeplus_nvblox'), 'config', 'nvblox.yaml'),
+                {'robot_description': robot_description,
+                 'robot_description_semantic': robot_description_semantic},
+            ],
         )
-        with open(octomap_sensors_path, 'r') as f:
-            move_group_params.append(yaml.safe_load(f))
-        move_group_params.append({
-            'octomap_frame': 'world',
-            # Four-centimeter voxels make a tabletop extend about 2 cm above
-            # its measured surface, which is too coarse for a cup grasp. Two
-            # centimeters retains useful clearance without the former blocky
-            # palm/table false collisions.
-            'octomap_resolution': 0.02,
-        })
+        mapping_nodes = [mapping_node, RegisterEventHandler(OnProcessExit(
+            target_action=mapping_node,
+            on_exit=[EmitEvent(event=Shutdown(reason='nvblox mapper exited'))],
+        ))]
 
     # Create launch arguments
     auto_start_test = LaunchConfiguration('auto_start_test')
     run_arduino_reader = LaunchConfiguration('run_arduino_reader')
-    run_rebuild_map = LaunchConfiguration('run_rebuild_map')
 
-    return [
+    return mapping_nodes + [
     # Robot State Publisher (skipped if pane 1 already owns it)
         Node(
             package='robot_state_publisher',
@@ -94,14 +97,6 @@ def _launch_setup(context):
             output='screen',
             condition=IfCondition(run_arduino_reader)
         ),
-
-        # Launch map rebuilding node
-        ExecuteProcess(
-            cmd=['python3', os.path.join(homeplus_moveit_pkg, 'scripts', 'rebuild_map.py')],
-            output='screen',
-            condition=IfCondition(run_rebuild_map)
-        ),
-
 
         # Joint State Publisher GUI (disabled during gesture pipeline)
         Node(
@@ -147,9 +142,13 @@ def _launch_setup(context):
 def generate_launch_description():
     return LaunchDescription([
         DeclareLaunchArgument(
-            'use_octomap',
-            default_value='false',
-            description='Enable OctoMap-based collision avoidance in MoveIt planning',
+            'use_mapping',
+            default_value='true',
+            description='Enable nvblox collision reconstruction for MoveIt planning',
+        ),
+        DeclareLaunchArgument(
+            'use_octomap', default_value=LaunchConfiguration('use_mapping'),
+            description='Deprecated alias for use_mapping; mapping now uses nvblox',
         ),
         DeclareLaunchArgument(
             'auto_start_test',
@@ -174,7 +173,7 @@ def generate_launch_description():
         DeclareLaunchArgument(
             'run_rebuild_map',
             default_value='false',
-            description='If true, start the map rebuilding node that listens for Arduino status and repopulates OctoMap',
+            description='Deprecated: must remain false; nvblox rebuilding is managed by the executor',
         ),
         DeclareLaunchArgument(
             'launch_robot_state_publisher',

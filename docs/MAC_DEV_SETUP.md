@@ -90,7 +90,7 @@ Remote inference is turned on in the VM's `homeplus_vision/config/target_detecti
 ⚠️ **This resets the Arduino, and the arm rises to upright (all joints 0°) on its own. Stand clear.**
 ```bash
 ros2 launch homeplus_moveit_config gesture_control.launch.py \
-  arduino_port:=/dev/ttyACM0 launch_obstacle_cloud:=false use_octomap:=true
+  arduino_port:=/dev/ttyACM0 launch_obstacle_cloud:=false use_mapping:=true
 ```
 To show RViz on the VM screen when starting T3 over SSH, prefix it with:
 `DISPLAY=:0 XAUTHORITY=$(ls /run/user/1000/.mutter-Xwaylandauth.* | head -1)`
@@ -139,7 +139,7 @@ ros2 topic pub --once /gesture_control/command homeplus_interfaces/msg/GestureCo
 ros2 topic pub --once /arduino/stop std_msgs/msg/Bool "{data: true}"
 
 # Clear the obstacle map
-ros2 service call /clear_octomap std_srvs/srv/Empty "{}"
+ros2 service call /nvblox/clear std_srvs/srv/Trigger "{}"
 ```
 
 ---
