@@ -290,10 +290,10 @@ commands:
         # (0.5 Hz), so three samples take about 6 s of the 30 s budget.
         detection_timeout_sec: 30.0
         detection_min_stable_samples: 3
-        # The initial distant view can report the table/bottom of the cup. Use
-        # the new segmented-depth estimate from the close view for Z instead
-        # of preserving that stale, often below-table initial measurement.
-        preserve_reference_z: true
+        # Take Z from the close view: at ~1 m the mask misses the cup's lower
+        # part and the distant height reads several cm off (0.811 vs 0.755 on
+        # 2026-10-18, grasping at the rim). Close up the D405 is in range.
+        preserve_reference_z: false
         # Steps 5-6 keep the base locked and cannot move the gripper sideways.
         # Closing the finger meshes on an 8 cm cup held fixed, both fingers
         # still touch it on opposite sides of its centre before 75 deg for

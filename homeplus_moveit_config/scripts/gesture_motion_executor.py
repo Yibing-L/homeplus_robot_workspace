@@ -2619,11 +2619,13 @@ class GestureMotionExecutor(Node):
         request = ApplyPlanningScene.Request()
         request.scene.is_diff = True
         request.scene.world.collision_objects = [obj]
-        # Preserve all existing ACM entries; allow only intentional finger contact.
+        # Preserve all existing ACM entries; allow only intentional finger contact,
+        # and contact with the detected table box (homeplus_vision table_plane)
+        # the cup stands on: otherwise the held cup makes the lift's start invalid.
         get = GetPlanningScene.Request()
         get.components.components = PlanningSceneComponents.ALLOWED_COLLISION_MATRIX
         acm = self._call_service(self.scene_client, get).scene.allowed_collision_matrix
-        names = ['detected_cup', 'FingerL_new_1', 'FingerR_new_1']
+        names = ['detected_cup', 'FingerL_new_1', 'FingerR_new_1', 'detected_table']
         for name in names:
             if name not in acm.entry_names:
                 acm.entry_names.append(name)
@@ -2631,14 +2633,35 @@ class GestureMotionExecutor(Node):
                     row.enabled.append(False)
                 acm.entry_values.append(AllowedCollisionEntry(enabled=[False]*len(acm.entry_names)))
         cup = acm.entry_names.index('detected_cup')
-        for finger in names[1:]:
-            i = acm.entry_names.index(finger)
+        for other in names[1:]:
+            i = acm.entry_names.index(other)
             acm.entry_values[cup].enabled[i] = True
             acm.entry_values[i].enabled[cup] = True
         request.scene.allowed_collision_matrix = acm
         if not self._call_service(self.apply_scene_client, request).success:
             raise RuntimeError('Could not add detected cup collision geometry')
         self._cup_collision_object = obj
+
+    def _set_allowed_collisions(self, pairs, allowed: bool) -> None:
+        """Set ACM entries for (a, b) name pairs, preserving every other entry."""
+        get = GetPlanningScene.Request()
+        get.components.components = PlanningSceneComponents.ALLOWED_COLLISION_MATRIX
+        acm = self._call_service(self.scene_client, get).scene.allowed_collision_matrix
+        for name in {n for pair in pairs for n in pair}:
+            if name not in acm.entry_names:
+                acm.entry_names.append(name)
+                for row in acm.entry_values:
+                    row.enabled.append(False)
+                acm.entry_values.append(AllowedCollisionEntry(enabled=[False] * len(acm.entry_names)))
+        for a, b in pairs:
+            i, j = acm.entry_names.index(a), acm.entry_names.index(b)
+            acm.entry_values[i].enabled[j] = allowed
+            acm.entry_values[j].enabled[i] = allowed
+        request = ApplyPlanningScene.Request()
+        request.scene.is_diff = True
+        request.scene.allowed_collision_matrix = acm
+        if not self._call_service(self.apply_scene_client, request).success:
+            raise RuntimeError('Could not update the allowed collision matrix')
 
     def _detach_cup(self):
         req = ApplyPlanningScene.Request()
@@ -2651,8 +2674,11 @@ class GestureMotionExecutor(Node):
         req.scene.robot_state.attached_collision_objects = [attached]
         if not self._call_service(self.apply_scene_client, req).success:
             raise RuntimeError('Could not detach cup collision geometry')
+        self._set_allowed_collisions(self._FINGER_OCTOMAP_PAIRS, False)
         self._holding_cup = False
         self._cup_collision_object = None
+
+    _FINGER_OCTOMAP_PAIRS = [('<octomap>', 'FingerL_new_1'), ('<octomap>', 'FingerR_new_1')]
 
     def _attach_cup(self):
         if self._cup_collision_object is None:
@@ -2668,6 +2694,10 @@ class GestureMotionExecutor(Node):
         if not self._call_service(self.apply_scene_client, req).success:
             raise RuntimeError('Could not attach cup collision geometry')
         self._holding_cup = True
+        # Voxels at the closed fingers are the held cup's own surface (the mask
+        # never removes all of it), so let the fingers touch the OctoMap until
+        # release. Other links, and the attached cup body, are still checked.
+        self._set_allowed_collisions(self._FINGER_OCTOMAP_PAIRS, True)
         # Removing a world object that was never added makes MoveIt reject the
         # whole diff, so clear any stale world cup in a separate best-effort call.
         remove_req = ApplyPlanningScene.Request()
