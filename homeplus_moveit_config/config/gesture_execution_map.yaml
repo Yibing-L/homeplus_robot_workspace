@@ -46,7 +46,7 @@ commands:
 
   # Drive straight back 20 cm from wherever the base stands (measured pose), arm
   # and held cup unchanged, so the hand camera gets a wider view of the scene.
-  # Planned on the base group against the OctoMap with the cup attached.
+  # Planned on the base group against the nvblox collision mesh with the cup attached.
   back_up:
     type: joint_state
     group_name: base
@@ -184,12 +184,12 @@ commands:
         orientation_tolerance_rad: 0.04
         use_orientation_constraint: true
         require_trajectory_approval: false
-        clear_octomap_before_plan: true
+        clear_map_before_plan: true
         max_replanning_attempts: 2
 
       - name: press_button
         type: pose
-        clear_octomap_before_plan: false
+        clear_map_before_plan: false
         cartesian: true
         require_trajectory_approval: false
         frame_id: world
@@ -215,7 +215,7 @@ commands:
 
       - name: retreat_from_button
         type: pose
-        clear_octomap_before_plan: false
+        clear_map_before_plan: false
         cartesian: true
         require_trajectory_approval: false
         frame_id: world
@@ -354,12 +354,12 @@ commands:
         orientation_tolerance_rad: 0.04
         use_orientation_constraint: true
         require_trajectory_approval: false
-        clear_octomap_before_plan: true
+        clear_map_before_plan: true
         max_replanning_attempts: 2
 
       - name: move_to_grasp
         type: pose
-        clear_octomap_before_plan: false
+        clear_map_before_plan: false
         cartesian: true
         require_trajectory_approval: false
         frame_id: world
@@ -395,7 +395,7 @@ commands:
 
       - name: lift
         type: pose
-        clear_octomap_before_plan: false
+        clear_map_before_plan: false
         cartesian: true
         require_trajectory_approval: false
         frame_id: world
@@ -418,7 +418,7 @@ commands:
 
       - name: retreat_with_object
         type: pose
-        clear_octomap_before_plan: false
+        clear_map_before_plan: false
         cartesian: true
         require_trajectory_approval: false
         frame_id: world
@@ -521,7 +521,7 @@ commands:
 
       - name: move_over_tray
         type: pose
-        clear_octomap_before_plan: false
+        clear_map_before_plan: false
         cartesian: true
         require_trajectory_approval: true
         frame_id: world
@@ -547,7 +547,7 @@ commands:
       # Straight down to the release height (offset_z 0, see above).
       - name: lower_cup_onto_tray
         type: pose
-        clear_octomap_before_plan: false
+        clear_map_before_plan: false
         cartesian: true
         require_trajectory_approval: true
         frame_id: world
@@ -571,7 +571,7 @@ commands:
         num_planning_attempts: 3
         post_delay_sec: 1.0
 
-      # Detaches detected_cup. Fingers<->OctoMap contact stays allowed until
+      # Detaches detected_cup. Fingers<->nvblox mesh contact stays allowed until
       # the command ends: the open fingers still surround the placed cup.
       - name: release_cup
         type: gripper
@@ -583,7 +583,7 @@ commands:
       # Straight back first: the machine's spout is above the cup.
       - name: retreat_from_cup
         type: pose
-        clear_octomap_before_plan: false
+        clear_map_before_plan: false
         cartesian: true
         require_trajectory_approval: false
         frame_id: world

@@ -367,7 +367,7 @@ class ActionService:
             return self._track(name, rid, f"{command} sent", check, self.cfg["start_confirm_sec"], now, args)
         if name == "clear_octomap":
             ok = io.clear_octomap()
-            return {"status": "confirmed" if ok else "failed", "detail": "octomap cleared" if ok else "service unavailable"}
+            return {"status": "confirmed" if ok else "failed", "detail": "collision map clear requested" if ok else "/nvblox/clear unavailable"}
         if name == "ack_fault":
             done = self.tracker.acknowledge(operator)
             return {"status": "confirmed", "detail": "acknowledged: " + ", ".join(done) if done else "nothing to acknowledge"}

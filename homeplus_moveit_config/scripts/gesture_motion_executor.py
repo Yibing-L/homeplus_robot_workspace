@@ -46,7 +46,7 @@ from rclpy.qos import QoSProfile, DurabilityPolicy
 from shape_msgs.msg import SolidPrimitive
 from std_msgs.msg import Bool, Float32, String, ColorRGBA
 from visualization_msgs.msg import Marker, MarkerArray
-from std_srvs.srv import Empty
+from std_srvs.srv import Trigger
 from trajectory_msgs.msg import JointTrajectoryPoint
 from tf2_ros import Buffer, TransformListener
 
@@ -189,10 +189,10 @@ class GestureMotionExecutor(Node):
         self.declare_parameter("detection_min_stable_samples", 1)
         self.declare_parameter("detection_stability_tolerance_m", 0.05)
         self.declare_parameter("detection_max_refresh_shift_m", 0.0)
-        self.declare_parameter("clear_octomap_before_pose_plan", True)
-        self.declare_parameter("clear_octomap_service", "/clear_octomap")
-        self.declare_parameter("octomap_clear_timeout_sec", 2.0)
-        self.declare_parameter("octomap_rebuild_wait_sec", 1.2)
+        self.declare_parameter("clear_map_before_pose_plan", True)
+        self.declare_parameter("clear_map_service", "/nvblox/clear")
+        self.declare_parameter("map_clear_timeout_sec", 8.0)
+        self.declare_parameter("map_rebuild_wait_sec", 20.0)
         # Plan and validate every step, but never publish to the Arduino:
         # motions complete instantly on a virtual state overlaid on the
         # measured feedback. Use a separate command topic from the live node.
@@ -263,14 +263,14 @@ class GestureMotionExecutor(Node):
         self.max_start_state_error = float(
             self.get_parameter("max_start_state_error").value
         )
-        self.clear_octomap_before_pose_plan = bool(
-            self.get_parameter("clear_octomap_before_pose_plan").value
+        self.clear_map_before_pose_plan = bool(
+            self.get_parameter("clear_map_before_pose_plan").value
         )
-        self.octomap_clear_timeout_sec = max(
-            0.1, float(self.get_parameter("octomap_clear_timeout_sec").value)
+        self.map_clear_timeout_sec = max(
+            0.1, float(self.get_parameter("map_clear_timeout_sec").value)
         )
-        self.octomap_rebuild_wait_sec = max(
-            0.0, float(self.get_parameter("octomap_rebuild_wait_sec").value)
+        self.map_rebuild_wait_sec = max(
+            0.0, float(self.get_parameter("map_rebuild_wait_sec").value)
         )
 
         if not self.wait_for_trajectory_ack or not self.wait_for_gripper_ack:
@@ -342,9 +342,9 @@ class GestureMotionExecutor(Node):
         self.cb_group = ReentrantCallbackGroup()
         self.tf_buffer = Buffer()
         self.tf_listener = TransformListener(self.tf_buffer, self)
-        self.octomap_clear_client = self.create_client(
-            Empty,
-            str(self.get_parameter("clear_octomap_service").value),
+        self.map_clear_client = self.create_client(
+            Trigger,
+            str(self.get_parameter("clear_map_service").value),
             callback_group=self.cb_group,
         )
         self.motion_plan_client = self.create_client(
@@ -400,8 +400,9 @@ class GestureMotionExecutor(Node):
         self._last_state_received = 0.0
         self._command_id = 0
         self._command_started = 0.0
-        self._cloud_stamp_ns = 0
-        self.create_subscription(String, '/vision/planning_cloud_ready', self._cloud_ready_callback, 10,
+        self._map_stamp_ns = 0
+        self._map_generation = -1
+        self.create_subscription(String, '/vision/planning_map_ready', self._map_ready_callback, 10,
                                  callback_group=self.cb_group)
         self._busy = False
         self._busy_lock = threading.Lock()
@@ -803,6 +804,7 @@ class GestureMotionExecutor(Node):
             with self._arduino_result_lock:
                 self._arduino_error_message = ack
             self.get_logger().error(f"  Arduino execution error: {ack}")
+            self._log_execution_feedback(ack)
             # Wake the waiter immediately. It will inspect the stored result
             # and return failure rather than waiting for its host-side timeout.
             self._arduino_done_event.set()
@@ -817,6 +819,35 @@ class GestureMotionExecutor(Node):
         self._command_started = time.monotonic()
         self._endpoint_profile = "precise"
         self._command_expected_duration = 0.0
+
+    def _log_execution_feedback(self, reason: str) -> None:
+        """Report the last received endpoint feedback without changing state."""
+        target = getattr(self, '_pending_joint_state', None)
+        state = getattr(self, 'latest_joint_state', None)
+        if target is None or state is None:
+            self.get_logger().error(f'{reason}: endpoint feedback unavailable')
+            return
+        now = time.monotonic()
+        actual = dict(zip(state.name, state.position))
+        history = [dict(zip(js.name, js.position))
+                   for received, js in list(getattr(self, '_joint_history', []))
+                   if received >= now - 0.7]
+        age = now - getattr(self, '_last_state_received', 0.0)
+        self.get_logger().error(
+            f'Endpoint diagnostics: {reason}; profile={getattr(self, "_endpoint_profile", "precise")}; '
+            f'last feedback age={age:.3f}s; residual=target-feedback; '
+            'base/shoulder/elbow measured, hand/wrist/gripper PWM estimates')
+        for name, goal in zip(TRAJECTORY_JOINT_ORDER, target):
+            if name not in actual:
+                self.get_logger().error(f'  {name}: feedback missing')
+                continue
+            scale, unit = (1000.0, 'mm') if name in ('base_x', 'base_y') else (180.0 / math.pi, 'deg')
+            samples = [q[name] for q in history if name in q]
+            span = f'{(max(samples)-min(samples))*scale:.3f}' if samples else 'unavailable'
+            self.get_logger().error(
+                f'  {name}: target={goal*scale:.3f} feedback={actual[name]*scale:.3f} '
+                f'error={(goal-actual[name])*scale:+.3f} {unit}; '
+                f'feedback span over last 0.7s={span} {unit}')
 
     def _queue_pending_joint_state(self, positions: List[float], reason: str) -> None:
         with self._pending_joint_state_lock:
@@ -850,6 +881,7 @@ class GestureMotionExecutor(Node):
             remaining = timeout_sec - elapsed
             if remaining <= 0.0:
                 self.stop_pub.publish(Bool(data=True))
+                self._log_execution_feedback(f'{label}: host completion timeout')
                 self.get_logger().warn(
                     f"{label}: Arduino did not send DONE within {timeout_sec:.1f}s"
                 )
@@ -873,6 +905,7 @@ class GestureMotionExecutor(Node):
                         return True
                     time.sleep(0.02)
                 self.get_logger().error(f"{label}: DONE without a settled measured endpoint")
+                self._log_execution_feedback(f'{label}: DONE without a settled measured endpoint')
                 self.stop_pub.publish(Bool(data=True))
                 return False
 
@@ -1023,7 +1056,7 @@ class GestureMotionExecutor(Node):
         if not isinstance(command_cfg, dict):
             return [f"{name}: command must be a mapping"]
 
-        allowed = set("endpoint_profile name type group_name joints value frame_id position orientation rpy_deg target steps task_id detection_topic detection_timeout_sec detection_min_stable_samples detection_stability_tolerance_m detection_max_refresh_shift_m max_replanning_attempts max_attempts settle_sec require_trajectory_approval planner_id allowed_planning_time num_planning_attempts link_name offset_x offset_y offset_z offset_frame orientation_from_detection gripper_value final_gripper_value position_tolerance_m position_tolerance_xy_m position_tolerance_z_m use_orientation_constraint orientation_tolerance_rad orientation_tolerance_x_rad orientation_tolerance_y_rad orientation_tolerance_z_rad safe_z_candidate_offsets_m base_goal_tcp_x_min_m base_goal_tcp_x_max_m base_goal_tcp_y_max_m max_base_goal_rotation_rad max_base_goal_translation_m max_base_goal_y_translation_m preserve_reference_z maintain_orientation_during_path post_delay_sec cartesian mobile_standoff lookahead_offsets velocity_scaling acceleration_scaling clear_octomap_before_plan octomap_clear_timeout_sec octomap_rebuild_wait_sec ik_candidate_attempts attach_cup joint_tolerance hardcoded_detection_pose hardcoded_detection_frame planning_service_timeout_sec phase_allowed_planning_time phase_num_planning_attempts phase_joint_tolerance continue_on_arduino_timeout base_placement heading_from_base max_arm_plane_error_m redo_from_step max_redos detach_cup held_cup_placement base_relative".split())
+        allowed = set("endpoint_profile name type group_name joints value frame_id position orientation rpy_deg target steps task_id detection_topic detection_timeout_sec detection_min_stable_samples detection_stability_tolerance_m detection_max_refresh_shift_m max_replanning_attempts max_attempts settle_sec require_trajectory_approval planner_id allowed_planning_time num_planning_attempts link_name offset_x offset_y offset_z offset_frame orientation_from_detection gripper_value final_gripper_value position_tolerance_m position_tolerance_xy_m position_tolerance_z_m use_orientation_constraint orientation_tolerance_rad orientation_tolerance_x_rad orientation_tolerance_y_rad orientation_tolerance_z_rad safe_z_candidate_offsets_m base_goal_tcp_x_min_m base_goal_tcp_x_max_m base_goal_tcp_y_max_m max_base_goal_rotation_rad max_base_goal_translation_m max_base_goal_y_translation_m preserve_reference_z maintain_orientation_during_path post_delay_sec cartesian mobile_standoff lookahead_offsets velocity_scaling acceleration_scaling clear_map_before_plan map_clear_timeout_sec map_rebuild_wait_sec ik_candidate_attempts attach_cup joint_tolerance hardcoded_detection_pose hardcoded_detection_frame planning_service_timeout_sec phase_allowed_planning_time phase_num_planning_attempts phase_joint_tolerance continue_on_arduino_timeout base_placement heading_from_base max_arm_plane_error_m redo_from_step max_redos detach_cup held_cup_placement base_relative".split())
         if command_cfg.get('endpoint_profile', 'precise') not in ('precise', 'transit'):
             errors.append(f'{name}: endpoint_profile must be precise or transit')
         if command_cfg.get('cartesian') and command_cfg.get('endpoint_profile') == 'transit':
@@ -1205,11 +1238,12 @@ class GestureMotionExecutor(Node):
     def _ready_callback(self, msg):
         self._hardware_ready = msg.data
 
-    def _cloud_ready_callback(self, msg):
+    def _map_ready_callback(self, msg):
         try:
             data = json.loads(msg.data)
-            if data['masked']:
-                self._cloud_stamp_ns = int(data['stamp_ns'])
+            if int(data['frames']) >= 3 and int(data['triangles']) > 0:
+                self._map_stamp_ns = int(data['stamp_ns'])
+                self._map_generation = int(data['generation'])
         except (ValueError, KeyError, TypeError):
             pass
 
@@ -1312,14 +1346,14 @@ class GestureMotionExecutor(Node):
             self._publish_status(f"Command {command_name} FAILED: {exc}")
         finally:
             if self._finger_contacts_pending_restore:
-                # A placement released the cup but kept fingers<->OctoMap
+                # A placement released the cup but kept fingers<->collision-map
                 # contact allowed for the retreat; restore it however the
                 # sequence ended.
                 try:
-                    self._set_allowed_collisions(self._FINGER_OCTOMAP_PAIRS, False)
+                    self._set_allowed_collisions(self._FINGER_MAP_PAIRS, False)
                     self._finger_contacts_pending_restore = False
                 except Exception as exc:
-                    self.get_logger().error(f'Could not restore finger<->OctoMap collision checking: {exc}')
+                    self.get_logger().error(f'Could not restore finger<->collision-map checking: {exc}')
             self._set_busy(False)
 
     def _report_holding(self, source: str) -> None:
@@ -1758,9 +1792,9 @@ class GestureMotionExecutor(Node):
                             # stochastic OMPL retry adds latency and can reinsert
                             # the same target-edge noise that just caused failure.
                             attempt_step = dict(effective_step)
-                            attempt_step["clear_octomap_before_plan"] = False
+                            attempt_step["clear_map_before_plan"] = False
                             self.get_logger().info(
-                                f"  Reusing prepared OctoMap for {step_name} retry"
+                                f"  Reusing prepared collision map for {step_name} retry"
                             )
                         context = self._plan_pose(
                             step_name, candidate_pose, attempt_step
@@ -2535,61 +2569,62 @@ class GestureMotionExecutor(Node):
             zip(joint_trajectory.joint_names, joint_trajectory.points[-1].positions)
         )
 
-    def _clear_and_rebuild_octomap(self, name: str, command_cfg: Dict) -> bool:
+    def _clear_and_rebuild_map(self, name: str, command_cfg: Dict) -> bool:
         enabled = bool(
             command_cfg.get(
-                "clear_octomap_before_plan",
-                self.clear_octomap_before_pose_plan,
+                "clear_map_before_plan",
+                self.clear_map_before_pose_plan,
             )
         )
-        if not enabled or not self.clear_octomap_before_pose_plan:
+        if not enabled or not self.clear_map_before_pose_plan:
             return True
 
         timeout_sec = float(
             command_cfg.get(
-                "octomap_clear_timeout_sec", self.octomap_clear_timeout_sec
+                "map_clear_timeout_sec", self.map_clear_timeout_sec
             )
         )
         rebuild_wait_sec = float(
             command_cfg.get(
-                "octomap_rebuild_wait_sec", self.octomap_rebuild_wait_sec
+                "map_rebuild_wait_sec", self.map_rebuild_wait_sec
             )
         )
-        if not self.octomap_clear_client.wait_for_service(timeout_sec=timeout_sec):
+        if not self.map_clear_client.wait_for_service(timeout_sec=timeout_sec):
             self.get_logger().error(
-                f"  Cannot prepare OctoMap for {name}: clear service unavailable"
+                f"  Cannot prepare collision map for {name}: clear service unavailable"
             )
             return False
 
         self.get_logger().info(
-            f"  Clearing OctoMap before planning {name}"
+            f"  Clearing collision map before planning {name}"
         )
         requested_stamp = self.get_clock().now().nanoseconds
-        future = self.octomap_clear_client.call_async(Empty.Request())
+        future = self.map_clear_client.call_async(Trigger.Request())
         completed = threading.Event()
         future.add_done_callback(lambda _done: completed.set())
         if not completed.wait(timeout=timeout_sec):
             self.get_logger().error(
-                f"  Cannot prepare OctoMap for {name}: clear timed out after "
+                f"  Cannot prepare collision map for {name}: clear timed out after "
                 f"{timeout_sec:.1f}s"
             )
             return False
         try:
-            future.result()
+            response = future.result()
+            if not response.success:
+                raise RuntimeError(response.message)
+            generation = int(response.message)
         except Exception as exc:
             self.get_logger().error(
-                f"  Cannot prepare OctoMap for {name}: clear failed: {exc}"
+                f"  Cannot prepare collision map for {name}: clear failed: {exc}"
             )
             return False
 
         deadline = time.monotonic() + max(3.0, rebuild_wait_sec)
         while time.monotonic() < deadline:
-            if self._cloud_stamp_ns > requested_stamp:
-                # Allow MoveIt's subscriber to insert the corresponding cloud.
-                time.sleep(0.2)
+            if self._map_stamp_ns > requested_stamp and self._map_generation == generation:
                 return True
             time.sleep(0.05)
-        self.get_logger().error(f'{name}: no fresh target-masked cloud after map clear')
+        self.get_logger().error(f'{name}: no reconstructed map accepted by MoveIt after map clear')
         return False
 
     def _add_local_base_goal_constraints(self, constraints, command_cfg, name, pose_msg):
@@ -2748,12 +2783,18 @@ class GestureMotionExecutor(Node):
         if not self._call_service(self.apply_scene_client, req).success:
             raise RuntimeError('Could not detach cup collision geometry')
         if restore_finger_contacts:
-            self._set_allowed_collisions(self._FINGER_OCTOMAP_PAIRS, False)
+            self._set_allowed_collisions(self._FINGER_MAP_PAIRS, False)
         self._holding_cup = False
         self._cup_collision_object = None
         self._report_holding('released')
 
-    _FINGER_OCTOMAP_PAIRS = [('<octomap>', 'FingerL_new_1'), ('<octomap>', 'FingerR_new_1')]
+    # nvblox_mapper publishes its TSDF surface as this world collision object
+    # (homeplus_nvblox/src/nvblox_mapper.cpp); it replaces MoveIt's '<octomap>'.
+    # ACM entries are by name, so the allowance holds across the mapper's
+    # REMOVE (on /nvblox/clear) and ADD (each new mesh) of the object, the
+    # same way detected_cup's entries outlive its world-object removal.
+    _MAP_OBJECT_ID = 'nvblox_environment'
+    _FINGER_MAP_PAIRS = [(_MAP_OBJECT_ID, 'FingerL_new_1'), (_MAP_OBJECT_ID, 'FingerR_new_1')]
     _CUP_BOTTOM_SUBFRAME = 'bottom'
 
     def _attach_cup(self):
@@ -2786,10 +2827,20 @@ class GestureMotionExecutor(Node):
             raise RuntimeError('Could not attach cup collision geometry')
         self._holding_cup = True
         self._report_holding('attached at closure')
-        # Voxels at the closed fingers are the held cup's own surface (the mask
-        # never removes all of it), so let the fingers touch the OctoMap until
-        # release. Other links, and the attached cup body, are still checked.
-        self._set_allowed_collisions(self._FINGER_OCTOMAP_PAIRS, True)
+        # Map surface at the closed fingers is the held cup's own surface (the
+        # mask never removes all of it), so let the fingers touch the nvblox
+        # mesh until release. Other links, and the attached cup body, are
+        # still checked.
+        # MERGE-NOTE (nvblox): MoveIt's OctoMap updater excluded attached
+        # bodies from the map; nvblox_mapper self-filters only the URDF links.
+        # Once the cup is attached, its depth that the target mask does not
+        # remove (e.g. in place_cup_on_drip_tray, where the mask is the tray)
+        # is integrated into nvblox_environment where the attached detected_cup
+        # is, which can make every held-cup start state invalid. Deliberately
+        # not allowed here (the held cup must still collide with the tray and
+        # machine); the fix belongs in the mapper (filter attached objects
+        # too). Check on the first held-cup dry run.
+        self._set_allowed_collisions(self._FINGER_MAP_PAIRS, True)
         # Removing a world object that was never added makes MoveIt reject the
         # whole diff, so clear any stale world cup in a separate best-effort call.
         remove_req = ApplyPlanningScene.Request()
@@ -2894,13 +2945,25 @@ class GestureMotionExecutor(Node):
     def _republish_collision_debug(self):
         snapshot = getattr(self, '_collision_debug', None)
         if snapshot is not None:
-            self.collision_state_pub.publish(snapshot[0])
+            # RViz converts the state before handling hide=True. An empty
+            # JointState therefore logs an error even for a hidden overlay.
+            if snapshot[0] is not None and snapshot[0].state.joint_state.name:
+                self.collision_state_pub.publish(snapshot[0])
             self.collision_markers_pub.publish(snapshot[1])
 
     def _clear_collision_debug(self):
         if not hasattr(self, 'collision_state_pub'):
             return
-        self._collision_debug = (DisplayRobotState(hide=True),
+        hidden = None
+        latest = getattr(self, 'latest_joint_state', None)
+        if latest is not None and latest.name:
+            hidden = DisplayRobotState(hide=True)
+            hidden.state.joint_state = deepcopy(latest)
+        elif getattr(self, '_collision_debug', None) is not None:
+            hidden = deepcopy(self._collision_debug[0])
+            if hidden is not None:
+                hidden.hide = True
+        self._collision_debug = (hidden,
                                  MarkerArray(markers=[Marker(action=Marker.DELETEALL)]))
         self._republish_collision_debug()
 
@@ -3156,7 +3219,7 @@ class GestureMotionExecutor(Node):
             cfg['_placement_target'] = deepcopy(detected_pose)
             cfg['_placement_state'] = state
             if attempt:
-                cfg['clear_octomap_before_plan'] = False
+                cfg['clear_map_before_plan'] = False
             self.target_pose_pub.publish(pose)
             context = self._plan_pose(name, pose, cfg)
             if context is not None and self._wait_for_plan(context, cfg):
@@ -3515,7 +3578,7 @@ class GestureMotionExecutor(Node):
         if not self.move_group_client.server_is_ready():
             self.get_logger().warn("MoveIt action server is not ready.")
             return None
-        if not self._clear_and_rebuild_octomap(name, command_cfg):
+        if not self._clear_and_rebuild_map(name, command_cfg):
             return None
 
         self._require_fresh_state()

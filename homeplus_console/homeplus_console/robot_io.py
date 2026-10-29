@@ -49,6 +49,7 @@ class RobotIO(Protocol):
     """Scoped approval (§7.3) when supported, else the Bool approval topic."""
 
     def clear_octomap(self) -> bool: ...
+    """Clear the nvblox collision map (/nvblox/clear); the name is kept as the UI action id."""
 
     def external_instance(self, unit: str) -> List[str]: ...
     """Evidence (process, open device, ROS node) that the unit's component already runs outside the

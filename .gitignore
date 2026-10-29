@@ -84,3 +84,6 @@ target_logs/
 # MolmoPoint venv and model cache: symlinks to the Linux filesystem (scripts/setup_molmopoint.sh)
 /.venv-molmopoint
 /.models
+
+# Workspace-local native mapping dependencies
+/.deps/

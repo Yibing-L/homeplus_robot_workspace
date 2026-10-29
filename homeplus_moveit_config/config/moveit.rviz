@@ -359,6 +359,15 @@ Visualization Manager:
         Show Robot Visual: true
       Value: true
       Velocity_Scaling_Factor: 0.1
+    - Class: rviz_default_plugins/Marker
+      Name: Nvblox collision surface
+      Enabled: true
+      Marker Topic:
+        Value: /nvblox/mesh
+        Depth: 1
+        Durability Policy: Transient Local
+        Reliability Policy: Reliable
+        History Policy: Keep Last
     - Class: moveit_rviz_plugin/RobotState
       Name: Rejected IK (diagnostic only)
       Enabled: true

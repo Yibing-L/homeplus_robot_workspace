@@ -7,8 +7,12 @@ cd "$ROOT"
 source /opt/ros/humble/setup.bash
 set -u
 
+if [[ ! -f .deps/nvblox/share/nvblox/cmake/nvbloxConfig.cmake ]]; then
+  bash scripts/setup_nvblox.sh
+fi
 colcon build --symlink-install --packages-select \
   homeplus_interfaces \
+  homeplus_nvblox \
   homeplus_urdf_description \
   homeplus_moveit_config \
   homeplus_vision

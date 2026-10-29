@@ -18,7 +18,7 @@ export function Footer({ snap, onLogs, onSim }: { snap: Snapshot; onLogs: () => 
         <MapPin size={16} aria-hidden /> Set start here…
       </button>
       <button className="btn" disabled={!a.clear_octomap?.allowed} title={a.clear_octomap?.reason ?? ""} onClick={() => act("clear_octomap")}>
-        <Eraser size={16} aria-hidden /> Clear octomap
+        <Eraser size={16} aria-hidden /> Clear collision map
       </button>
       <span className="sep" />
       <button className="btn" onClick={onLogs}>

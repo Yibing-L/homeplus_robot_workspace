@@ -22,7 +22,7 @@ def main():
     log = open('/tmp/homeplus_moveit_smoke.log','w')
     process = subprocess.Popen(['ros2','launch','homeplus_moveit_config','moveit.launch.py',
         'use_rviz:=false','use_joint_gui:=false','run_arduino_reader:=false',
-        'use_octomap:=false','run_rebuild_map:=false'], stdout=log, stderr=log, start_new_session=True)
+        'use_mapping:=false','run_rebuild_map:=false'], stdout=log, stderr=log, start_new_session=True)
     node = None
     try:
         rclpy.init()

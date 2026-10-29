@@ -1,0 +1,14 @@
+nvblox_mapper:
+  ros__parameters:
+    world_frame: world
+    camera_info_topic: /cameras/d405/color/camera_info
+    cloud_topic: /obstacle_cloud
+    voxel_size_m: 0.02
+    depth_downsample: 4  # Matches obstacle_clouds.yaml pixel_stride.
+    max_depth_m: 2.0
+    max_cloud_age_sec: 2.0
+    min_integration_frames: 3
+    self_filter_padding_m: 0.01
+    max_mesh_triangles: 200000
+    max_tsdf_blocks: 30000
+    scene_timeout_sec: 5.0

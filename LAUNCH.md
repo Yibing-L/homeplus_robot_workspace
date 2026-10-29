@@ -4,7 +4,9 @@
 
 ```bash
 cd ~/homeplus_robot_workspace
-colcon build --packages-select homeplus_vision homeplus_moveit_config
+bash scripts/setup_nvblox.sh
+source /opt/ros/humble/setup.bash
+colcon build --packages-up-to homeplus_moveit_config
 source install/setup.bash
 bash scripts/setup_molmopoint.sh --download-model
 ```
@@ -50,8 +52,8 @@ bash scripts/run_vision.sh \
   gesture_label_map:=/path/to/label_map.json
 ```
 
-This assigns D405 to target detection and the target-filtered OctoMap. D435i
-and D455 remain available as cameras but do not feed OctoMap by default because
+This assigns D405 to target detection and the target-filtered nvblox. D435i
+and D455 remain available as cameras but do not feed nvblox by default because
 they do not yet receive a matching target mask; enabling either would insert
 the cup back into the collision map. Use `side_mount:=right` when the D455 is
 installed on the right side. Omit the gesture arguments when testing without a
@@ -66,11 +68,11 @@ ros2 launch homeplus_moveit_config gesture_control.launch.py \
   launch_obstacle_cloud:=false
 ```
 
-Target-filtered OctoMap collision avoidance is enabled by default. To disable it
+Target-filtered nvblox collision avoidance is enabled by default. To disable it
 for troubleshooting:
 
 ```bash
-ros2 launch homeplus_moveit_config gesture_control.launch.py use_octomap:=false
+ros2 launch homeplus_moveit_config gesture_control.launch.py use_mapping:=false
 ```
 
 After both terminals start, verify that exactly one target-aware cloud feeds
@@ -78,14 +80,16 @@ MoveIt:
 
 ```bash
 ros2 topic info /obstacle_cloud -v
-ros2 service call /clear_octomap std_srvs/srv/Empty "{}"
+ros2 service call /nvblox/clear std_srvs/srv/Trigger "{}"
 ```
 
 The first command should show one publisher (`/d405_obstacle_cloud`) and one
-subscriber (`/move_group`). The D405 terminal prints `CLOUD_STATS` every five
+subscriber (`/nvblox_mapper`). The D405 terminal prints `CLOUD_STATS` every five
 seconds; `mask=active` is required while planning a detected cup. D405 cloud
-publication pauses during Arduino motion, then `/clear_octomap` is called and
-the map is rebuilt from the settled hand-camera pose after `DONE`.
+publication pauses during Arduino motion, then `/nvblox/clear` is called and
+the map is rebuilt from the settled hand-camera pose after `DONE`. At least three fresh
+clouds must be integrated and MoveIt must accept the collision mesh before planning.
+See `docs/NVBLOX_MAPPING.md` for build, diagnostics, and limitations.
 
 ## Verify Before Testing
 
@@ -146,6 +150,6 @@ no button activation/force sensor is available to confirm activation.
 | `run_arduino` | `true` | Launch Arduino serial bridge |
 | `wait_for_hardware_ack` | `true` | Wait for Arduino `DONE`; must remain true for this hardware executor |
 | `continue_on_arduino_timeout` | `false` | Must remain false; timeouts retain measured state and abort |
-| `use_octomap` | `true` | Enable target-filtered OctoMap collision avoidance |
+| `use_mapping` | `true` | Enable target-filtered nvblox collision avoidance |
 | `enable_moveit_planning` | `true` | Enable MoveIt planning in executor |
 | `launch_moveit` | `true` | Launch MoveIt stack |

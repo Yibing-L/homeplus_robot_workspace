@@ -60,7 +60,7 @@ WORLD_FRAME=world bash scripts/run_molmopoint.sh 1
 cd ~/homeplus_robot_workspace
 ros2 launch homeplus_moveit_config gesture_control.launch.py \
     arduino_port:=auto
-# target-filtered OctoMap collision avoidance is enabled by default
+# target-filtered nvblox collision avoidance is enabled by default
 
 # --- Terminal 4: Gesture recognizer (vision -> /gesture_control/command)
 cd ~/homeplus_robot_workspace
@@ -118,7 +118,7 @@ bash scripts/run_system.sh \
 #   --gesture-label-map  PATH  optional label map
 #   --use-gui                  show joint_state_publisher GUI
 
-# End-to-end occupancy map only (TF + RealSense + cloud_to_octomap)
+# End-to-end occupancy map only (TF + vision + nvblox; requires hardware state bridge)
 bash scripts/run_e2e_occ_map.sh
 
 
@@ -141,19 +141,14 @@ ros2 launch homeplus_urdf_description display.launch.py
 # MoveIt 2 stack alone
 ros2 launch homeplus_moveit_config moveit.launch.py
 # variants:
-ros2 launch homeplus_moveit_config moveit.launch.py use_octomap:=true
+ros2 launch homeplus_moveit_config moveit.launch.py use_mapping:=true
 ros2 launch homeplus_moveit_config moveit.launch.py run_arduino_reader:=true
 ros2 launch homeplus_moveit_config moveit.launch.py use_joint_gui:=false
 
-# OctoMap from depth cloud
+# nvblox from depth cloud
 bash scripts/run_occ_map.sh
 # or:
-ros2 launch homeplus_moveit_config cloud_to_octomap.launch.py \
-    octomap_input_topic:=/obstacle_cloud \
-    depth_topic:=/cameras/d405/aligned_depth_to_color/image_raw \
-    camera_info_topic:=/cameras/d405/color/camera_info \
-    output_frame:=base_link \
-    octomap_frame:=base_link
+ros2 launch homeplus_moveit_config nvblox_mapping.launch.py
 
 # MolmoPoint node directly (activate .venv-molmopoint first)
 ros2 run homeplus_vision molmopoint_node.py --ros-args \
@@ -184,7 +179,7 @@ ros2 run homeplus_moveit_config gesture_motion_executor.py
 |--------------------------|------------------|--------------------------------------|
 | arduino_port             | auto             | serial port for Arduino              |
 | run_arduino              | true             | launch arduino bridge                |
-| use_octomap              | true             | enable target-filtered OctoMap       |
+| use_mapping              | true             | enable target-filtered nvblox       |
 | enable_moveit_planning   | true             | enable MoveIt planning in executor   |
 | launch_moveit            | true             | launch the MoveIt stack              |
 | behavior_config_file     | (config yaml)    | gesture behavior params              |
@@ -245,7 +240,7 @@ Key displays in the left "Displays" tree (toggle visibility with their checkboxe
   TF                       transform frames (turn off if cluttered)
   Trajectory               the planned path animation
   MarkerArray              detection markers (DINO etc.)
-  OccupancyMap / OctoMap   voxel grid (only when use_octomap:=true)
+  Nvblox collision surface  reconstructed surface /nvblox/mesh
 
 How to PLAN A MOTION manually in RViz:
   1. In Displays, expand "MotionPlanning" -> Planning Request:
@@ -265,11 +260,10 @@ Useful checkboxes inside MotionPlanning panel:
   Use Cartesian Path                straight-line interpolation
   Show Workspace                    visualize planning bounds
 
-To view OctoMap collisions in RViz:
-  ros2 launch homeplus_moveit_config gesture_control.launch.py use_octomap:=true
-  In RViz: Add -> By topic -> /octomap_full -> OccupancyGrid (or OcTree)
-  Alternative pre-built config:
-       rviz2 -d homeplus_moveit_config/config/octomap.rviz
+To view nvblox collisions in RViz:
+  ros2 launch homeplus_moveit_config gesture_control.launch.py use_mapping:=true
+  In RViz: enable Nvblox collision surface, or add Marker on /nvblox/mesh
+  MoveIt PlanningScene shows the collision geometry accepted by the planner.
 
 To save a tweaked RViz layout:
   File -> Save Config As ...   (overwrite moveit.rviz to make it persistent)
@@ -434,15 +428,15 @@ docker exec -it homeplus_ros2 bash
  10. KEY TOPICS / FRAMES (cheat-cheat)
 --------------------------------------------------------------------------------
 Topics
-  /cameras/d405/*                                end-effector target + OctoMap
-  /cameras/d435i/*                               front-base OctoMap
-  /cameras/d455/*                                side gesture + OctoMap
+  /cameras/d405/*                                end-effector target + nvblox
+  /cameras/d435i/*                               front-base nvblox
+  /cameras/d455/*                                side gesture + nvblox
   /joint_states                                  robot joints
   /molmopoint_pose_world                         detected object pose
   /gesture_recognition/state                     raw gesture inference
   /gesture_control/command                       command to execute
   /arduino/ack                                   gripper / hardware ack
-  /obstacle_cloud                                fused point cloud -> OctoMap
+  /obstacle_cloud                                fused point cloud -> nvblox
 
 Frames
   world -> base_link -> {d405,d435i,d455}_link -> *_optical_frame
@@ -457,5 +451,5 @@ camera frames missing         `ros2 topic hz /cameras/d405/color/image_raw`
 no /molmopoint_pose_world     MolmoPoint needs a valid TF target frame (use WORLD_FRAME=world for base_arm planning), CUDA, and camera publishing
 gripper not reacting          `ros2 topic echo /arduino/ack`; check Arduino serial perms
 TF errors                     `ros2 run tf2_ros tf2_echo world d405_link`
-MoveIt plan fails             check CLOUD_STATS mask=active and exactly one /obstacle_cloud publisher; clear /clear_octomap; then toggle use_octomap off to isolate
+MoveIt plan fails             check CLOUD_STATS mask=active and exactly one /obstacle_cloud publisher; clear /nvblox/clear; then toggle use_mapping off to isolate
 ================================================================================

@@ -22,10 +22,10 @@ def generate_launch_description():
         description="If true, the motion executor also sends MoveIt planning requests",
     )
 
-    use_octomap_arg = DeclareLaunchArgument(
-        "use_octomap",
+    use_mapping_arg = DeclareLaunchArgument(
+        "use_mapping",
         default_value="true",
-        description="Enable target-filtered OctoMap collision avoidance in MoveIt",
+        description="Enable target-filtered nvblox collision reconstruction in MoveIt",
     )
 
     use_rviz_arg = DeclareLaunchArgument(
@@ -119,7 +119,7 @@ def generate_launch_description():
         launch_arguments={
             "use_joint_gui": "false",
             "use_rviz": LaunchConfiguration("use_rviz"),
-            "use_octomap": LaunchConfiguration("use_octomap"),
+            "use_mapping": LaunchConfiguration("use_octomap"),
             # pane 1's state_publisher.launch.py already owns robot_state_publisher;
             # avoid spawning a duplicate that fights /tf and /robot_description.
             "launch_robot_state_publisher": "false",
@@ -162,7 +162,7 @@ def generate_launch_description():
             {
                 "execution_map_path": LaunchConfiguration("execution_map_path"),
                 "enable_moveit_planning": LaunchConfiguration("enable_moveit_planning"),
-                "clear_octomap_before_pose_plan": LaunchConfiguration("use_octomap"),
+                "clear_map_before_pose_plan": LaunchConfiguration("use_octomap"),
                 "wait_for_gripper_ack": LaunchConfiguration("wait_for_hardware_ack"),
                 "wait_for_trajectory_ack": LaunchConfiguration("wait_for_hardware_ack"),
                 "continue_on_arduino_timeout": LaunchConfiguration(
@@ -189,7 +189,11 @@ def generate_launch_description():
         [
             launch_moveit_arg,
             enable_moveit_planning_arg,
-            use_octomap_arg,
+            use_mapping_arg,
+            DeclareLaunchArgument(
+                "use_octomap", default_value=LaunchConfiguration("use_mapping"),
+                description="Deprecated alias for use_mapping; backend is nvblox",
+            ),
             use_rviz_arg,
             launch_obstacle_cloud_arg,
             behavior_config_file_arg,

@@ -6,7 +6,7 @@ units:
   hp-vision:
     cmd: "source /opt/ros/humble/setup.bash && source /mnt/c/users/easha/arl/homeplus_robot_workspace/install/setup.bash && source /mnt/c/users/easha/arl/homeplus_robot_workspace/.venv-molmopoint/bin/activate && ros2 launch homeplus_vision vision_pipeline.launch.py side_mount:=left task_id:=1 enable_d405:=true enable_d435i:=false enable_target_detection:=true enable_gesture_detection:=false enable_d405_octomap:=true enable_d435i_octomap:=false enable_d455_octomap:=false"
   hp-moveit:
-    cmd: "source /opt/ros/humble/setup.bash && source /mnt/c/users/easha/arl/homeplus_robot_workspace/install/setup.bash && ros2 launch homeplus_moveit_config gesture_control.launch.py run_arduino:=false launch_obstacle_cloud:=false use_octomap:=true"
+    cmd: "source /opt/ros/humble/setup.bash && source /mnt/c/users/easha/arl/homeplus_robot_workspace/install/setup.bash && ros2 launch homeplus_moveit_config gesture_control.launch.py run_arduino:=false launch_obstacle_cloud:=false use_mapping:=true"
   hp-bridge:
     probe: {device: "/dev/ttyACM0"}  # any process holding the port blocks a second reader
     cmd: "source /opt/ros/humble/setup.bash && source /mnt/c/users/easha/arl/homeplus_robot_workspace/install/setup.bash && ros2 run homeplus_moveit_config arduino_reader.py --port /dev/ttyACM0 --baud 115200 --ros-args -r __node:=arduino_bridge"

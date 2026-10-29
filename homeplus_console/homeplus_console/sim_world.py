@@ -336,7 +336,7 @@ class SimWorld:
             self._approval_response = approve
 
     def clear_octomap(self) -> bool:
-        self.logs.add("move_group", "INFO", "Octomap cleared (/clear_octomap)")
+        self.logs.add("nvblox_mapper", "INFO", "Collision map cleared (/nvblox/clear)")
         return self.supervisor.is_active("hp-moveit")
 
     def set_task_id(self, task_id: int) -> None:

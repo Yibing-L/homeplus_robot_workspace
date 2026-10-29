@@ -33,7 +33,7 @@ from rclpy.node import Node
 from rclpy.qos import DurabilityPolicy, QoSProfile, ReliabilityPolicy, qos_profile_sensor_data
 from sensor_msgs.msg import Image, JointState
 from std_msgs.msg import Bool, String
-from std_srvs.srv import Empty, Trigger
+from std_srvs.srv import Trigger
 
 from .images import FrameStore
 from .log_filter import LogBuffer, parse_status_text
@@ -252,7 +252,10 @@ class RosIO:
         self._approve_scoped = n.create_publisher(String, "/gesture_control/approve_plan", RELIABLE)
         self._cmd_pub = n.create_publisher(GestureCommand, "/gesture_control/command", 10) if GestureCommand else None
         self._cancel_cli = n.create_client(Trigger, "/gesture_control/cancel", callback_group=cb)
-        self._octomap_cli = n.create_client(Empty, "/clear_octomap", callback_group=cb)
+        # The collision map is nvblox's mesh in the MoveIt scene; move_group no longer has
+        # an OctoMap (/clear_octomap). The action keeps its "clear_octomap" id so the
+        # built UI bundle keeps working.
+        self._map_clear_cli = n.create_client(Trigger, "/nvblox/clear", callback_group=cb)
         self._getp = n.create_client(GetParameters, "/molmopoint/get_parameters", callback_group=cb)
         self._setp = n.create_client(SetParameters, "/molmopoint/set_parameters", callback_group=cb)
         self._move = ActionClient(n, MoveGroup, "/move_action", callback_group=cb) if MoveGroup else None
@@ -544,9 +547,11 @@ class RosIO:
             self._approve_bool.publish(Bool(data=approve))
 
     def clear_octomap(self) -> bool:
-        if not self._octomap_cli.service_is_ready():
+        if not self._map_clear_cli.service_is_ready():
             return False
-        self._octomap_cli.call_async(Empty.Request())
+        # nvblox answers only after MoveIt has dropped the mesh; fire and forget, the
+        # mapper logs a rejected or timed-out reset itself.
+        self._map_clear_cli.call_async(Trigger.Request())
         return True
 
     def set_task_id(self, task_id: int) -> None:

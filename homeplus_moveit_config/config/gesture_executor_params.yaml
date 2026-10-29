@@ -46,7 +46,7 @@ gesture_motion_executor:
     detection_max_refresh_shift_m: 0.0  # No rejection against the earlier target
     # Rebuild from the settled, target-filtered D405 view immediately before
     # each Cartesian plan so stale moving-camera voxels cannot reject the goal.
-    clear_octomap_before_pose_plan: true
-    clear_octomap_service: "/clear_octomap"
-    octomap_clear_timeout_sec: 2.0
-    octomap_rebuild_wait_sec: 20.0
+    clear_map_before_pose_plan: true
+    clear_map_service: "/nvblox/clear"
+    map_clear_timeout_sec: 8.0
+    map_rebuild_wait_sec: 20.0

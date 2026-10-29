@@ -212,7 +212,39 @@ class ExecutorTests(unittest.TestCase):
         self.assertEqual(node.collision_state_pub.publish.call_count,2)
         node._clear_collision_debug()
         self.assertTrue(node.collision_state_pub.publish.call_args.args[0].hide)
+        self.assertEqual(list(node.collision_state_pub.publish.call_args.args[0].state.joint_state.name),
+                         list(node.latest_joint_state.name))
         self.assertEqual(len(node.collision_markers_pub.publish.call_args.args[0].markers),1)
+
+    def test_clearing_overlay_before_feedback_never_publishes_empty_state(self):
+        node = executor()
+        node.latest_joint_state = None
+        node.collision_state_pub = Mock()
+        node.collision_markers_pub = Mock()
+        node._collision_debug = None
+        node._clear_collision_debug()
+        node._republish_collision_debug()
+        node.collision_state_pub.publish.assert_not_called()
+        self.assertEqual(node.collision_markers_pub.publish.call_count, 2)
+
+    def test_execution_failure_logs_residual_and_jitter_without_altering_state(self):
+        node = executor()
+        logger = Mock()
+        node.get_logger = lambda: logger
+        node.latest_joint_state.position[7] = math.radians(65.0)
+        node._pending_joint_state = [0.0]*7 + [math.radians(68.748)]
+        node._endpoint_profile = 'transit'
+        now = time.monotonic()
+        node._last_state_received = now
+        node._joint_history = [(now, state(node.latest_joint_state.position))]
+        original = list(node.latest_joint_state.position)
+        node._log_execution_feedback('SETTLE_TIMEOUT')
+        messages = '\n'.join(call.args[0] for call in logger.error.call_args_list)
+        self.assertIn('profile=transit', messages)
+        self.assertIn('joint_shoulder: target=68.748 feedback=65.000 error=+3.748 deg', messages)
+        self.assertIn('feedback span over last 0.7s=0.000 deg', messages)
+        self.assertEqual(list(node.latest_joint_state.position), original)
+        self.assertAlmostEqual(node._pending_joint_state[7], math.radians(68.748))
 
     def test_rviz_has_collision_overlay_and_camera_context(self):
         config=yaml.safe_load((ROOT/'homeplus_moveit_config/config/moveit.rviz').read_text())
@@ -235,7 +267,7 @@ class ExecutorTests(unittest.TestCase):
 
     def test_ik_failure_does_not_call_rrt(self):
         node=executor();node.move_group_client=Mock();node.move_group_client.server_is_ready.return_value=True
-        node._clear_and_rebuild_octomap=lambda *a:True
+        node._clear_and_rebuild_map=lambda *a:True
         node.allowed_planning_time=5.;node.num_planning_attempts=3;node.planner_id='RRTConnectkConfigDefault'
         node.end_effector_link='grasp_tcp';node.position_tolerance_m=.01
         node.use_orientation_constraint=True;node.orientation_tolerance_rad=.05
@@ -689,6 +721,51 @@ class CloudTimingTests(unittest.TestCase):
         node._process_pending_depth()
         self.assertIsNone(node.pending_depth)
         self.assertEqual(node._process_depth.call_count, 1)
+
+
+class MappingReadinessTests(unittest.TestCase):
+    def configured_executor(self, response_generation='8', success=True):
+        node = executor()
+        node.clear_map_before_pose_plan = True
+        node.map_clear_timeout_sec = 0.1
+        node.map_rebuild_wait_sec = 3.0
+        node._map_stamp_ns = int(101e9)
+        node._map_generation = 8
+        response = SimpleNamespace(success=success, message=response_generation)
+        future = SimpleNamespace(result=lambda: response)
+        future.add_done_callback = lambda callback: callback(future)
+        node.map_clear_client = Mock()
+        node.map_clear_client.call_async.return_value = future
+        return node
+
+    def test_matching_generation_and_inserted_mesh_allow_planning(self):
+        node = self.configured_executor()
+        self.assertTrue(node._clear_and_rebuild_map('grasp', {}))
+
+    def test_old_generation_cannot_satisfy_rebuild(self):
+        node = self.configured_executor()
+        node._map_generation = 7
+        with patch('gesture_motion_executor.time.monotonic', side_effect=[0, 1, 4]), patch('gesture_motion_executor.time.sleep'):
+            self.assertFalse(node._clear_and_rebuild_map('grasp', {}))
+
+    def test_failed_clear_prevents_planning(self):
+        node = self.configured_executor('MoveIt rejected reset', False)
+        self.assertFalse(node._clear_and_rebuild_map('grasp', {}))
+
+    def test_cloud_publication_is_not_map_readiness(self):
+        node = self.configured_executor()
+        node._map_stamp_ns = 0
+        node._map_ready_callback(String(data='{"stamp_ns":101000000000,"masked":true}'))
+        self.assertEqual(node._map_stamp_ns, 0)
+
+    def test_empty_mesh_or_insufficient_observations_are_not_ready(self):
+        node = self.configured_executor()
+        node._map_stamp_ns = 0
+        for frames, triangles in [(2, 100), (3, 0)]:
+            node._map_ready_callback(String(data='{"stamp_ns":101000000000,"generation":8,"frames":%d,"triangles":%d}' % (frames, triangles)))
+        self.assertEqual(node._map_stamp_ns, 0)
+        node._map_ready_callback(String(data='{"stamp_ns":101000000000,"generation":8,"frames":3,"triangles":100}'))
+        self.assertEqual(node._map_stamp_ns, int(101e9))
 
 
 if __name__=='__main__':unittest.main()

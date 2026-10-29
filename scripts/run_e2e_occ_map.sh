@@ -8,6 +8,8 @@ source /opt/ros/humble/setup.bash
 source install/setup.bash
 set -u
 
+# A separately running Arduino bridge supplies measured joints and settled status.
+# This helper starts no controller or motion executor.
 pids=()
 
 cleanup() {
@@ -22,7 +24,7 @@ bash "$ROOT/scripts/run_robot_tf.sh" &
 pids+=($!)
 sleep 3
 
-bash "$ROOT/scripts/run_realsense.sh" &
+bash "$ROOT/scripts/run_vision.sh" &
 pids+=($!)
 sleep 5
 

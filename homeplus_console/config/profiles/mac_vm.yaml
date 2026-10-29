@@ -18,6 +18,10 @@ units:
     env: *env
     cmd: "source /opt/ros/humble/setup.bash && source ~/ros2_ws/install/setup.bash && ros2 launch homeplus_vision vision_pipeline.launch.py side_mount:=left task_id:=1 enable_d405:=false enable_d435i:=false enable_d455:=false enable_target_detection:=true enable_gesture_detection:=false enable_d405_octomap:=true enable_d435i_octomap:=false enable_d455_octomap:=false"
   hp-moveit:
+    # MERGE-NOTE (nvblox): use_octomap is now an alias for use_mapping, which starts the
+    # CUDA nvblox_mapper; without an NVIDIA GPU the mapper exits and shuts the whole
+    # launch down. The VM has no GPU: set use_mapping:=false here (no collision map) if
+    # this profile is used again.
     env: *env
     cmd: "source /opt/ros/humble/setup.bash && source ~/ros2_ws/install/setup.bash && ros2 launch homeplus_moveit_config gesture_control.launch.py run_arduino:=false launch_obstacle_cloud:=false use_octomap:=true use_rviz:=false"
   hp-bridge:
