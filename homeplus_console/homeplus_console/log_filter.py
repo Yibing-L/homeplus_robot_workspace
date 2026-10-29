@@ -96,6 +96,7 @@ _STEP = re.compile(r"\[(?P<seq>[\w_]+)\] step (?P<i>\d+)/(?P<n>\d+): (?P<name>[\
 _WAIT = re.compile(r"Plan for (?P<name>[\w_]+) is waiting for approval")
 _ABORT = re.compile(r"Sequence (?P<seq>[\w_]+) ABORTED at (?P<step>[\w_]+): (?P<reason>.*)")
 _FAIL = re.compile(r"Command (?P<cmd>[\w_]+) FAILED: (?P<reason>.*)")
+_HOLDING = re.compile(r"^Holding cup: (?P<yes>yes|no) ")
 
 
 def parse_status_text(text: str) -> Optional[Dict]:
@@ -112,4 +113,7 @@ def parse_status_text(text: str) -> Optional[Dict]:
     m = _FAIL.search(text)
     if m:
         return {"kind": "failed", "command": m["cmd"], "reason": m["reason"]}
+    m = _HOLDING.search(text)
+    if m:
+        return {"kind": "holding", "holding": m["yes"] == "yes"}
     return None

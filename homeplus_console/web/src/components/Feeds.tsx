@@ -28,7 +28,7 @@ function useFrame(feed: Feed): string | null {
   return url;
 }
 
-function FeedTile({ feed, big }: { feed: Feed; big?: boolean }) {
+function FeedTile({ feed, big, onClick }: { feed: Feed; big?: boolean; onClick?: () => void }) {
   const url = useFrame(feed);
   const { since, lost } = useSinceSnapshot();
   const age = feed.age == null ? null : feed.age + (lost ? 0 : since);
@@ -51,7 +51,8 @@ function FeedTile({ feed, big }: { feed: Feed; big?: boolean }) {
       </div>
     ) : null;
   return (
-    <figure className={`feed is-${status} ${big ? "big" : ""}`} style={{ margin: 0 }} aria-label={`${feed.label}: ${status}`}>
+    <figure className={`feed is-${status} ${big ? "big" : ""}`} style={{ margin: 0, cursor: onClick ? "zoom-in" : undefined }}
+      aria-label={`${feed.label}: ${status}`} onClick={onClick} title={big ? "click to enlarge" : "click to show large"}>
       <div className="frame">
         {url && <img src={url} alt="" draggable={false} />}
         <span className="tag">{feed.label}</span>
@@ -130,7 +131,10 @@ function Detection({ p }: { p: Perception }) {
 }
 
 export function Feeds({ snap }: { snap: Snapshot }) {
-  const [main, ...rest] = snap.feeds;
+  const [focus, setFocus] = useState<string | null>(null);
+  const [full, setFull] = useState(false);
+  const main = snap.feeds.find((f) => f.id === focus) ?? snap.feeds[0];
+  const rest = snap.feeds.filter((f) => f !== main);
   const [tab, setTab] = useState<"cameras" | "plan">("cameras");
   const pid = snap.approval?.plan_id ?? null;
   const shownFor = useRef<number | null>(null);
@@ -162,12 +166,18 @@ export function Feeds({ snap }: { snap: Snapshot }) {
       </div>
       {tab === "cameras" ? (
         <div className="feeds">
-          <FeedTile feed={main} big />
+          <FeedTile feed={main} big onClick={() => setFull(true)} />
           <div className="small">
             {rest.map((f) => (
-              <FeedTile key={f.id} feed={f} />
+              <FeedTile key={f.id} feed={f} onClick={() => setFocus(f.id)} />
             ))}
           </div>
+          {full && (
+            <div className="feed-full" role="dialog" aria-label={`${main.label} enlarged`} onClick={() => setFull(false)}>
+              <FeedTile feed={main} big />
+              <span className="hint">click anywhere to close</span>
+            </div>
+          )}
         </div>
       ) : (
         <Plan3D plan={plan} planAge={snap.approval ? null : snap.plan_preview_age} now={snap.joints.si} />

@@ -18,7 +18,7 @@ import rclpy
 from rclpy.serialization import serialize_message
 import tf2_geometry_msgs
 import yaml
-from geometry_msgs.msg import Pose, PoseStamped
+from geometry_msgs.msg import Pose, PoseStamped, Quaternion
 from homeplus_interfaces.msg import GestureCommand
 from moveit_msgs.action import MoveGroup
 from moveit_msgs.msg import (
@@ -358,6 +358,7 @@ class GestureMotionExecutor(Node):
         self._cup_geometry = None
         self._cup_collision_object = None
         self._holding_cup = False
+        self._finger_contacts_pending_restore = False
         self._base_link_height = 0.0
         # Arm reach model for deliberate base placement, built from the URDF.
         self._robot_description: Optional[str] = None
@@ -1022,7 +1023,7 @@ class GestureMotionExecutor(Node):
         if not isinstance(command_cfg, dict):
             return [f"{name}: command must be a mapping"]
 
-        allowed = set("endpoint_profile name type group_name joints value frame_id position orientation rpy_deg target steps task_id detection_topic detection_timeout_sec detection_min_stable_samples detection_stability_tolerance_m detection_max_refresh_shift_m max_replanning_attempts max_attempts settle_sec require_trajectory_approval planner_id allowed_planning_time num_planning_attempts link_name offset_x offset_y offset_z offset_frame orientation_from_detection gripper_value final_gripper_value position_tolerance_m position_tolerance_xy_m position_tolerance_z_m use_orientation_constraint orientation_tolerance_rad orientation_tolerance_x_rad orientation_tolerance_y_rad orientation_tolerance_z_rad safe_z_candidate_offsets_m base_goal_tcp_x_min_m base_goal_tcp_x_max_m base_goal_tcp_y_max_m max_base_goal_rotation_rad max_base_goal_translation_m max_base_goal_y_translation_m preserve_reference_z maintain_orientation_during_path post_delay_sec cartesian mobile_standoff lookahead_offsets velocity_scaling acceleration_scaling clear_octomap_before_plan octomap_clear_timeout_sec octomap_rebuild_wait_sec ik_candidate_attempts attach_cup joint_tolerance hardcoded_detection_pose hardcoded_detection_frame planning_service_timeout_sec phase_allowed_planning_time phase_num_planning_attempts phase_joint_tolerance continue_on_arduino_timeout base_placement heading_from_base max_arm_plane_error_m redo_from_step max_redos".split())
+        allowed = set("endpoint_profile name type group_name joints value frame_id position orientation rpy_deg target steps task_id detection_topic detection_timeout_sec detection_min_stable_samples detection_stability_tolerance_m detection_max_refresh_shift_m max_replanning_attempts max_attempts settle_sec require_trajectory_approval planner_id allowed_planning_time num_planning_attempts link_name offset_x offset_y offset_z offset_frame orientation_from_detection gripper_value final_gripper_value position_tolerance_m position_tolerance_xy_m position_tolerance_z_m use_orientation_constraint orientation_tolerance_rad orientation_tolerance_x_rad orientation_tolerance_y_rad orientation_tolerance_z_rad safe_z_candidate_offsets_m base_goal_tcp_x_min_m base_goal_tcp_x_max_m base_goal_tcp_y_max_m max_base_goal_rotation_rad max_base_goal_translation_m max_base_goal_y_translation_m preserve_reference_z maintain_orientation_during_path post_delay_sec cartesian mobile_standoff lookahead_offsets velocity_scaling acceleration_scaling clear_octomap_before_plan octomap_clear_timeout_sec octomap_rebuild_wait_sec ik_candidate_attempts attach_cup joint_tolerance hardcoded_detection_pose hardcoded_detection_frame planning_service_timeout_sec phase_allowed_planning_time phase_num_planning_attempts phase_joint_tolerance continue_on_arduino_timeout base_placement heading_from_base max_arm_plane_error_m redo_from_step max_redos detach_cup held_cup_placement base_relative".split())
         if command_cfg.get('endpoint_profile', 'precise') not in ('precise', 'transit'):
             errors.append(f'{name}: endpoint_profile must be precise or transit')
         if command_cfg.get('cartesian') and command_cfg.get('endpoint_profile') == 'transit':
@@ -1103,6 +1104,15 @@ class GestureMotionExecutor(Node):
                 errors.append(f'{name}: max_arm_plane_error_m must be positive on a detect step')
             if not command_cfg.get('redo_from_step'):
                 errors.append(f'{name}: max_arm_plane_error_m requires redo_from_step')
+        placing = command_cfg.get('held_cup_placement')
+        if placing is not None:
+            keys = {'cup_axis_behind_grasp_point_m', 'release_clearance_m'}
+            if action_type != 'sequence' or not isinstance(placing, dict) or set(placing) != keys:
+                errors.append(f'{name}: held_cup_placement must be a sequence mapping with exactly {sorted(keys)}')
+            elif not all(math.isfinite(float(placing[k])) and float(placing[k]) >= 0.0 for k in keys):
+                errors.append(f'{name}: held_cup_placement values must be finite and nonnegative')
+        if command_cfg.get('detach_cup') and (action_type != 'gripper' or float(command_cfg.get('value', 90.0)) > 1.0):
+            errors.append(f'{name}: detach_cup requires a gripper step that opens (value <= 1)')
         if 'max_redos' in command_cfg:
             value = command_cfg['max_redos']
             if not isinstance(value, int) or isinstance(value, bool) or value < 0:
@@ -1110,6 +1120,9 @@ class GestureMotionExecutor(Node):
 
         if action_type == "joint_state" and not command_cfg.get("joints"):
             errors.append(f"{name}: joint_state requires a non-empty joints mapping")
+        if command_cfg.get("base_relative") and (
+                action_type != "joint_state" or set(command_cfg.get("joints") or {}) - set(BASE_JOINT_NAMES)):
+            errors.append(f"{name}: base_relative applies to joint_state steps with base joints only")
 
         if action_type == "gripper":
             value = command_cfg.get("value")
@@ -1285,6 +1298,7 @@ class GestureMotionExecutor(Node):
                 scene.components.components = PlanningSceneComponents.ROBOT_STATE_ATTACHED_OBJECTS
                 attached = self._call_service(self.scene_client, scene).scene.robot_state.attached_collision_objects
                 self._holding_cup = any(o.object.id == 'detected_cup' for o in attached)
+                self._report_holding('planning scene')
             action_type = str(command_cfg.get("type", fallback_type or "command"))
             if action_type == "sequence":
                 self._run_sequence(command_name, command_cfg)
@@ -1297,7 +1311,21 @@ class GestureMotionExecutor(Node):
             self.get_logger().error(f"Command {command_name} crashed: {exc}")
             self._publish_status(f"Command {command_name} FAILED: {exc}")
         finally:
+            if self._finger_contacts_pending_restore:
+                # A placement released the cup but kept fingers<->OctoMap
+                # contact allowed for the retreat; restore it however the
+                # sequence ended.
+                try:
+                    self._set_allowed_collisions(self._FINGER_OCTOMAP_PAIRS, False)
+                    self._finger_contacts_pending_restore = False
+                except Exception as exc:
+                    self.get_logger().error(f'Could not restore finger<->OctoMap collision checking: {exc}')
             self._set_busy(False)
+
+    def _report_holding(self, source: str) -> None:
+        # Parsed by the operator console (log_filter.parse_status_text) to
+        # offer pickup or placement.
+        self._publish_status(f"Holding cup: {'yes' if self._holding_cup else 'no'} ({source})")
 
     # ------------------------------------------------------------------
     # Single-step execution (unchanged behavior for non-sequence commands)
@@ -1378,12 +1406,17 @@ class GestureMotionExecutor(Node):
     # Sequence execution
     # ------------------------------------------------------------------
     def _run_sequence(self, sequence_name: str, sequence_cfg: Dict) -> None:
-        if self._holding_cup:
+        placement = sequence_cfg.get('held_cup_placement')
+        if placement is None and self._holding_cup:
             raise RuntimeError('Release the attached cup before starting another manipulation task')
+        if placement is not None and not self._holding_cup:
+            raise RuntimeError('No cup is attached to the gripper: pick one up before placing it')
         steps: List[Dict] = sequence_cfg.get("steps", [])
         if not steps:
             self.get_logger().error(f"Sequence {sequence_name} has no steps")
             return
+        if placement is not None:
+            steps = self._held_cup_place_steps(sequence_name, steps, placement)
 
         self._start_sequence_trajectory_log(sequence_name)
         self._publish_status(f"Starting sequence: {sequence_name} ({len(steps)} steps)")
@@ -1570,6 +1603,16 @@ class GestureMotionExecutor(Node):
                             self.get_logger().warn('DRY RUN: not attaching the cup collision object')
                         else:
                             self._attach_cup()
+                    if effective_step.get('detach_cup', False) and self._holding_cup:
+                        if self.dry_run:
+                            # The live scene belongs to the real executor.
+                            self.get_logger().warn('DRY RUN: not detaching the cup collision object')
+                        else:
+                            # The open fingers still surround the placed cup,
+                            # whose voxels they touch: keep that contact
+                            # allowed until this command ends (retreat).
+                            self._detach_cup(restore_finger_contacts=False)
+                            self._finger_contacts_pending_restore = True
                     break
 
             elif step_type == "detect":
@@ -1884,7 +1927,17 @@ class GestureMotionExecutor(Node):
         return pose_msg
 
     def _build_joint_state_message(self, command_cfg: Dict) -> JointState:
-        joints = command_cfg.get("joints", {})
+        joints = dict(command_cfg.get("joints", {}))
+        if command_cfg.get("base_relative"):
+            # base_x/base_y/base_theta are a move in the robot's own frame (forward,
+            # left, turn) from the measured base pose, not odometry coordinates.
+            if self.latest_joint_state is None:
+                raise RuntimeError('No measured base pose for a base-relative move')
+            x, y, th = self._measured_base()
+            fwd, left = float(joints.get('base_x', 0.0)), float(joints.get('base_y', 0.0))
+            joints['base_x'] = x + fwd * math.cos(th) - left * math.sin(th)
+            joints['base_y'] = y + fwd * math.sin(th) + left * math.cos(th)
+            joints['base_theta'] = th + float(joints.get('base_theta', 0.0))
         joint_msg = JointState()
         joint_msg.header.stamp = self.get_clock().now().to_msg()
         joint_msg.name = list(joints.keys())
@@ -2614,8 +2667,28 @@ class GestureMotionExecutor(Node):
             center.position.y = pose.pose.position.y + delta[1]
             center.position.z = pose.pose.position.z + delta[2]
         center.orientation.w = 1.0
+        # Subframes are relative to the object pose, and MoveIt re-bases the object
+        # pose (not the subframes) onto the link at attach. So give the object its
+        # own pose at the cup centre and keep shapes and subframes relative to it;
+        # world-frame subframes on an identity-pose object came back as offsets
+        # of ~1 m from grasp_tcp (2026-10-29).
+        obj.pose = deepcopy(center)
         obj.primitives = [cylinder]
-        obj.primitive_poses = [center]
+        obj.primitive_poses = [Pose(orientation=Quaternion(w=1.0))]
+        bottom_z = data.get('bottom_z')
+        if bottom_z is not None and math.isfinite(float(bottom_z)):
+            # Measured cup bottom (lowest segmented cup depth), directly below
+            # the grasp target. A subframe moves with the object when it is
+            # attached, so the grasp-TCP-to-cup-bottom offset at closure stays
+            # in the planning scene for placing it later (and survives an
+            # executor restart). The envelope above is not a measurement.
+            bottom = Pose()
+            bottom.position.x = pose.pose.position.x - center.position.x
+            bottom.position.y = pose.pose.position.y - center.position.y
+            bottom.position.z = float(bottom_z) - center.position.z
+            bottom.orientation.w = 1.0
+            obj.subframe_names = [self._CUP_BOTTOM_SUBFRAME]
+            obj.subframe_poses = [bottom]
         request = ApplyPlanningScene.Request()
         request.scene.is_diff = True
         request.scene.world.collision_objects = [obj]
@@ -2663,7 +2736,7 @@ class GestureMotionExecutor(Node):
         if not self._call_service(self.apply_scene_client, request).success:
             raise RuntimeError('Could not update the allowed collision matrix')
 
-    def _detach_cup(self):
+    def _detach_cup(self, restore_finger_contacts: bool = True):
         req = ApplyPlanningScene.Request()
         req.scene.is_diff = True
         req.scene.robot_state.is_diff = True
@@ -2674,11 +2747,14 @@ class GestureMotionExecutor(Node):
         req.scene.robot_state.attached_collision_objects = [attached]
         if not self._call_service(self.apply_scene_client, req).success:
             raise RuntimeError('Could not detach cup collision geometry')
-        self._set_allowed_collisions(self._FINGER_OCTOMAP_PAIRS, False)
+        if restore_finger_contacts:
+            self._set_allowed_collisions(self._FINGER_OCTOMAP_PAIRS, False)
         self._holding_cup = False
         self._cup_collision_object = None
+        self._report_holding('released')
 
     _FINGER_OCTOMAP_PAIRS = [('<octomap>', 'FingerL_new_1'), ('<octomap>', 'FingerR_new_1')]
+    _CUP_BOTTOM_SUBFRAME = 'bottom'
 
     def _attach_cup(self):
         if self._cup_collision_object is None:
@@ -2690,10 +2766,26 @@ class GestureMotionExecutor(Node):
         attached.link_name = 'grasp_tcp'
         attached.touch_links = ['FingerL_new_1', 'FingerR_new_1']
         attached.object = deepcopy(self._cup_collision_object)
+        if self._CUP_BOTTOM_SUBFRAME in attached.object.subframe_names:
+            # The envelope hangs below the cup into the table it stood on
+            # (allowed contact). Held, nothing below the measured bottom is
+            # cup: trim it, or a placement would collide with whatever is
+            # under the target surface.
+            bottom_z = attached.object.subframe_poses[
+                attached.object.subframe_names.index(self._CUP_BOTTOM_SUBFRAME)].position.z
+            cylinder, center = attached.object.primitives[0], attached.object.primitive_poses[0]
+            height = cylinder.dimensions[SolidPrimitive.CYLINDER_HEIGHT]
+            top = center.position.z + height / 2.0
+            if center.position.z - height / 2.0 < bottom_z < top:
+                cylinder.dimensions[SolidPrimitive.CYLINDER_HEIGHT] = top - bottom_z
+                center.position.z = (top + bottom_z) / 2.0
+        else:
+            self.get_logger().warn('Cup has no measured bottom: it can be held but not placed')
         req.scene.robot_state.attached_collision_objects = [attached]
         if not self._call_service(self.apply_scene_client, req).success:
             raise RuntimeError('Could not attach cup collision geometry')
         self._holding_cup = True
+        self._report_holding('attached at closure')
         # Voxels at the closed fingers are the held cup's own surface (the mask
         # never removes all of it), so let the fingers touch the OctoMap until
         # release. Other links, and the attached cup body, are still checked.
@@ -2706,6 +2798,72 @@ class GestureMotionExecutor(Node):
         remove_req.scene.world.collision_objects = [
             CollisionObject(id='detected_cup', operation=CollisionObject.REMOVE)]
         self._call_service(self.apply_scene_client, remove_req)
+
+    @staticmethod
+    def _rotate(q, v):
+        """Rotate vector v by quaternion q (x, y, z, w); an all-zero q is identity."""
+        x, y, z, w = q
+        if x == y == z == w == 0.0:
+            return list(v)
+        tx = 2 * (y * v[2] - z * v[1])
+        ty = 2 * (z * v[0] - x * v[2])
+        tz = 2 * (x * v[1] - y * v[0])
+        return [v[0] + w * tx + y * tz - z * ty,
+                v[1] + w * ty + z * tx - x * tz,
+                v[2] + w * tz + x * ty - y * tx]
+
+    def _held_cup_bottom_in_tcp(self) -> Optional[List[float]]:
+        """Measured cup bottom in the grasp_tcp frame, from the attached cup's
+        subframe (fixed at closure); None if no cup or no measurement."""
+        scene = GetPlanningScene.Request()
+        scene.components.components = PlanningSceneComponents.ROBOT_STATE_ATTACHED_OBJECTS
+        attached = self._call_service(self.scene_client, scene).scene.robot_state.attached_collision_objects
+        for aco in attached:
+            obj = aco.object
+            if obj.id != 'detected_cup' or self._CUP_BOTTOM_SUBFRAME not in obj.subframe_names:
+                continue
+            if (obj.header.frame_id or aco.link_name) != 'grasp_tcp':
+                self.get_logger().error(f'Attached cup is expressed in {obj.header.frame_id}, not grasp_tcp')
+                return None
+            sub = obj.subframe_poses[obj.subframe_names.index(self._CUP_BOTTOM_SUBFRAME)].position
+            q, p = obj.pose.orientation, obj.pose.position
+            v = self._rotate((q.x, q.y, q.z, q.w), (sub.x, sub.y, sub.z))
+            return [p.x + v[0], p.y + v[1], p.z + v[2]]
+        return None
+
+    def _held_cup_place_steps(self, sequence_name: str, steps: List[Dict], placement: Dict) -> List[Dict]:
+        """Re-express the placement's detected-target offsets for grasp_tcp.
+
+        In the map, `target: detected` offsets locate the held cup's bottom
+        centre relative to the detected surface point (the surface itself at
+        offset 0, plus release_clearance_m). grasp_tcp is level (+X along the
+        approach, +Z up) at closure and during placement, so the cup bottom
+        sits at the same TCP-frame offset at both: subtract it. Every consumer
+        (base placement, arm-plane checks, lookahead) then sees TCP offsets.
+        """
+        bottom = self._held_cup_bottom_in_tcp()
+        if bottom is None:
+            raise RuntimeError('The held cup has no measured bottom (detector published no cup extent at '
+                               'grasp, or the cup was attached by an older executor): cannot place it')
+        bx, by, bz = bottom
+        axis = float(placement['cup_axis_behind_grasp_point_m'])
+        clearance = float(placement['release_clearance_m'])
+        self.get_logger().info(
+            f'[{sequence_name}] held cup bottom (below grasp point) in grasp_tcp: forward {bx:+.3f} m, '
+            f'sideways {by:+.3f} m, up {bz:+.3f} m; cup axis {axis:.3f} m further forward; '
+            f'release {clearance:.3f} m above the surface')
+        if abs(by) > 0.02:
+            # The arm cannot strafe: this lands the cup off-centre by |by|.
+            self.get_logger().warn(f'[{sequence_name}] cup bottom is {by * 1000:+.0f} mm sideways of grasp_tcp; '
+                                   'not corrected')
+        adjusted = []
+        for step in steps:
+            if step.get('target') == 'detected':
+                step = dict(step)
+                step['offset_x'] = float(step.get('offset_x', 0.0)) - (bx + axis)
+                step['offset_z'] = float(step.get('offset_z', 0.0)) + clearance - bz
+            adjusted.append(step)
+        return adjusted
 
     def _call_service(self, client, request, timeout=3.0):
         if not client.wait_for_service(timeout_sec=1.0):

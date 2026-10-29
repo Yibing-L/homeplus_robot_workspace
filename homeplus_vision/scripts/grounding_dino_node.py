@@ -167,6 +167,14 @@ class MolmoPointNode(Node):
         self.declare_parameter('cup_max_radius_m', 0.065)
         self.declare_parameter('cup_height_from_mask_extent', False)
         self.declare_parameter('cup_min_palm_clearance_m', 0.0)
+        # Placement targets (horizontal_surface tasks) are never on the cup the
+        # gripper holds: reject a surface centred inside this cylinder around
+        # held_object_frame (radius; extent below/above it). A 16 oz Solo cup held
+        # 8.8 cm above its base reaches ~9 cm below and ~4 cm above grasp_tcp.
+        self.declare_parameter('held_object_frame', 'grasp_tcp')
+        self.declare_parameter('held_object_exclusion_radius_m', 0.08)
+        self.declare_parameter('held_object_exclusion_below_m', 0.12)
+        self.declare_parameter('held_object_exclusion_above_m', 0.08)
         self.declare_parameter('gripper_palm_below_tcp_m', 0.047)
         self.declare_parameter('approach_reference_frame', '')
         self.declare_parameter(
@@ -292,8 +300,6 @@ class MolmoPointNode(Node):
         self.pose_pub = self.create_publisher(
             PoseStamped, str(self.get_parameter('pose_topic').value), 10
         )
-        self.task_pose_pubs = {task: self.create_publisher(PoseStamped,
-            f'/molmopoint/task_{task}/pose', 10) for task in (1, 2)}
         self.geometry_pub = self.create_publisher(String, '/molmopoint/geometry', 10)
         self.mask_pub = self.create_publisher(
             Image, str(self.get_parameter('mask_topic').value), 10
@@ -358,6 +364,10 @@ class MolmoPointNode(Node):
             self.get_logger().warn(f"Invalid task_id {self.task_id}, defaulting to 1")
             self.task_id = 1
         self.task = self.tasks[self.task_id]
+        # One pose topic per task that drives a motion command.
+        self.task_pose_pubs = {task: self.create_publisher(PoseStamped,
+            f'/molmopoint/task_{task}/pose', 10)
+            for task, cfg in self.tasks.items() if cfg.get('command_name')}
         if not self.caption.strip():
             self.caption = self.task["caption"]
 
@@ -440,6 +450,27 @@ class MolmoPointNode(Node):
             self.caption, self.task_id = caption, task_id
             self.task = self.tasks[task_id]
         return SetParametersResult(successful=True)
+
+    def _inside_held_object(self, point_world, stamp) -> Optional[str]:
+        """Reason to reject a placement target inside the held-object volume around
+        held_object_frame, else None (also None when that frame has no TF)."""
+        frame = str(self.get_parameter('held_object_frame').value).strip()
+        if not frame:
+            return None
+        try:
+            tf = self.tf_buffer.lookup_transform(self.world_frame, frame, Time.from_msg(stamp),
+                                                 timeout=self._tf_timeout)
+        except Exception:
+            return None
+        t = tf.transform.translation
+        horizontal = math.hypot(point_world[0] - t.x, point_world[1] - t.y)
+        dz = point_world[2] - t.z
+        if (horizontal < float(self.get_parameter('held_object_exclusion_radius_m').value)
+                and -float(self.get_parameter('held_object_exclusion_below_m').value) < dz
+                < float(self.get_parameter('held_object_exclusion_above_m').value)):
+            return (f'target_on_held_object: surface centre {horizontal:.3f} m from the {frame} axis, '
+                    f'{dz:+.3f} m vertical; the held object hides the target')
+        return None
 
     def _configure_import_paths(self) -> None:
         candidates = [
@@ -899,6 +930,7 @@ class MolmoPointNode(Node):
                 ranges = z[rows, cols]
                 points = np.column_stack(((cols-cx)*ranges/fx, (rows-cy)*ranges/fy, ranges))
                 rotation, translation = self._transform_matrix(frame_tf)
+                cup_bottom_z = None
                 if task_id == 1 and caption == self.tasks[1]['caption']:
                     estimate = self._estimate_point_from_mask_depth(
                         depth, full_mask, camera_info, geometry_diagnostics)
@@ -912,6 +944,7 @@ class MolmoPointNode(Node):
                             heights = (points @ rotation.T + translation)[:, 2]
                             bottom, top = np.quantile(heights, [0.05, 0.95])
                             target_diag['cup_extent_z'] = [float(bottom), float(top)]
+                            cup_bottom_z = float(bottom)
                             target_diag['near_cluster_z'] = float(surface_world[2])
                             surface_world[2] = 0.5 * (bottom + top)
                             clearance = float(self.get_parameter('cup_min_palm_clearance_m').value)
@@ -958,6 +991,10 @@ class MolmoPointNode(Node):
                             collision_center = surface_world + geometry['radius'] * approach
                             collision_center[2] -= 0.15 * geometry['height']
                             geometry['collision_center'] = collision_center.tolist()
+                            if cup_bottom_z is not None:
+                                # Measured, unlike the envelope: the executor
+                                # records it at closure to place the cup later.
+                                geometry['bottom_z'] = cup_bottom_z
                             depth_source = 'segmented_depth_with_center_offset'
                         except ValueError as exc:
                             geometry_diagnostics['reason'] = f'offset_surface_goal: {exc}'
@@ -976,6 +1013,35 @@ class MolmoPointNode(Node):
                             'button plane fit rejected '
                             f'({int(np.count_nonzero(local))} depth points within 15 px)'
                         )
+                elif (self.tasks[task_id].get('target_geometry') == 'horizontal_surface'
+                        and caption == self.tasks[task_id]['caption']):
+                    # A flat support to put something on (e.g. a drip tray):
+                    # the target is the centroid of the visible masked surface
+                    # at its median measured height, not a body centre. The
+                    # near-depth cluster below would keep only the surface's
+                    # front edge in an oblique view.
+                    if len(points) < self.mask_depth_min_points:
+                        geometry_diagnostics['reason'] = (
+                            f'too few valid surface depth points: {len(points)} < '
+                            f'mask_depth_min_points={self.mask_depth_min_points}')
+                    else:
+                        world = points @ rotation.T + translation
+                        low, height, high = np.quantile(world[:, 2], [0.25, 0.5, 0.75])
+                        # Spread of heights (grate slots, rim, depth noise), for
+                        # judging the surface estimate; not a rejection.
+                        target_diag['surface_z_quartiles'] = [float(low), float(high)]
+                        centroid = np.array([np.median(world[:, 0]), np.median(world[:, 1]), height])
+                        held = self._inside_held_object(centroid, header.stamp)
+                        if held is not None:
+                            # e.g. the inside of the held cup when it hides the tray
+                            geometry_diagnostics['reason'] = held
+                        else:
+                            point_3d = tuple(rotation.T @ (centroid - translation))
+                        # Horizontal camera-to-target direction: a level pose
+                        # facing the surface (pitch 0), like the cup's.
+                        approach = centroid - translation
+                        approach[2] = 0.0
+                        depth_source = 'segmented_surface_centroid'
                 else:
                     estimate = self._estimate_point_from_mask_depth(
                         depth, full_mask, camera_info, geometry_diagnostics)

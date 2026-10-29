@@ -70,7 +70,8 @@ FEEDS = {  # feed id → (topic, max publish-to-browser rate)
 }
 # gesture_behavior_map.yaml / gesture_execution_map.yaml
 COMMAND_TYPES = {"home": ("joint_state", 0), "pick_up_coffee": ("sequence", -1), "press_square_button": ("sequence", -1),
-                 "gripper_open": ("gripper", -1), "gripper_close": ("gripper", -1)}
+                 "place_cup_on_drip_tray": ("sequence", -1),
+                 "gripper_open": ("gripper", -1), "gripper_close": ("gripper", -1), "back_up": ("joint_state", 0)}
 DEPTH_RANGE = (0.15, 1.50)
 
 
@@ -129,6 +130,9 @@ class _Fallback:
         p = parse_status_text(text)
         if not p:
             return
+        if p["kind"] == "holding":
+            s["holding_cup"] = p["holding"]
+            return
         if p["kind"] == "step":
             s["busy"] = True
             s["command"] = p["sequence"]
@@ -148,6 +152,11 @@ class _Fallback:
             self._approval_deadline = now + 60.0
             if s["sequence"]:
                 s["sequence"]["phase"] = "awaiting_approval"
+            else:
+                # a single command (e.g. back_up) awaiting approval: show it as a one-step sequence so the
+                # approval card appears; on_busy clears it when the executor goes idle.
+                s["sequence"] = {"name": s.get("command") or p["step_name"], "step_index": 1, "step_count": 1,
+                                 "step_name": p["step_name"], "step_type": "", "phase": "awaiting_approval"}
             s["approval"] = {"plan_id": None, "step": p["step_name"], "required": True, "timeout_sec": 60.0,
                              "deadline_wall": wall + 60.0, "remaining_sec": 60.0}
         elif p["kind"] in ("aborted", "failed"):
@@ -224,7 +233,7 @@ class RosIO:
         sub(String, "/gesture_control/executor_status", self._on_status, RELIABLE)
         sub(Bool, "/gesture_control/executor_busy", lambda m: self._fallback.on_busy(m.data), RELIABLE)
         sub(String, "/molmopoint/diagnostics", self._on_diag, RELIABLE)
-        for task in (1, 2):
+        for task in (1, 2, 7):  # actions.TASK_COMMANDS
             sub(PoseStamped, f"/molmopoint/task_{task}/pose",
                 lambda m, t=task: self.store.push_event(f"/molmopoint/task_{t}/pose",
                                                         {"x": m.pose.position.x, "y": m.pose.position.y, "z": m.pose.position.z},
@@ -306,7 +315,13 @@ class RosIO:
 
     def _on_status(self, m: String) -> None:
         self.logs.add(EXECUTOR_NODE, "INFO", m.data)
+        before = self._fallback.state.get("holding_cup")
         self._fallback.on_status(m.data, time.monotonic(), self._pending_token)
+        holding = self._fallback.state.get("holding_cup")
+        if holding is not None and holding != before:
+            # the next task follows from what the gripper holds: look for the drip tray while
+            # holding the cup (task 7), for the cup otherwise (task 1)
+            self.set_task_id(7 if holding else 1)
 
     def _on_diag(self, m: String) -> None:
         try:

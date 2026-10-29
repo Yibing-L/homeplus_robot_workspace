@@ -15,10 +15,13 @@ from typing import Any, Callable, Deque, Dict, List, Optional, Tuple
 from .robot_io import RobotIO
 from .tracker import Tracker
 
-MOTION = {"approve", "start_task", "home", "gripper_open", "gripper_close",
+MOTION = {"approve", "start_task", "home", "gripper_open", "gripper_close", "back_up",
           "return_to_start", "undo_step", "undo_sequence", "resume"}
 RECOVERY = ("return_to_start", "undo_step", "undo_sequence", "resume")
-TASK_COMMANDS = {1: "pick_up_coffee", 2: "press_square_button"}
+TASK_COMMANDS = {1: "pick_up_coffee", 2: "press_square_button", 7: "place_cup_on_drip_tray"}
+# Tasks that need the cup in the gripper; every other task refuses to start while holding it
+# (the executor enforces both from the planning scene, this only mirrors it in the UI).
+HOLDING_TASKS = {7}
 BRIDGE_UNIT = "hp-bridge"
 
 
@@ -189,6 +192,7 @@ class ActionService:
             else:
                 start_reason = "set-start flow in progress"
         put("start_task", start_ok, start_reason)
+        out["start_task"]["tasks"] = {t: self._task_gate(t, ex.get("holding_cup")) for t in TASK_COMMANDS}
         def why_motion(extra_ok=True, extra_why=""):
             if not idle:
                 return False, "executor not idle"
@@ -208,6 +212,7 @@ class ActionService:
         ok, why = why_motion()
         put("gripper_open", ok, why)
         put("gripper_close", ok, why)
+        put("back_up", ok, why)  # relative to the measured base pose: no confirmed origin needed
         n_undo = rec.get("undo_count", 0)
         ok, why = why_motion(bool(caps.get("undo")) and n_undo > 0,
                              "nothing to undo" if caps.get("undo") else "executor has no undo (§7.8 not merged)")
@@ -229,6 +234,16 @@ class ActionService:
         put("flow_retry", self.flow is not None and self.flow.status == "error", "nothing to retry")
         return out
 
+    @staticmethod
+    def _task_gate(task: int, holding: Optional[bool]) -> Dict[str, Any]:
+        """Whether this task fits the gripper's load. Unknown (no status since the executor
+        started) allows both: the executor checks the planning scene and rejects with a reason."""
+        if task in HOLDING_TASKS and holding is False:
+            return {"allowed": False, "reason": "not holding the cup: pick it up first"}
+        if task not in HOLDING_TASKS and holding is True:
+            return {"allowed": False, "reason": "holding the cup: place it (or open the gripper) first"}
+        return {"allowed": True, "reason": None}
+
     # ------------------------------------------------------------------ entry point
     def handle(self, name: str, request_id: str, client: str, operator: str, args: Dict[str, Any],
                state: Dict[str, Any], now: float) -> Dict[str, Any]:
@@ -241,6 +256,10 @@ class ActionService:
             result = {"status": "rejected", "detail": f"unknown action {name}"}
         elif not gate["allowed"]:
             result = {"status": "rejected", "detail": gate["reason"]}
+        elif name == "start_task" and int(args.get("task", 1)) not in TASK_COMMANDS:
+            result = {"status": "rejected", "detail": f"unknown task {args.get('task')}"}
+        elif name == "start_task" and not gate["tasks"][int(args.get("task", 1))]["allowed"]:
+            result = {"status": "rejected", "detail": gate["tasks"][int(args.get("task", 1))]["reason"]}
         elif name in ("unit_start", "unit_restart") and (dup := self._duplicate_risk(name, unit, state)):
             result = {"status": "rejected", "detail": dup}
         elif name in ("unit_start", "unit_restart") and unit == BRIDGE_UNIT and not self.cfg.get("serial_bridge"):
@@ -330,7 +349,7 @@ class ActionService:
             return self._track(name, rid, "cancel sequence",
                                lambda s: ("confirmed", "sequence cancelled") if s["executor"]["busy"] is False else None,
                                3.0, now, args)
-        if name in ("start_task", "home", "gripper_open", "gripper_close") + RECOVERY:
+        if name in ("start_task", "home", "gripper_open", "gripper_close", "back_up") + RECOVERY:
             command = TASK_COMMANDS[int(args.get("task", 1))] if name == "start_task" else name
             if name == "start_task":
                 self.requested_task = int(args.get("task", 1))
@@ -412,6 +431,11 @@ class ActionService:
 
     def _verify_stop(self, state: Dict[str, Any], now: float) -> None:
         r = self.stop_result
+        # A STOP sent while the bridge was down (no "_t0") clears once the bridge
+        # reports the arm still again; until then nothing confirms it halted.
+        if r and r["status"] == "not_confirmed" and "_t0" not in r and state["joints"]["arm_still"] is True:
+            self.stop_result = None
+            return
         if not r or r["status"] != "sent":
             return
         t = now - r["_t0"]
@@ -504,9 +528,10 @@ class ActionService:
                     rebooted = f.method == "zero" or mem.session["id"] != f.notes["zero"]["old_boot"]
                     if rebooted and at_zero and state["joints"]["fresh"]:
                         f.advance(now, {"method": f.method, "boot_id": mem.session["id"]})
-                    elif t > (5.0 if f.method == "zero" else 20.0):
+                    # reset: unit restart (~5-8 s) + Mega boot (~11 s observed on direct USB), with margin
+                    elif t > (5.0 if f.method == "zero" else 45.0):
                         f.status, f.error = "error", ("No (0, 0, 0) reading after ZERO." if f.method == "zero" else
-                                                      "No Arduino reset observed within 20 s. Check the serial bridge / USB.")
+                                                      "No Arduino reset observed within 45 s. Check the serial bridge / USB.")
             if f.step == "crosscheck":
                 waiting = "Watching the arm for 5 s: the firmware commands it upright at boot."
                 if mem.session["upright_reached"] and t > 0.5:

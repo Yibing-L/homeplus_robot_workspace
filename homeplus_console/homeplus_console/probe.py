@@ -69,9 +69,10 @@ def cgroup_unit(pid: str) -> Optional[str]:
     """The systemd unit a process belongs to (e.g. 'hp-bridge.service'), if any."""
     try:
         for line in Path(f"/proc/{pid}/cgroup").read_text().splitlines():
-            m = re.search(r"/([\w@.\-]+\.service)", line)
-            if m:
-                return m.group(1)
+            # innermost unit: user units sit under user@<uid>.service, e.g. .../user@1000.service/app.slice/hp-tf.service
+            units = re.findall(r"/([\w@.\-]+\.service)", line)
+            if units:
+                return units[-1]
     except OSError:
         pass
     return None

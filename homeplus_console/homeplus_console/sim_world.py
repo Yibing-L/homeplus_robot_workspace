@@ -28,6 +28,7 @@ TICK = 0.02
 FOLDED = {"joint_elbow": -35.0, "joint_shoulder": -30.0}
 CUP = (0.95, 0.02, 0.762)          # cup in world (start spot = origin), metres
 SECOND_OBJECT = (0.95, 0.42, 0.765)
+TRAY = (1.10, -0.25, 0.80)         # coffee machine drip tray surface (task 7)
 
 EXECUTOR = "gesture_motion_executor"
 BRIDGE = "arduino_bridge"
@@ -53,9 +54,26 @@ BUTTON_STEPS = [
     ("press_button", "pose", False, {"base_dx": 0.04}),
     ("retract_from_button", "pose", False, {"base_dx": -0.10, "joint_shoulder": 10.0, "joint_elbow": 20.0}),
 ]
+# place_cup_on_drip_tray from gesture_execution_map.yaml (+ the initial detection step).
+PLACE_STEPS = [
+    ("detection", "detect", False, {}),
+    ("retract_arm_to_carry", "joint_state", False, {"joint_shoulder": 0.0, "joint_elbow": 0.0, "joint_wrist": 0.0,
+                                                     "joint_hand": 20.0}),
+    ("move_to_tray_standoff", "pose", False, {"base_x": 0.55, "base_y": -0.25, "joint_shoulder": 25.0,
+                                               "joint_elbow": 50.0}),
+    ("refine_tray_target", "detect", False, {}),
+    ("align_refined_standoff", "pose", True, {"base_dx": 0.01, "joint_shoulder": 27.0, "joint_elbow": 53.0}),
+    ("move_over_tray", "pose", False, {"joint_shoulder": 36.0, "joint_elbow": 66.0}),
+    ("lower_cup_onto_tray", "pose", False, {"joint_shoulder": 39.0, "joint_elbow": 66.0}),
+    ("release_cup", "gripper", False, {"joint_grip_L": 40.0}),
+    ("retreat_from_cup", "pose", False, {"joint_shoulder": 28.0, "joint_elbow": 55.0}),
+    ("retract_arm_after_place", "joint_state", False, {"joint_shoulder": 0.0, "joint_elbow": 0.0,
+                                                        "joint_wrist": 0.0, "joint_hand": 0.0}),
+]
 COMMANDS = {
     "pick_up_coffee": ("sequence", PICKUP_STEPS, 1),
     "press_square_button": ("sequence", BUTTON_STEPS, 2),
+    "place_cup_on_drip_tray": ("sequence", PLACE_STEPS, 7),
     "home": ("joint_state", [("home", "joint_state", True, {"base_x": 0.0, "base_y": 0.0, "base_theta": 0.0,
                                                               "joint_shoulder": 0.0, "joint_elbow": 0.0,
                                                               "joint_wrist": 0.0})], None),
@@ -63,6 +81,8 @@ COMMANDS = {
     "gripper_close": ("gripper", [("gripper_close", "gripper", False, {"joint_grip_L": 5.0})], None),
 }
 
+SEQUENCES = ("pick_up_coffee", "press_square_button", "place_cup_on_drip_tray")
+HOLDING_SEQUENCES = ("place_cup_on_drip_tray",)   # need the cup attached; the others refuse while holding
 HOME_TARGETS = {"base_x": 0.0, "base_y": 0.0, "base_theta": 0.0, "joint_shoulder": 0.0, "joint_elbow": 0.0,
                 "joint_wrist": 0.0}
 RECOVERY = ("return_to_start", "undo_step", "undo_sequence", "resume")
@@ -284,13 +304,20 @@ class SimWorld:
                 kind, steps, task = "sequence", built, None
             else:
                 kind, steps, task = COMMANDS[command]
+                # The executor checks the attached cup in the planning scene before any sequence.
+                if command in SEQUENCES and (command in HOLDING_SEQUENCES) != self.holding_cup:
+                    reason = ("No cup is attached to the gripper: pick one up before placing it" if not self.holding_cup
+                              else "Release the attached cup before starting another manipulation task")
+                    self.exec["last_rejected"] = {"token": token, "reason": reason}
+                    self.logs.add(EXECUTOR, "ERROR", f"Command {command} FAILED: {reason}")
+                    return
             now = self.clock()
             self.exec = self._idle_exec()
             self.exec.update(busy=True, command=command, request_token=token, t_start=time.time(),
                              steps=[st if isinstance(st, ExecStep) else ExecStep(st[0], st[1], st[2], dict(st[3]))
                                     for st in steps], idx=0,
                              is_sequence=kind == "sequence", args=args)
-            if command in ("pick_up_coffee", "press_square_button"):
+            if command in SEQUENCES:
                 self.undo_stack.clear()
                 self._last_sequence = {"command": command}
             self._approval_response = None
@@ -753,9 +780,9 @@ class SimWorld:
         if s.name == "close_gripper_at_target":
             self.holding_cup = True     # executor attaches detected_cup (attach_cup: true)
             self.logs.add(EXECUTOR, "INFO", "Attached detected_cup to grasp_tcp")
-        elif s.type == "gripper" and grip is not None and grip <= 1.0 and self.holding_cup and \
-                (command not in ("pick_up_coffee", "press_square_button")):
-            self.holding_cup = False    # single-command gripper open detaches the cup
+        elif s.type == "gripper" and self.holding_cup and (s.name == "release_cup" or (
+                grip is not None and grip <= 1.0 and command not in ("pick_up_coffee", "press_square_button"))):
+            self.holding_cup = False    # place's release_cup (detach_cup: true) or a single gripper open detaches
             self.logs.add(EXECUTOR, "INFO", "Detached detected_cup")
         if s.undo_of is not None:
             self.undo_stack = [r for r in self.undo_stack if r["undo_id"] != s.undo_of["undo_id"]]
@@ -963,7 +990,7 @@ class SimWorld:
             diag.update(stage="geometry", reason="model_returned_no_points", detail="There are none.",
                         model_text="There are none.")
         else:
-            x, y, z = CUP
+            x, y, z = TRAY if self.task_id == 7 else CUP
             if scen == "two_targets" and self._cycle_n % 2 == 0:
                 x, y, z = SECOND_OBJECT
             if scen == "garbage_z":

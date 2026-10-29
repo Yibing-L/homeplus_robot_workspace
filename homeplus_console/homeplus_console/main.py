@@ -52,7 +52,7 @@ def main(argv=None) -> None:
             raise SystemExit(f"ROS mode is not available yet ({exc}). Run with --sim.")
         data_dir = args.data_dir or Path.home() / ".homeplus_console"
         io = RosIO(store, frames, logs, profile=args.profile, profile_path=profile_file)
-        tracker = Tracker(store, data_dir)
+        tracker = Tracker(store, data_dir, port_open_resets=not cfg["serial_bridge"])
     console = Console(io, store, frames, logs, tracker, cfg, data_dir, args.profile)
     io.start()
     console.start()

@@ -287,6 +287,8 @@ export interface Allowed {
   allowed: boolean;
   reason: string | null;
   motion: boolean;
+  // start_task only: per-task gate on the gripper's load (actions.HOLDING_TASKS), keyed by task id
+  tasks?: Record<string, { allowed: boolean; reason: string | null }>;
 }
 
 export interface Snapshot {

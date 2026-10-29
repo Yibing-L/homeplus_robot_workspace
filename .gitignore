@@ -80,3 +80,7 @@ Pipfile.lock
 trajectory_logs/
 detection_logs/
 target_logs/
+
+# MolmoPoint venv and model cache: symlinks to the Linux filesystem (scripts/setup_molmopoint.sh)
+/.venv-molmopoint
+/.models

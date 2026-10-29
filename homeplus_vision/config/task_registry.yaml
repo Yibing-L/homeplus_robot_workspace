@@ -32,3 +32,16 @@ tasks:
   6:
     name: locate_coffee_cup
     caption: the coffee cup
+
+  # Place the held cup (after pick_up_coffee). `target_geometry:
+  # horizontal_surface` makes the detector publish the centroid of the visible
+  # masked surface at its median measured height (a point ON the tray), not a
+  # cup-style body centre.
+  7:
+    name: place_cup_on_drip_tray
+    # "coffee machine drip tray" alternated with the dispensing recess 15 cm higher
+    # (2026-10-29); naming the base kept 7/7 detections on the tray.
+    caption: the round drip tray at the base of the coffee machine
+    target_geometry: horizontal_surface
+    command_name: place_cup_on_drip_tray
+    command_type: sequence

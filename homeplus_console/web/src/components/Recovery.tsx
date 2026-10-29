@@ -6,11 +6,18 @@ import { TopDown } from "./TopDown";
 // Motion is confirmed inside the motion bay, never in a modal: the feeds and health stay visible
 // at the moment the operator decides to move the robot, and STOP is never covered.
 
-export type ArmKind = "start" | "return" | "undo_step" | "undo_sequence" | "gripper_open" | "gripper_close" | "resume";
+export type ArmKind = "start" | "return" | "undo_step" | "undo_sequence" | "gripper_open" | "gripper_close" | "back_up" | "resume";
 export interface Arm {
   kind: ArmKind;
   args: Record<string, unknown>;
 }
+
+// actions.TASK_COMMANDS: the detector task id selects the executor sequence.
+export const TASKS: Record<number, { command: string; title: string; radio: string; start: string }> = {
+  1: { command: "pick_up_coffee", title: "Pick up the cup", radio: "Task 1 · pickup", start: "Start pickup" },
+  2: { command: "press_square_button", title: "Press the square button", radio: "Task 2 · button", start: "Start button press" },
+  7: { command: "place_cup_on_drip_tray", title: "Place the cup on the drip tray", radio: "Task 7 · place", start: "Place cup on drip tray" },
+};
 
 const ACTION: Record<ArmKind, string> = {
   start: "start_task",
@@ -19,13 +26,14 @@ const ACTION: Record<ArmKind, string> = {
   undo_sequence: "undo_sequence",
   gripper_open: "gripper_open",
   gripper_close: "gripper_close",
+  back_up: "back_up",
   resume: "resume",
 };
 
 function confirmLabel(arm: Arm, snap: Snapshot): string {
   switch (arm.kind) {
     case "start":
-      return arm.args.task === 2 ? "Start button press" : "Start pickup";
+      return (TASKS[arm.args.task as number] ?? TASKS[1]).start;
     case "return":
       return "Plan return to start";
     case "undo_step":
@@ -36,6 +44,8 @@ function confirmLabel(arm: Arm, snap: Snapshot): string {
       return "Open gripper";
     case "gripper_close":
       return "Close gripper";
+    case "back_up":
+      return "Plan back up 20 cm";
     case "resume":
       return `Retry from step ${snap.executor.resumable?.step_index ?? "?"}`;
   }
@@ -44,13 +54,26 @@ function confirmLabel(arm: Arm, snap: Snapshot): string {
 export function ArmDetails({ snap, arm, setArm }: { snap: Snapshot; arm: Arm; setArm: (a: Arm | null) => void }) {
   const r = snap.recovery;
   const ex = snap.executor;
+  if (arm.kind === "start" && arm.args.task === 7) {
+    return (
+      <>
+        <h3>Start {TASKS[7].command}?</h3>
+        <div className="meta mono">detector switches to the drip tray (task 7) when the sequence starts</div>
+        <div className="moves">
+          Moves without approval: retract the arm to the level carry pose with the cup, then the base drives to a standoff in
+          front of the tray. After a close-up look the cup slides in over the tray, lowers until its bottom is 1 cm above the
+          measured tray surface, the gripper opens, and the arm backs out and retracts.
+        </div>
+      </>
+    );
+  }
   if (arm.kind === "start") {
     const w = snap.perception.window;
     const baseX = snap.joints.values?.base_x ?? 0;
     const drive = w.position ? Math.max(0, w.position[0] - baseX - 0.53) : null;
     return (
       <>
-        <h3>Start {arm.args.task === 2 ? "press_square_button" : "pick_up_coffee"}?</h3>
+        <h3>Start {(TASKS[arm.args.task as number] ?? TASKS[1]).command}?</h3>
         <div className="meta mono">
           target ({w.position?.map((v) => v.toFixed(2)).join(", ") ?? "—"}) m · {w.consecutive} consecutive · spread {w.spread_cm ?? "—"} cm
         </div>
@@ -202,6 +225,7 @@ export function ManualMotion({ snap, setArm, inspected }: { snap: Snapshot; setA
       {b("undo_step", "undo_step", next ? `Undo ${next.step}` : "Undo last step", <Undo2 size={14} aria-hidden />)}
       {b("gripper_open", "gripper_open", "Open gripper", <Hand size={14} aria-hidden />)}
       {b("gripper_close", "gripper_close", "Close gripper", <RotateCcw size={14} aria-hidden style={{ transform: "scaleX(-1)" }} />)}
+      {b("back_up", "back_up", "Back up 20 cm", <Undo2 size={14} aria-hidden />)}
     </div>
   );
 }

@@ -61,8 +61,12 @@ class Memory:
 
 
 class Tracker:
-    def __init__(self, store: SignalStore, data_dir: Path, preconfirm_origin: bool = False):
+    def __init__(self, store: SignalStore, data_dir: Path, preconfirm_origin: bool = False,
+                 port_open_resets: bool = False):
         self.store = store
+        # Direct USB (laptop profile): every port open toggles DTR and reboots the Mega, so the
+        # bridge's session_id identifies a boot even when older firmware can't report boot_id.
+        self._port_open_resets = port_open_resets
         self.mem = Memory()
         self.data_dir = data_dir
         self._event_seq = 0
@@ -176,7 +180,7 @@ class Tracker:
         """Origin and motor-power evidence are tied to a firmware boot (boot_id), not to a bridge session:
         with the serial bridge, restarting the ROS bridge reopens a pty and does not reset the Mega."""
         m = self.mem
-        if "boot_id" in info and info["boot_id"] is None:
+        if "boot_id" in info and info["boot_id"] is None and not self._port_open_resets:
             return  # a bridge that reports boots hasn't heard this one's BOOT line yet: no new identity
         sid = info.get("boot_id") or info.get("session_id")
         m.zero_supported = bool(info.get("zero_supported"))

@@ -367,6 +367,11 @@ def derive_motor_power(inp: Inputs, now: float, joints: Optional[Dict[str, float
     if ready and abs(el) <= cfg["upright_deg"] and abs(sh) <= cfg["upright_deg"]:
         return {"value": "verified", "reasons": [],
                 "verified": {"at": time.time(), "how": "arm holding upright against gravity"}}
+    margin = cfg.get("powered_pose_margin_deg", 20.0)
+    if ready and el > cfg["folded_elbow_deg"] + margin and sh > cfg["folded_shoulder_deg"] + margin:
+        return {"value": "verified", "reasons": [],
+                "verified": {"at": time.time(),
+                             "how": f"arm holding a pose against gravity (elbow {el:.0f}°, shoulder {sh:.0f}°)"}}
     return {"value": "unverified", "reasons": [{"kind": "nothing_moved", "text": "Nothing has moved since the bridge started."}],
             "verified": None}
 

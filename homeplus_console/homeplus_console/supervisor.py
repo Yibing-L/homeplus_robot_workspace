@@ -135,6 +135,15 @@ class SystemdSupervisor:
 
     def restart(self, unit: str) -> Dict[str, Any]:
         self.stop(unit)
+        # start() reads the polled status cache, which still says "active" right after stop:
+        # wait for systemd itself to report the unit gone, then refresh the cache entry.
+        for _ in range(30):
+            r = self._run("systemctl", "--user", "is-active", unit, timeout=5)
+            if r.stdout.strip() not in ("active", "activating", "deactivating"):
+                break
+            time.sleep(0.5)
+        with self._lock:
+            self._status[unit] = self._empty()
         return self.start(unit)
 
     def journal(self, unit: str, lines: int = 200) -> List[str]:

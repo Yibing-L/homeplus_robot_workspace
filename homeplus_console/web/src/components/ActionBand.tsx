@@ -3,7 +3,7 @@ import { useEffect, useRef, useState } from "react";
 import { act, useConsole } from "../store";
 import type { Approval, Flow, NextAction, Snapshot } from "../types";
 import { fmtAge, fmtClock, JOINT_LABEL, signed, useSinceSnapshot } from "../util";
-import { type Arm, ArmConfirm, ArmDetails, ManualMotion } from "./Recovery";
+import { type Arm, ArmConfirm, ArmDetails, ManualMotion, TASKS } from "./Recovery";
 import { TopDown } from "./TopDown";
 
 function Mark({ sev }: { sev: string }) {
@@ -498,7 +498,15 @@ function RunningBand({ snap }: { snap: Snapshot }) {
 // ------------------------------------------------------------------ idle: preflight + start (§5.2)
 function StartBand({ snap, arm, setArm }: BandProps) {
   const a = snap.allowed;
-  const [task, setTask] = useState(1);
+  const holding = snap.executor.holding_cup;
+  const [task, setTask] = useState(holding ? 7 : 1);
+  // Offer placement while the cup is held and pickup once it's released.
+  useEffect(() => {
+    if (holding === true) setTask(7);
+    else if (holding === false) setTask((t) => (t === 7 ? 1 : t));
+  }, [holding]);
+  const taskGate = a.start_task?.tasks?.[String(task)];
+  const startOk = !!a.start_task?.allowed && taskGate?.allowed !== false;
   const fails = snap.preflight.filter((p) => !p.ok);
   const decl = snap.declared;
   const { lost } = useSinceSnapshot();
@@ -506,19 +514,21 @@ function StartBand({ snap, arm, setArm }: BandProps) {
   return (
     <div className={`band ${ready ? "ok" : "warn"}`} role="region" aria-label="Preflight and start">
       <div>
-        <h3>{task === 1 ? "Pick up the cup" : "Press the square button"}</h3>
+        <h3>{TASKS[task].title}</h3>
         <div className="meta">
           {lost ? "preflight unknown: console link lost" : ready ? "preflight passed" : `not ready · ${fails.length + decl.filter((d) => !d.ok).length} blockers`}
         </div>
         <div style={{ display: "flex", gap: 6, marginTop: 12 }} role="radiogroup" aria-label="Task">
-          {[
-            [1, "Task 1 · pickup"],
-            [2, "Task 2 · button"],
-          ].map(([id, label]) => (
-            <button key={id} className={`btn sm ${task === id ? "primary" : ""}`} role="radio" aria-checked={task === id} onClick={() => setTask(id as number)}>
-              {label}
-            </button>
-          ))}
+          {Object.entries(TASKS).map(([key, t]) => {
+            const id = Number(key);
+            const gate = a.start_task?.tasks?.[key];
+            return (
+              <button key={id} className={`btn sm ${task === id ? "primary" : ""}`} role="radio" aria-checked={task === id}
+                disabled={gate?.allowed === false} title={gate?.reason ?? ""} onClick={() => setTask(id)}>
+                {t.radio}
+              </button>
+            );
+          })}
         </div>
       </div>
       <div>
@@ -553,10 +563,10 @@ function StartBand({ snap, arm, setArm }: BandProps) {
           <ArmConfirm snap={snap} arm={arm} setArm={setArm} />
         ) : (
           <>
-            <button className="btn motion lg" disabled={!a.start_task?.allowed} onClick={() => setArm({ kind: "start", args: { task } })}>
-              <Move size={20} aria-hidden /> Start {task === 1 ? "pickup" : "button press"}…
+            <button className="btn motion lg" disabled={!startOk} onClick={() => setArm({ kind: "start", args: { task } })}>
+              <Move size={20} aria-hidden /> {TASKS[task].start}…
             </button>
-            {!a.start_task?.allowed && <div className="why-line">{a.start_task?.reason}</div>}
+            {!startOk && <div className="why-line">{a.start_task?.allowed ? taskGate?.reason : a.start_task?.reason}</div>}
             <ManualMotion snap={snap} setArm={setArm} />
           </>
         )}

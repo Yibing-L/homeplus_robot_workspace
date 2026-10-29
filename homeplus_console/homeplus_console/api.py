@@ -53,9 +53,25 @@ class Console:
                 self.logs.add("console", "ERROR", f"derive failed: {exc!r}")
             time.sleep(max(0.0, 1.0 / DERIVE_HZ - (time.monotonic() - t0)))
 
+    def _follow_task(self, now: float) -> None:
+        """The next task follows from the gripper's load: place (7) while holding the cup, otherwise
+        not 7. With the load unknown (no executor status since the console started), accept the
+        detector's current task if it is a startable one, so the preflight compares like with like."""
+        from .actions import TASK_COMMANDS
+        ex = self.store.get("/gesture_control/executor_state")
+        holding = (ex.value or {}).get("holding_cup") if ex else None
+        if holding is True:
+            self.actions.requested_task = 7
+        elif holding is False:
+            if self.actions.requested_task == 7:
+                self.actions.requested_task = 1
+        elif (t := self.store.get("/molmopoint/task_id")) and t.fresh(now, 6.0) and t.value in TASK_COMMANDS:
+            self.actions.requested_task = int(t.value)
+
     def step(self) -> Dict[str, Any]:
         now, wall = self.store.clock(), time.time()
         self.tracker.observe(now)
+        self._follow_task(now)
         inputs = Inputs(
             signals=self.store.snapshot(), mem=self.tracker.mem, units=self.io.supervisor.status(),
             frozen_for={fid: self.frames.frozen_for(fid, now) for fid, *_ in FEEDS},
