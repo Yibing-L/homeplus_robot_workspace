@@ -14,6 +14,9 @@ d405_obstacle_cloud:
     obstacle_cloud_topic: "/obstacle_cloud"
     pixel_stride: 4
     max_publish_rate_hz: 1.0
+    # Median of 9 settled frames (~2 s at 5 fps): table depth at ~1 m jumps ~4 cm
+    # frame to frame; single-frame outliers become voxels above the table.
+    depth_median_frames: 9
     min_depth_m: 0.12
     max_depth_m: 2.0
     depth_consistency_threshold_m: 0.04
@@ -36,6 +39,24 @@ d405_obstacle_cloud:
     # across an occasional frame with no point/segmentation result.
     mask_timeout_sec: 15.0
     clear_octomap_on_mask: false
+    # Model the table as an exact box instead of 2 cm voxels (see table_plane.py).
+    table_plane_enable: true
+    table_world_frame: "world"
+    table_z_min_m: 0.40
+    table_z_max_m: 1.20
+    table_max_tilt_deg: 3.0  # a level table reads ~2 deg at D405 range; a bumped camera far more
+    table_inlier_tol_m: 0.01
+    table_min_inliers: 150
+    table_remove_below_m: 0.04
+    table_remove_above_m: 0.015
+    table_box_thickness_m: 0.04
+    # Level table: fit its height only (D405 noise at ~1 m skews a full 3D fit).
+    table_assume_level: true
+    # Reuse the last table for frames that miss it, so its voxels don't come back.
+    table_hold_sec: 10.0
+    # The mask stops short of the table; clear the target's base column down to it.
+    table_target_max_radius_m: 0.08
+    table_target_margin_m: 0.01
 
 d435i_obstacle_cloud:
   ros__parameters:

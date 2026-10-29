@@ -166,6 +166,8 @@ class MolmoPointNode(Node):
         self.declare_parameter('cup_min_radius_m', 0.025)
         self.declare_parameter('cup_max_radius_m', 0.065)
         self.declare_parameter('cup_height_from_mask_extent', False)
+        self.declare_parameter('cup_min_palm_clearance_m', 0.0)
+        self.declare_parameter('gripper_palm_below_tcp_m', 0.047)
         self.declare_parameter('approach_reference_frame', '')
         self.declare_parameter(
             'target_audit_dir', str(workspace_root / 'detection_logs')
@@ -912,6 +914,18 @@ class MolmoPointNode(Node):
                             target_diag['cup_extent_z'] = [float(bottom), float(top)]
                             target_diag['near_cluster_z'] = float(surface_world[2])
                             surface_world[2] = 0.5 * (bottom + top)
+                            clearance = float(self.get_parameter('cup_min_palm_clearance_m').value)
+                            if clearance > 0.0:
+                                # The palm reaches below the TCP; on a short cup a
+                                # mid-height grasp leaves it closer to the table
+                                # (the cup's bottom) than the OctoMap can resolve.
+                                # Raise the grasp until the palm keeps `clearance`.
+                                palm = float(self.get_parameter('gripper_palm_below_tcp_m').value)
+                                floor_z = bottom + palm + clearance
+                                if floor_z > surface_world[2]:
+                                    target_diag['grasp_z_raised_for_palm_clearance'] = [
+                                        float(surface_world[2]), float(floor_z)]
+                                    surface_world[2] = floor_z
                         target_diag['surface_world'] = surface_world.tolist()
                         try:
                             viewpoint = translation

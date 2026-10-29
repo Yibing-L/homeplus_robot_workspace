@@ -75,6 +75,15 @@ def serve(args):
     # Start the camera once: stopping/restarting a pipeline segfaults pyrealsense2 on macOS.
     pipeline, hello, depth_scale = start_pipeline(args)
     align = rs.align(rs.stream.color)
+    # Intel's recommended post-processing: smooth in disparity space, then average over
+    # frames. At ~1 m (beyond the D405's 7-50 cm sweet spot) raw depth on the table
+    # jitters by several cm per frame, which MoveIt's OctoMap turns into phantom
+    # obstacles just above the table. The temporal filter's delta threshold resets
+    # pixels whose depth jumps, so a moving camera is not smeared.
+    depth_filters = [] if args.no_depth_filter else [
+        rs.disparity_transform(True), rs.spatial_filter(), rs.temporal_filter(),
+        rs.disparity_transform(False)]
+    print(f"[d405] depth filters: {'off (raw)' if args.no_depth_filter else 'spatial + temporal'}", flush=True)
     print(f'[d405] waiting for VM receiver on {args.bind}:{args.port}', flush=True)
     while True:
         conn, addr = srv.accept()
@@ -91,6 +100,10 @@ def serve(args):
                 depth = frames.get_depth_frame()
                 if not color or not depth:
                     continue
+                # Filter the depth frame only; colour never passes through a filter.
+                for f in depth_filters:
+                    depth = f.process(depth)
+                depth = depth.as_depth_frame()
                 c = np.asanyarray(color.get_data())
                 d = np.asanyarray(depth.get_data())
                 if abs(to_mm - 1.0) > 1e-9:
@@ -118,6 +131,8 @@ def serve(args):
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument('--bind', default='192.168.64.1', help='Mac address on the UTM shared network')
+    ap.add_argument('--no-depth-filter', action='store_true',
+                    help='send raw depth (no spatial/temporal post-processing)')
     ap.add_argument('--port', type=int, default=8766)
     ap.add_argument('--fps', type=int, default=15)
     ap.add_argument('--width', type=int, default=640)
