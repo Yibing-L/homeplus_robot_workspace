@@ -22,6 +22,7 @@
 """Build an OctoMap-ready obstacle cloud from one RGB-D camera."""
 
 import json
+import os
 import warnings
 from typing import Optional
 
@@ -40,7 +41,7 @@ from geometry_msgs.msg import Pose
 from moveit_msgs.msg import CollisionObject
 from shape_msgs.msg import SolidPrimitive
 
-from homeplus_vision.table_plane import fit_table_plane, table_box
+from homeplus_vision.table_plane import TablePlane, fit_table_plane, table_box
 
 
 class ObstacleCloudNode(Node):
@@ -77,6 +78,12 @@ class ObstacleCloudNode(Node):
         self.declare_parameter("target_padding_m", 0.02)
         self.declare_parameter("button_task_id", 2)
         self.declare_parameter("button_target_padding_m", 0.08)
+        # Free-standing pickup targets (the cup): the mask misses the cup's outer
+        # centimetre, and those edge points became voxels the palm "hit" right
+        # beside the cup (2026-10-30: 1.0-1.2 cm outside its sides). Appliance
+        # targets (tray, button) keep target_padding_m so nearby surfaces stay.
+        self.declare_parameter("cup_task_ids", [1])
+        self.declare_parameter("cup_target_padding_m", 0.02)
         self.declare_parameter("mask_timeout_sec", 1.0)
         self.declare_parameter("clear_octomap_on_mask", False)
         self.declare_parameter("clear_octomap_service", "/clear_octomap")
@@ -97,6 +104,15 @@ class ObstacleCloudNode(Node):
         self.declare_parameter("table_target_max_radius_m", 0.08)
         self.declare_parameter("table_target_margin_m", 0.01)
         self.declare_parameter("table_object_id", "detected_table")
+        # Detector tasks whose target stands ON the table (the fit anchors on the
+        # target's base). For other targets (e.g. the drip tray, task 7) the anchor
+        # would be the target's own surface: keep the last table instead.
+        self.declare_parameter("table_fit_task_ids", [1])
+        self.declare_parameter("table_below_target_m", 0.03)
+        # The table fitted while it stood in clear view (pickup), kept across vision
+        # restarts. World coordinates are odometry, which an Arduino reset re-zeroes,
+        # so a stored table is only restored within the same bridge session.
+        self.declare_parameter("table_store_path", "~/.ros/homeplus_table.json")
         self.declare_parameter("clear_octomap_min_interval_sec", 15.0)
 
         self.camera_role = str(self.get_parameter("camera_role").value)
@@ -195,6 +211,14 @@ class ObstacleCloudNode(Node):
         self.motion_finished_ns = 0
         self.ready_pub = self.create_publisher(String, "/vision/planning_cloud_ready", 10)
         self.table_enable = bool(self.get_parameter("table_plane_enable").value)
+        self.table_fit_tasks = {int(t) for t in self.get_parameter("table_fit_task_ids").value}
+        self.table_below_target_m = float(self.get_parameter("table_below_target_m").value)
+        self.detector_task_id = None
+        self.table_from_fit_task = False
+        self.table_store = os.path.expanduser(str(self.get_parameter("table_store_path").value))
+        self.bridge_session = None
+        self.create_subscription(String, "/arduino/bridge_info", self._on_bridge_info,
+                                 QoSProfile(depth=1, durability=DurabilityPolicy.TRANSIENT_LOCAL))
         self.table_world_frame = str(self.get_parameter("table_world_frame").value)
         self.table_cfg = {k: float(self.get_parameter(f"table_{k}").value) for k in (
             "z_min_m", "z_max_m", "max_tilt_deg", "inlier_tol_m", "remove_below_m",
@@ -218,6 +242,7 @@ class ObstacleCloudNode(Node):
             PointCloud2, str(self.get_parameter("obstacle_cloud_topic").value), 10
         )
 
+        self.create_subscription(String, "/molmopoint/diagnostics", self._on_detector_diag, 10)
         self.create_subscription(
             CameraInfo,
             self.camera_info_topic,
@@ -491,6 +516,57 @@ class ObstacleCloudNode(Node):
         median[(valid_count * 2 <= n) | ~np.isfinite(median)] = 0
         return median.astype(depth.dtype)
 
+    def _on_bridge_info(self, msg):
+        try:
+            session = json.loads(msg.data).get("session_id")
+        except ValueError:
+            return
+        if session and session != self.bridge_session:
+            self.bridge_session = session
+            self._restore_table()
+
+    def _restore_table(self):
+        if self.table_plane_last is not None or not self.bridge_session:
+            return
+        try:
+            with open(self.table_store) as f:
+                saved = json.load(f)
+        except (OSError, ValueError):
+            return
+        if saved.get("session_id") != self.bridge_session:
+            self.get_logger().info("Stored table is from another bridge session (odometry re-zeroed); not restored")
+            return
+        plane = TablePlane(normal=np.array(saved["normal"]), offset=float(saved["offset"]),
+                           height=float(saved["height"]), tilt_deg=float(saved["tilt_deg"]),
+                           inliers=np.zeros(0, dtype=bool))
+        self.table_plane_last = (plane, self.get_clock().now().nanoseconds)
+        self.table_from_fit_task = True
+        self.table_last = None
+        self._publish_table_box(tuple(saved["center"]), tuple(saved["size"]), self.get_clock().now().to_msg())
+        self.get_logger().info(f"Restored the table from {self.table_store}: height {plane.height:.3f} m")
+
+    def _save_table(self, plane, center, size):
+        if not self.bridge_session:
+            return
+        data = {"session_id": self.bridge_session, "normal": [float(v) for v in plane.normal],
+                "offset": float(plane.offset), "height": float(plane.height), "tilt_deg": float(plane.tilt_deg),
+                "center": [float(v) for v in center], "size": [float(v) for v in size]}
+        try:
+            os.makedirs(os.path.dirname(self.table_store), exist_ok=True)
+            with open(self.table_store + ".tmp", "w") as f:
+                json.dump(data, f)
+            os.replace(self.table_store + ".tmp", self.table_store)
+        except OSError as exc:
+            self.get_logger().warn(f"Could not store the table: {exc}")
+
+    def _on_detector_diag(self, msg):
+        try:
+            task = json.loads(msg.data).get("task_id")
+        except ValueError:
+            return
+        if task is not None:
+            self.detector_task_id = int(task)
+
     def _model_table(self, obstacle_points, object_points, frame_id, stamp_msg):
         """Remove the table surface from the cloud and publish it as an exact box.
 
@@ -513,7 +589,29 @@ class ObstacleCloudNode(Node):
             cx, cy = np.median(target[:, :2], axis=0)
             support = (float(cx), float(cy), float(np.percentile(target[:, 2], 5)))
         c = self.table_cfg
-        plane = fit_table_plane(world, z_min=c["z_min_m"], z_max=c["z_max_m"],
+        z_max, support = c["z_max_m"], support
+        if self.detector_task_id is not None and self.detector_task_id not in self.table_fit_tasks:
+            # The target (e.g. the drip tray, task 7) stands on the table rather than being
+            # set on it: anchoring the fit at the target's base put the "table" box at tray
+            # height (~0.87 m) and blocked every placement; dropping the box instead let the
+            # base drive into the table (2026-10-29). The table is the level plane below the
+            # target: fit unanchored, at least table_below_target_m under its surface.
+            # Prefer the table fitted while the target stood on it (the pickup): that view
+            # saw the table's near edge, which a held cup hides here. A box refitted now
+            # covered only the far part, and the base drove into the near edge (2026-10-29).
+            if target is None or self.table_from_fit_task:
+                if self.table_plane_last is None:
+                    return obstacle_points
+                if self.table_last is not None:
+                    # keep the kept table in the scene (e.g. after a MoveIt restart); throttled
+                    self._publish_table_box(self.table_last[0], self.table_last[1], stamp_msg)
+                last = self.table_plane_last[0]
+                dist = last.signed_distance(world.astype(np.float64))
+                band = (dist >= -c["remove_below_m"]) & (dist <= c["remove_above_m"])
+                return obstacle_points[~band]
+            z_max = min(z_max, float(np.percentile(target[:, 2], 5)) - self.table_below_target_m)
+            support = None
+        plane = fit_table_plane(world, z_min=c["z_min_m"], z_max=z_max,
                                 max_tilt_deg=c["max_tilt_deg"], inlier_tol=c["inlier_tol_m"],
                                 min_inliers=self.table_min_inliers, support=support,
                                 level=self.table_assume_level)
@@ -521,6 +619,7 @@ class ObstacleCloudNode(Node):
         status = {"found": plane is not None}
         if plane is not None:
             self.table_plane_last = (plane, now_ns)
+            self.table_from_fit_task = self.detector_task_id in self.table_fit_tasks
         elif self.table_plane_last is not None and now_ns - self.table_plane_last[1] < self.table_hold_ns:
             # One noisy frame must not pour the table back into the OctoMap as voxels.
             last = self.table_plane_last[0]
@@ -540,6 +639,8 @@ class ObstacleCloudNode(Node):
         base = self._target_base_column(world, target, plane, camera_xy)
         center, size = table_box(world, plane, thickness=c["box_thickness_m"])
         self._publish_table_box(center, size, stamp_msg)
+        if self.table_from_fit_task:
+            self._save_table(plane, center, size)
         status.update(height_m=round(plane.height, 4), tilt_deg=round(plane.tilt_deg, 2),
                       inliers=int(np.count_nonzero(plane.inliers)), removed=int(np.count_nonzero(band)),
                       target_base_removed=int(np.count_nonzero(base & ~band)),
@@ -686,8 +787,11 @@ class ObstacleCloudNode(Node):
     def _remove_target_box(self, obstacle_points, object_points):
         if not len(obstacle_points) or not len(object_points):
             return obstacle_points
-        lower = object_points.min(axis=0) - self.target_padding_m
-        upper = object_points.max(axis=0) + self.target_padding_m
+        padding = self.target_padding_m
+        if self.detector_task_id in {int(t) for t in self.get_parameter("cup_task_ids").value}:
+            padding = max(padding, float(self.get_parameter("cup_target_padding_m").value))
+        lower = object_points.min(axis=0) - padding
+        upper = object_points.max(axis=0) + padding
         inside = np.all(
             (obstacle_points >= lower) & (obstacle_points <= upper), axis=1
         )

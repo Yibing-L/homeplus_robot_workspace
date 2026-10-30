@@ -93,7 +93,8 @@ class LogBuffer:
 # Degraded-mode fallback (UI_PLAN §4.3): derive a coarse executor state from
 # /gesture_control/executor_status strings when executor_state is not published.
 _STEP = re.compile(r"\[(?P<seq>[\w_]+)\] step (?P<i>\d+)/(?P<n>\d+): (?P<name>[\w_]+)")
-_WAIT = re.compile(r"Plan for (?P<name>[\w_]+) is waiting for approval")
+# Phased plans name their phase, e.g. "move_to_tray_standoff/base".
+_WAIT = re.compile(r"Plan for (?P<name>[\w/]+) is waiting for approval")
 _ABORT = re.compile(r"Sequence (?P<seq>[\w_]+) ABORTED at (?P<step>[\w_]+): (?P<reason>.*)")
 _FAIL = re.compile(r"Command (?P<cmd>[\w_]+) FAILED: (?P<reason>.*)")
 _HOLDING = re.compile(r"^Holding cup: (?P<yes>yes|no) ")

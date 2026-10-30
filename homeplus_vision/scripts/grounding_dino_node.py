@@ -171,7 +171,22 @@ class MolmoPointNode(Node):
         # gripper holds: reject a surface centred inside this cylinder around
         # held_object_frame (radius; extent below/above it). A 16 oz Solo cup held
         # 8.8 cm above its base reaches ~9 cm below and ~4 cm above grasp_tcp.
+        # The cup stands on the table: its bottom IS the fitted table surface
+        # (/vision/table_plane, ~1000 points), which is far steadier than the
+        # mask's lowest depths at range (far and close-up grasp heights differed
+        # by 4.5 cm, 2026-10-30). Used when the measured bottom is within this.
+        self.declare_parameter('cup_bottom_from_table_max_diff_m', 0.06)
+        self.declare_parameter('table_plane_max_age_sec', 10.0)
         self.declare_parameter('held_object_frame', 'grasp_tcp')
+        # A horizontal_surface target (something to set an object on) must be
+        # level: reject a masked surface whose fitted plane tilts more than this.
+        # The drip-tray prompt alternated with the machine's vertical dispensing
+        # recess 15 cm higher (2026-10-29).
+        self.declare_parameter('surface_max_tilt_deg', 30.0)
+        # Half-size (px) of the window around the model's point whose masked depth
+        # defines a horizontal_surface target; a 9 cm tray spans ~28 px at 1.4 m.
+        self.declare_parameter('surface_window_px', 12)
+        self.declare_parameter('surface_window_min_points', 30)
         self.declare_parameter('held_object_exclusion_radius_m', 0.08)
         self.declare_parameter('held_object_exclusion_below_m', 0.12)
         self.declare_parameter('held_object_exclusion_above_m', 0.08)
@@ -340,6 +355,7 @@ class MolmoPointNode(Node):
         # RealSense image/depth/camera-info topics are sensor streams and usually
         # publish with best-effort QoS. Match that profile so subscriptions
         # connect reliably instead of silently receiving nothing.
+        self.create_subscription(String, '/vision/table_plane', self._on_table_plane, 10)
         self.create_subscription(
             Image, self.image_topic, self.image_callback, qos_profile_sensor_data,
             callback_group=self._sensor_callback_group,
@@ -450,6 +466,21 @@ class MolmoPointNode(Node):
             self.caption, self.task_id = caption, task_id
             self.task = self.tasks[task_id]
         return SetParametersResult(successful=True)
+
+    def _on_table_plane(self, msg: String) -> None:
+        try:
+            data = json.loads(msg.data)
+        except ValueError:
+            return
+        height = data.get('height_m')
+        if height is not None and (data.get('found') or data.get('held') or data.get('kept')):
+            self._table_height = (float(height), time.monotonic())
+
+    def _fresh_table_height(self) -> Optional[float]:
+        table = getattr(self, '_table_height', None)
+        if table is None or time.monotonic() - table[1] > float(self.get_parameter('table_plane_max_age_sec').value):
+            return None
+        return table[0]
 
     def _inside_held_object(self, point_world, stamp) -> Optional[str]:
         """Reason to reject a placement target inside the held-object volume around
@@ -944,6 +975,11 @@ class MolmoPointNode(Node):
                             heights = (points @ rotation.T + translation)[:, 2]
                             bottom, top = np.quantile(heights, [0.05, 0.95])
                             target_diag['cup_extent_z'] = [float(bottom), float(top)]
+                            table_z = self._fresh_table_height()
+                            if (table_z is not None and abs(bottom - table_z)
+                                    <= float(self.get_parameter('cup_bottom_from_table_max_diff_m').value)):
+                                target_diag['cup_bottom_from_table'] = [float(bottom), float(table_z)]
+                                bottom = table_z
                             cup_bottom_z = float(bottom)
                             target_diag['near_cluster_z'] = float(surface_world[2])
                             surface_world[2] = 0.5 * (bottom + top)
@@ -1015,24 +1051,43 @@ class MolmoPointNode(Node):
                         )
                 elif (self.tasks[task_id].get('target_geometry') == 'horizontal_surface'
                         and caption == self.tasks[task_id]['caption']):
-                    # A flat support to put something on (e.g. a drip tray):
-                    # the target is the centroid of the visible masked surface
-                    # at its median measured height, not a body centre. The
-                    # near-depth cluster below would keep only the surface's
-                    # front edge in an oblique view.
-                    if len(points) < self.mask_depth_min_points:
+                    # A flat support to put something on (e.g. a drip tray): the
+                    # model's point is on it, but SAM can grow the mask over the
+                    # whole appliance (2026-10-29: a drip-tray point gave a
+                    # whole-machine mask whose centroid sat on its vertical front).
+                    # So use the masked depth in a window around the point: its
+                    # centroid at the median measured height, not a body centre.
+                    u = d['point'][0] * depth.width / self.target_w
+                    v = d['point'][1] * depth.height / self.target_h
+                    r = float(self.get_parameter('surface_window_px').value)
+                    local = (abs(cols-u) <= r) & (abs(rows-v) <= r)
+                    need = int(self.get_parameter('surface_window_min_points').value)
+                    target_diag['surface_window_points'] = int(np.count_nonzero(local))
+                    if np.count_nonzero(local) < need:
                         geometry_diagnostics['reason'] = (
-                            f'too few valid surface depth points: {len(points)} < '
-                            f'mask_depth_min_points={self.mask_depth_min_points}')
+                            f'too few masked depth points around the model point: '
+                            f'{int(np.count_nonzero(local))} < {need} within {r:.0f} px')
                     else:
-                        world = points @ rotation.T + translation
+                        world = points[local] @ rotation.T + translation
                         low, height, high = np.quantile(world[:, 2], [0.25, 0.5, 0.75])
                         # Spread of heights (grate slots, rim, depth noise), for
                         # judging the surface estimate; not a rejection.
                         target_diag['surface_z_quartiles'] = [float(low), float(high)]
                         centroid = np.array([np.median(world[:, 0]), np.median(world[:, 1]), height])
+                        # Plane through the masked points (inner 80% by height, so
+                        # a rim or stray background pixels don't tip the fit).
+                        core = world[(world[:, 2] >= np.quantile(world[:, 2], 0.1))
+                                     & (world[:, 2] <= np.quantile(world[:, 2], 0.9))]
+                        normal = np.linalg.svd(core - core.mean(axis=0), full_matrices=False)[2][-1]
+                        tilt = float(np.degrees(np.arccos(min(1.0, abs(normal[2])))))
+                        target_diag['surface_tilt_deg'] = round(tilt, 1)
                         held = self._inside_held_object(centroid, header.stamp)
-                        if held is not None:
+                        max_tilt = float(self.get_parameter('surface_max_tilt_deg').value)
+                        if tilt > max_tilt:
+                            geometry_diagnostics['reason'] = (
+                                f'surface_not_level: masked surface tilts {tilt:.0f} deg from horizontal '
+                                f'(limit {max_tilt:.0f}); not something to set an object on')
+                        elif held is not None:
                             # e.g. the inside of the held cup when it hides the tray
                             geometry_diagnostics['reason'] = held
                         else:
