@@ -48,7 +48,9 @@ d405_obstacle_cloud:
     table_inlier_tol_m: 0.01
     table_min_inliers: 150
     table_remove_below_m: 0.04
-    table_remove_above_m: 0.015
+    # 3 cm: the table reads 2-3 cm apart across the D405 view (hand-camera
+    # calibration); at 1.5 cm its near part stayed in the map as voxels (2026-10-30).
+    table_remove_above_m: 0.03
     table_box_thickness_m: 0.04
     # Level table: fit its height only (D405 noise at ~1 m skews a full 3D fit).
     table_assume_level: true

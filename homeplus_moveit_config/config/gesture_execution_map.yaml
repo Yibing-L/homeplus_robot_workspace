@@ -116,7 +116,7 @@ commands:
       # point available for pressing instead of an open grasp.
       - name: set_single_contact_point
         type: gripper
-        value: 70.0
+        value: 75.0  # fully closed (operator, 2026-10-30)
         max_attempts: 2
         settle_sec: 1.0
 
@@ -154,7 +154,7 @@ commands:
         offset_frame: target
         offset_x: -0.15
         offset_z: 0.0
-        gripper_value: 70.0
+        gripper_value: 75.0
         rpy_deg: [0.0, 0.0, 0.0]
         position_tolerance_m: 0.02
         use_orientation_constraint: true
@@ -170,6 +170,11 @@ commands:
         num_planning_attempts: 5
 
       - name: refine_button_target
+        # Re-place the base if the close-up is off the arm's plane (2026-10-30: ~4 cm
+        # off, align had no IK at all).
+        max_arm_plane_error_m: 0.02
+        redo_from_step: move_to_button_standoff
+        max_redos: 1
         type: detect
         detection_timeout_sec: 30.0
         # The press goal is only +/-1 cm, so two samples allowed to disagree
@@ -179,6 +184,7 @@ commands:
         preserve_reference_z: false
 
       - name: align_refined_button
+        heading_from_base: true  # planar arm: tool yaw = base heading
         type: pose
         group_name: press_arm
         link_name: press_tcp
@@ -187,7 +193,7 @@ commands:
         orientation_from_detection: true
         offset_frame: target
         offset_x: -0.15
-        gripper_value: 70.0
+        gripper_value: 75.0
         position_tolerance_m: 0.005
         orientation_tolerance_rad: 0.04
         use_orientation_constraint: true
@@ -196,6 +202,8 @@ commands:
         max_replanning_attempts: 2
 
       - name: press_button
+        contact_ends_step: true  # guarded press: a stall here = contact
+        heading_from_base: true  # planar arm: tool yaw = base heading
         type: pose
         clear_octomap_before_plan: false
         cartesian: true
@@ -208,7 +216,7 @@ commands:
         offset_frame: target
         offset_x: 0.01
         offset_z: 0
-        gripper_value: 70.0
+        gripper_value: 75.0
         rpy_deg: [0.0, 0.0, 0.0]
         position_tolerance_m: 0.01
         use_orientation_constraint: true
@@ -234,7 +242,7 @@ commands:
         offset_frame: target
         offset_x: -0.18
         offset_z: 0.0
-        gripper_value: 70.0
+        gripper_value: 75.0
         rpy_deg: [0.0, 0.0, 0.0]
         position_tolerance_m: 0.02
         use_orientation_constraint: true
@@ -258,7 +266,7 @@ commands:
     steps:
       - name: set_single_contact_point
         type: gripper
-        value: 70.0
+        value: 75.0  # fully closed (operator, 2026-10-30)
         max_attempts: 2
         settle_sec: 1.0
 
@@ -278,7 +286,7 @@ commands:
         offset_frame: world
         offset_x: 0.0
         offset_z: 0.12
-        gripper_value: 70.0
+        gripper_value: 75.0
         rpy_deg: [0.0, 90.0, 0.0]
         position_tolerance_m: 0.02
         use_orientation_constraint: true
@@ -301,6 +309,7 @@ commands:
         preserve_reference_z: false
 
       - name: align_above_round_button
+        heading_from_base: true
         type: pose
         group_name: press_arm
         link_name: press_tcp
@@ -310,7 +319,7 @@ commands:
         offset_frame: world
         offset_z: 0.10
         rpy_deg: [0.0, 90.0, 0.0]
-        gripper_value: 70.0
+        gripper_value: 75.0
         position_tolerance_m: 0.005
         orientation_tolerance_rad: 0.05
         use_orientation_constraint: true
@@ -319,6 +328,8 @@ commands:
         max_replanning_attempts: 2
 
       - name: press_round_button
+        contact_ends_step: true  # guarded press: a stall here = contact
+        heading_from_base: true
         type: pose
         clear_octomap_before_plan: false
         cartesian: true
@@ -332,7 +343,7 @@ commands:
         orientation_from_detection: false
         offset_frame: world
         offset_z: -0.008
-        gripper_value: 70.0
+        gripper_value: 75.0
         rpy_deg: [0.0, 90.0, 0.0]
         position_tolerance_m: 0.01
         use_orientation_constraint: true
@@ -343,6 +354,7 @@ commands:
         post_delay_sec: 1.0
 
       - name: retreat_up_from_round_button
+        heading_from_base: true
         type: pose
         clear_octomap_before_plan: false
         cartesian: true
@@ -354,7 +366,7 @@ commands:
         orientation_from_detection: false
         offset_frame: world
         offset_z: 0.12
-        gripper_value: 70.0
+        gripper_value: 75.0
         rpy_deg: [0.0, 90.0, 0.0]
         position_tolerance_m: 0.01
         use_orientation_constraint: true

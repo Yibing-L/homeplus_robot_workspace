@@ -15,9 +15,9 @@ export interface Arm {
 // actions.TASK_COMMANDS: the detector task id selects the executor sequence.
 export const TASKS: Record<number, { command: string; title: string; radio: string; start: string }> = {
   1: { command: "pick_up_coffee", title: "Pick up the cup", radio: "Task 1 · pickup", start: "Start pickup" },
-  2: { command: "press_square_button", title: "Press the square button", radio: "Task 2 · button", start: "Start button press" },
+  2: { command: "press_square_button", title: "Press the bottom button", radio: "Task 2 · bottom button", start: "Start bottom button press" },
   7: { command: "place_cup_on_drip_tray", title: "Place the cup on the drip tray", radio: "Task 7 · place", start: "Place cup on drip tray" },
-  8: { command: "press_round_button", title: "Press the round button (from above)", radio: "Task 8 · round button", start: "Start round button press" },
+  8: { command: "press_round_button", title: "Press the top button (from above)", radio: "Task 8 · top button", start: "Start top button press" },
 };
 
 const ACTION: Record<ArmKind, string> = {

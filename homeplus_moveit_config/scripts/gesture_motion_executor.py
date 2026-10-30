@@ -603,7 +603,16 @@ class GestureMotionExecutor(Node):
                 # jittered 2-4 cm and never gave 3 consecutive within 2 cm,
                 # 2026-10-30), while two separate objects still can't form a
                 # cluster of `required` around one median.
-                window = samples[-2 * required:]
+                # Only fresh samples count: at ~2 s per detection a 6-sample window
+                # spans 13-17 s and the 15 s age limit then rejected agreeing samples.
+                max_age = float(self.get_parameter('detection_max_age_sec').value)
+                now_ns = self.get_clock().now().nanoseconds
+                fresh = [q for q in samples
+                         if (now_ns - Time.from_msg(q.header.stamp).nanoseconds) / 1e9 <= max_age]
+                if len(fresh) < required:
+                    time.sleep(0.1)
+                    continue
+                window = fresh[-2 * required:]
 
                 def _median(values):
                     values = sorted(values)
@@ -640,7 +649,9 @@ class GestureMotionExecutor(Node):
                 orientation_spread = max(2*math.acos(min(1.0, abs(sum(x*y for x,y in zip(a,b)))))
                                          for a in quats for b in quats)
                 if diameter <= tolerance and orientation_spread <= 0.08 and max(ages) <= float(self.get_parameter('detection_max_age_sec').value):
-                    stable_pose = deepcopy(candidates[-1])
+                    # Newest sample's stamp: the cup dimensions pair with the latest
+                    # detection (within 2 s); an older agreeing sample broke that.
+                    stable_pose = deepcopy(window[-1])
                     stable_pose.pose.position.x = median_xyz[0]
                     stable_pose.pose.position.y = median_xyz[1]
                     stable_pose.pose.position.z = median_xyz[2]
@@ -1043,7 +1054,7 @@ class GestureMotionExecutor(Node):
         if not isinstance(command_cfg, dict):
             return [f"{name}: command must be a mapping"]
 
-        allowed = set("endpoint_profile name type group_name joints value frame_id position orientation rpy_deg target steps task_id detection_topic detection_timeout_sec detection_min_stable_samples detection_stability_tolerance_m detection_max_refresh_shift_m max_replanning_attempts max_attempts settle_sec require_trajectory_approval planner_id allowed_planning_time num_planning_attempts link_name offset_x offset_y offset_z offset_frame orientation_from_detection gripper_value final_gripper_value position_tolerance_m position_tolerance_xy_m position_tolerance_z_m use_orientation_constraint orientation_tolerance_rad orientation_tolerance_x_rad orientation_tolerance_y_rad orientation_tolerance_z_rad safe_z_candidate_offsets_m base_goal_tcp_x_min_m base_goal_tcp_x_max_m base_goal_tcp_y_max_m max_base_goal_rotation_rad max_base_goal_translation_m max_base_goal_y_translation_m preserve_reference_z maintain_orientation_during_path post_delay_sec cartesian mobile_standoff lookahead_offsets velocity_scaling acceleration_scaling clear_octomap_before_plan octomap_clear_timeout_sec octomap_rebuild_wait_sec ik_candidate_attempts attach_cup joint_tolerance hardcoded_detection_pose hardcoded_detection_frame planning_service_timeout_sec phase_allowed_planning_time phase_num_planning_attempts phase_joint_tolerance continue_on_arduino_timeout base_placement heading_from_base max_arm_plane_error_m redo_from_step max_redos detach_cup held_cup_placement base_relative allow_held_cup_map_contact".split())
+        allowed = set("endpoint_profile name type group_name joints value frame_id position orientation rpy_deg target steps task_id detection_topic detection_timeout_sec detection_min_stable_samples detection_stability_tolerance_m detection_max_refresh_shift_m max_replanning_attempts max_attempts settle_sec require_trajectory_approval planner_id allowed_planning_time num_planning_attempts link_name offset_x offset_y offset_z offset_frame orientation_from_detection gripper_value final_gripper_value position_tolerance_m position_tolerance_xy_m position_tolerance_z_m use_orientation_constraint orientation_tolerance_rad orientation_tolerance_x_rad orientation_tolerance_y_rad orientation_tolerance_z_rad safe_z_candidate_offsets_m base_goal_tcp_x_min_m base_goal_tcp_x_max_m base_goal_tcp_y_max_m max_base_goal_rotation_rad max_base_goal_translation_m max_base_goal_y_translation_m preserve_reference_z maintain_orientation_during_path post_delay_sec cartesian mobile_standoff lookahead_offsets velocity_scaling acceleration_scaling clear_octomap_before_plan octomap_clear_timeout_sec octomap_rebuild_wait_sec ik_candidate_attempts attach_cup joint_tolerance hardcoded_detection_pose hardcoded_detection_frame planning_service_timeout_sec phase_allowed_planning_time phase_num_planning_attempts phase_joint_tolerance continue_on_arduino_timeout base_placement heading_from_base max_arm_plane_error_m redo_from_step max_redos detach_cup held_cup_placement base_relative allow_held_cup_map_contact contact_ends_step".split())
         if command_cfg.get('endpoint_profile', 'precise') not in ('precise', 'transit'):
             errors.append(f'{name}: endpoint_profile must be precise or transit')
         if command_cfg.get('cartesian') and command_cfg.get('endpoint_profile') == 'transit':
@@ -1861,13 +1872,22 @@ class GestureMotionExecutor(Node):
                         label=f"{sequence_name}/{step_name} trajectory",
                     ):
                         self._force_apply_pending_joint_state(self._arduino_error_message or "trajectory acknowledgement/endpoint verification failed")
-                        if not bool(effective_step.get(
+                        error = str(self._arduino_error_message or "")
+                        if effective_step.get("contact_ends_step") and (
+                                "TRACKING_ERROR" in error or "SETTLE_TIMEOUT" in error):
+                            # Guarded press: the arm stalling against the target is the
+                            # contact we wanted; keep the measured state and go on to the
+                            # retreat (no force sensor; 2026-10-30 press tripped 3.04 deg).
+                            self.get_logger().info(f"  {step_name}: contact detected ({error}); treating as reached")
+                            self._publish_status(f"[{sequence_name}] {step_name}: contact detected")
+                        elif not bool(effective_step.get(
                             "continue_on_arduino_timeout",
                             self.continue_on_arduino_timeout,
                         )):
                             self._abort_sequence(sequence_name, step_name, self._arduino_error_message or "trajectory acknowledgement/endpoint verification failed")
                             return
-                        self.get_logger().warn(f"  Continuing after trajectory timeout for {step_name}")
+                        else:
+                            self.get_logger().warn(f"  Continuing after trajectory timeout for {step_name}")
                 else:
                     self.get_logger().info("  Continuing without trajectory DONE acknowledgement")
                     self._force_apply_pending_joint_state(

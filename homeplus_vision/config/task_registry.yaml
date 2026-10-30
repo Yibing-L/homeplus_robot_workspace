@@ -14,7 +14,10 @@ tasks:
   2:
     name: press_square_button
     # Both buttons are silver; name the shape and place (2026-10-30).
-    caption: the rectangular silver button on the coffee machine
+    caption: the bottom silver button on the coffee machine
+    # Press along a fixed direction 45 deg below horizontal (operator, 2026-10-30).
+    target_geometry: point
+    approach_pitch_down_deg: 45
     command_name: press_square_button
     command_type: sequence
 
@@ -50,7 +53,7 @@ tasks:
   # Round button on top of the coffee machine, pressed from above (task 8).
   8:
     name: press_round_button
-    caption: the round silver button on top of the coffee machine
+    caption: the top silver button on the coffee machine
     target_geometry: horizontal_surface
     command_name: press_round_button
     command_type: sequence

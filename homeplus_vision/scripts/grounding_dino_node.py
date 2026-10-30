@@ -167,6 +167,9 @@ class MolmoPointNode(Node):
         self.declare_parameter('cup_max_radius_m', 0.065)
         self.declare_parameter('cup_height_from_mask_extent', False)
         self.declare_parameter('cup_min_palm_clearance_m', 0.0)
+        # Cap the grasp at rim - this, so a short cup is held by its body: the
+        # palm-clearance rule alone put the fingers at a short cup's rim (2026-10-30).
+        self.declare_parameter('cup_grasp_below_rim_m', 0.0)
         # Placement targets (horizontal_surface tasks) are never on the cup the
         # gripper holds: reject a surface centred inside this cylinder around
         # held_object_frame (radius; extent below/above it). A 16 oz Solo cup held
@@ -995,6 +998,11 @@ class MolmoPointNode(Node):
                                     target_diag['grasp_z_raised_for_palm_clearance'] = [
                                         float(surface_world[2]), float(floor_z)]
                                     surface_world[2] = floor_z
+                            below_rim = float(self.get_parameter('cup_grasp_below_rim_m').value)
+                            if below_rim > 0.0 and surface_world[2] > top - below_rim:
+                                target_diag['grasp_z_capped_below_rim'] = [
+                                    float(surface_world[2]), float(top - below_rim)]
+                                surface_world[2] = top - below_rim
                         target_diag['surface_world'] = surface_world.tolist()
                         try:
                             viewpoint = translation
@@ -1034,6 +1042,36 @@ class MolmoPointNode(Node):
                             depth_source = 'segmented_depth_with_center_offset'
                         except ValueError as exc:
                             geometry_diagnostics['reason'] = f'offset_surface_goal: {exc}'
+                elif (self.tasks[task_id].get('target_geometry') == 'point'
+                        and caption == self.tasks[task_id]['caption']):
+                    # A point to press along a fixed direction (2026-10-30): depth at
+                    # the model's point, approach = camera's horizontal heading tilted
+                    # approach_pitch_down_deg down (pitch +theta points the press TCP's
+                    # +X down; +90 = straight down). The plane fit was rejecting the
+                    # button, so nothing was published.
+                    u = d['point'][0] * depth.width / self.target_w
+                    v = d['point'][1] * depth.height / self.target_h
+                    near = (abs(cols - u) <= 4) & (abs(rows - v) <= 4)
+                    if np.count_nonzero(near) >= 5:
+                        d_at = float(np.median(points[near][:, 2]))
+                    elif len(points):
+                        d_at = float(points[int(np.argmin((cols - u) ** 2 + (rows - v) ** 2)), 2])
+                    else:
+                        d_at = None
+                    if d_at is None:
+                        geometry_diagnostics['reason'] = 'no masked depth near the model point'
+                    else:
+                        ray_point = np.array([(u - cx) * d_at / fx, (v - cy) * d_at / fy, d_at])
+                        point_3d = tuple(ray_point)
+                        target_world = rotation @ ray_point + translation
+                        horizontal = target_world - translation
+                        horizontal[2] = 0.0
+                        horizontal /= max(np.linalg.norm(horizontal), 1e-9)
+                        pitch = math.radians(float(self.tasks[task_id].get('approach_pitch_down_deg', 0.0)))
+                        approach = np.array([horizontal[0] * math.cos(pitch),
+                                             horizontal[1] * math.cos(pitch), -math.sin(pitch)])
+                        target_diag['point_depth_m'] = round(d_at, 4)
+                        depth_source = 'model_point_depth'
                 elif task_id == 2 and caption == self.tasks[2]['caption']:
                     u = d['point'][0] * depth.width / self.target_w
                     v = d['point'][1] * depth.height / self.target_h

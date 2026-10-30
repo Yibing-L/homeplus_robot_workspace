@@ -41,7 +41,9 @@ molmopoint:
     # Never grasp so low that the palm (gripper_palm_below_tcp_m under the TCP)
     # comes within this distance of the table: on a 12 cm cup mid-height leaves
     # ~1.3 cm, less than one 2 cm OctoMap cell plus depth noise.
-    cup_min_palm_clearance_m: 0.04
+    cup_min_palm_clearance_m: 0.03
+    # Never grasp higher than this below the measured rim (fingers on the body).
+    cup_grasp_below_rim_m: 0.03
     # Table anchor off: the fitted table height is not reliable yet (2026-10-30).
     cup_bottom_from_table_max_diff_m: 0.0
     gripper_palm_below_tcp_m: 0.047  # palm contacts sat 4.7 cm under the target
