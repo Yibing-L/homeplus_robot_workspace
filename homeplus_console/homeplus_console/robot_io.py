@@ -55,3 +55,8 @@ class RobotIO(Protocol):
     console. Checked fresh before every start/restart: the console must never start a duplicate."""
 
     def set_task_id(self, task_id: int) -> None: ...
+
+    def fetch_scene(self) -> Optional[Dict]: ...
+    """Blocking read of MoveIt's planning scene for the 3D view (scene.SceneWorker calls it ~1 Hz from its
+    own thread while a browser is connected): world objects in "world", attached objects relative to their
+    link, and the raw OctoMap stream with its origin in world. {"error": str} when move_group can't be read."""

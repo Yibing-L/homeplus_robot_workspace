@@ -2,13 +2,16 @@ import { useEffect, useRef, useState } from "react";
 import * as THREE from "three";
 import { OrbitControls } from "three/examples/jsm/controls/OrbitControls.js";
 import URDFLoader, { type URDFRobot } from "urdf-loader";
-import type { PlanPreview } from "../types";
+import type { PlanPreview, SceneView, SceneVoxels } from "../types";
 import { fmtAge } from "../util";
+import { HEIGHT_GRADIENT, SC, buildCollision, buildPrim, buildVoxels, disposeTree } from "./scene3d";
 
 // The MoveIt plan in 3D, from the robot's own URDF and meshes (served by the console backend):
 //   solid  = the robot now (fresh /hardware/joint_states only; hidden when joints are stale)
 //   blue   = the planned motion, scrubbable / looping
 //   line   = the TCP path through the planned waypoints, cup marker = detected target
+//   scene  = MoveIt's planning scene (toggles "OctoMap" / "Objects"): occupied voxels, collision objects,
+//            the attached cup on its link, and the last collision point the executor reported
 // No guesswork: every pose comes from joint values the backend received.
 
 type Joints = Record<string, number>;
@@ -49,14 +52,33 @@ function tint(robot: URDFRobot, mat: THREE.Material) {
   });
 }
 
+function useToggle(key: string): [boolean, () => void] {
+  const [on, setOn] = useState(() => localStorage.getItem(key) !== "0");
+  return [
+    on,
+    () =>
+      setOn((v) => {
+        localStorage.setItem(key, v ? "0" : "1");
+        return !v;
+      }),
+  ];
+}
+
+const shortId = (id: string) => id.replace(/^detected_/, "");
+
 function setJoints(robot: URDFRobot | null, j: Joints | null) {
   if (!robot || !j) return;
   for (const [k, v] of Object.entries(j)) robot.joints[k]?.setJointValue(v);
 }
 
-export function Plan3D({ plan, planAge, now }: { plan: PlanPreview | null; planAge: number | null; now: Joints | null }) {
+type SceneParts = { root: THREE.Group; voxels?: THREE.Group; voxSeq?: number; objects?: THREE.Group; attached: THREE.Object3D[] };
+
+export function Plan3D({ plan, planAge, now, scene }: { plan: PlanPreview | null; planAge: number | null; now: Joints | null; scene: SceneView | null }) {
   const host = useRef<HTMLDivElement>(null);
   const three = useRef<{ nowBot?: URDFRobot; planBot?: URDFRobot; tcpProbe?: URDFRobot; path?: THREE.Mesh; cup?: THREE.Mesh } | null>(null);
+  const sceneParts = useRef<SceneParts | null>(null);
+  const [showVoxels, toggleVoxels] = useToggle("hp.plan3d.octomap");
+  const [showObjects, toggleObjects] = useToggle("hp.plan3d.objects");
   const [err, setErr] = useState<string | null>(null);
   const [ready, setReady] = useState(false);
   const [scrub, setScrub] = useState<number | null>(1); // default: hold the planned end pose; null = loop
@@ -96,6 +118,9 @@ export function Plan3D({ plan, planAge, now }: { plan: PlanPreview | null; planA
     const path = new THREE.Mesh(new THREE.BufferGeometry(), new THREE.MeshBasicMaterial({ color: C.path }));
     world.add(path);
     three.current = { path, cup };
+    const sceneRoot = new THREE.Group();
+    world.add(sceneRoot);
+    sceneParts.current = { root: sceneRoot, attached: [] };
     Promise.all([loadRobot(C.now, 1), loadRobot(C.plan, 0.55), loadRobot(C.plan, 0)])
       .then(([n, p, probe]) => {
         world.add(n, p, probe);
@@ -129,6 +154,12 @@ export function Plan3D({ plan, planAge, now }: { plan: PlanPreview | null; planA
     };
     raf = requestAnimationFrame(loop);
     return () => {
+      const sp = sceneParts.current;
+      if (sp) {
+        sp.attached.forEach(disposeTree);
+        disposeTree(sp.root);
+      }
+      sceneParts.current = null;
       cancelAnimationFrame(raf);
       ro.disconnect();
       controls.dispose();
@@ -195,6 +226,83 @@ export function Plan3D({ plan, planAge, now }: { plan: PlanPreview | null; planA
     return () => window.clearInterval(id);
   }, [plan?.plan_id, scrub]);
 
+  // planning scene: voxels are fetched separately, only when the octree changed (scene.octomap.seq)
+  const voxSeq = scene?.octomap?.seq ?? 0;
+  useEffect(() => {
+    const sp = sceneParts.current;
+    if (!sp || !showVoxels || sp.voxSeq === voxSeq) return;
+    let cancelled = false;
+    fetch("/api/scene/voxels", { cache: "no-store" })
+      .then((r) => (r.ok ? (r.json() as Promise<SceneVoxels>) : Promise.reject(new Error(`HTTP ${r.status}`))))
+      .then((v) => {
+        if (cancelled || sceneParts.current !== sp) return;
+        if (sp.voxels) disposeTree(sp.voxels);
+        sp.voxels = buildVoxels(v);
+        sp.voxels.visible = !!scene && !scene.stale;
+        sp.voxSeq = v.seq;
+        sp.root.add(sp.voxels);
+      })
+      .catch(() => undefined); // the next seq or toggle retries
+    return () => {
+      cancelled = true;
+    };
+  }, [voxSeq, showVoxels]);
+
+  // world objects + collision point: rebuilt when their content changes
+  const col = scene?.collision;
+  const objKey = JSON.stringify([scene?.objects ?? [], col ? [col.p, col.a, col.b, col.frame, col.t_wall] : null]);
+  useEffect(() => {
+    const sp = sceneParts.current;
+    if (!sp) return;
+    if (sp.objects) disposeTree(sp.objects);
+    const g = new THREE.Group();
+    for (const o of scene?.objects ?? []) {
+      const m = buildPrim(o, SC.object);
+      if (m) g.add(m);
+    }
+    if (col && col.frame === "world") g.add(buildCollision(col.p, `${col.a} / ${col.b}`));
+    sp.objects = g;
+    sp.root.add(g);
+  }, [objKey]);
+
+  // attached objects ride on their link of the solid "now" robot (hidden with it when joints are stale)
+  const attKey = JSON.stringify(scene?.attached ?? []);
+  useEffect(() => {
+    const sp = sceneParts.current;
+    const bot = three.current?.nowBot;
+    if (!sp) return;
+    sp.attached.forEach(disposeTree);
+    sp.attached = [];
+    if (!bot) return;
+    for (const a of scene?.attached ?? []) {
+      const link = a.link ? bot.links[a.link] : undefined;
+      const m = link ? buildPrim(a, SC.attached) : null;
+      if (link && m) {
+        link.add(m);
+        sp.attached.push(m);
+      }
+    }
+  }, [attKey, ready]);
+
+  // visibility: the toggles, and a stale scene is never drawn as if it were current
+  const fresh = !!scene && !scene.stale;
+  useEffect(() => {
+    const sp = sceneParts.current;
+    if (!sp) return;
+    if (sp.voxels) sp.voxels.visible = showVoxels && fresh && !!scene?.octomap;
+    if (sp.objects) sp.objects.visible = showObjects && fresh;
+    for (const a of sp.attached) a.visible = showObjects && fresh;
+  });
+
+  const oct = scene?.octomap;
+  const sceneNote = !scene
+    ? null
+    : scene.stale
+      ? `planning scene unknown${scene.error ? `: ${scene.error}` : scene.age != null ? ` (${fmtAge(scene.age)} old)` : ""}`
+      : scene.error;
+  const objNames = [...new Set((scene?.objects ?? []).map((o) => shortId(o.id) + (o.kind === "mesh" ? " (mesh, not drawn)" : "")))];
+  const attNames = [...new Set((scene?.attached ?? []).map((o) => `${shortId(o.id)} on ${o.link}`))];
+
   return (
     <div className="plan3d">
       <div ref={host} style={{ position: "absolute", inset: 0 }} />
@@ -233,6 +341,45 @@ export function Plan3D({ plan, planAge, now }: { plan: PlanPreview | null; planA
         ) : (
           <span className="muted">No plan yet this session</span>
         )}
+        {scene && (
+          <>
+            {showVoxels && oct && fresh && (
+              <span>
+                <i style={{ background: HEIGHT_GRADIENT, height: 6 }} />
+                OctoMap {oct.count.toLocaleString()} voxels · {Math.round(oct.resolution * 1000) / 10} cm{oct.truncated ? " · truncated" : ""}
+              </span>
+            )}
+            {showObjects && fresh && objNames.length > 0 && (
+              <span>
+                <i style={{ background: "#5fd38d" }} />
+                {objNames.join(", ")}
+              </span>
+            )}
+            {showObjects && fresh && attNames.length > 0 && (
+              <span>
+                <i style={{ background: "#c58cff" }} />
+                attached: {attNames.join(", ")}
+                {now ? "" : " · hidden (joints stale)"}
+              </span>
+            )}
+            {showObjects && col && (
+              <span>
+                <i style={{ background: "#ff3b30" }} />
+                collision {col.a} / {col.b} · {fmtAge(col.age)} ago{col.frame !== "world" ? ` · in ${col.frame}, not drawn` : ""}
+              </span>
+            )}
+            {sceneNote && <span className="muted">{sceneNote}</span>}
+            {scene.skipped.length > 0 && <span className="muted">not drawn: {scene.skipped.join("; ")}</span>}
+          </>
+        )}
+        <span className="scene-toggles">
+          <button className={`btn sm ${showVoxels ? "on" : ""}`} aria-pressed={showVoxels} onClick={toggleVoxels} title="MoveIt OctoMap: occupied voxels">
+            OctoMap
+          </button>
+          <button className={`btn sm ${showObjects ? "on" : ""}`} aria-pressed={showObjects} onClick={toggleObjects} title="MoveIt collision objects, attached objects and the last collision point">
+            Objects
+          </button>
+        </span>
       </div>
       <div className="caveat">Joint sign/zero conventions not yet checked against RViz</div>
       {plan?.trajectory?.length ? (

@@ -28,6 +28,13 @@ npm run build   # writes ../homeplus_console/static, which the backend serves
 
 React 18 + TypeScript + Vite, `zustand`, plain CSS, `three` + `urdf-loader` for the 3D plan view. The robot model comes from `homeplus_urdf_description`, served by the backend at `/api/robot/urdf`.
 
+**Planning scene in Plan 3D** (`scene.py`, toggles **OctoMap** / **Objects** in the view's legend, both on by default): what MoveIt plans against.
+- While a browser is connected, a worker thread calls `/get_planning_scene` (OCTOMAP | WORLD_OBJECT_GEOMETRY | ROBOT_STATE_ATTACHED_OBJECTS) about once a second. It is read-only and never blocks the snapshot loop.
+- The OctoMap is decoded in pure Python. move_group sends the full stream (`binary: false`); the binary stream is decoded too. Voxels are sent only when the tree changes, as int16 rows from `GET /api/scene/voxels`. They are drawn as cubes coloured by height.
+- World objects (`detected_table`, `detected_cup`) are drawn in world. Attached objects (the held cup) ride on their link of the solid robot.
+- The last `Collision overlay: a / b at world [x, y, z]` line from the executor is shown as a red point with a label.
+- A scene older than 10 s is hidden, and the legend says so. In `--sim` a stub scene (a table, the cup, a wall and the machine as voxels) goes through the same decoder. **Sim faults → Plan rejected: collision** logs a collision line.
+
 ## Tests
 
 ```bash

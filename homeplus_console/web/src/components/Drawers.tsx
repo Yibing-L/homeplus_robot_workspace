@@ -109,6 +109,7 @@ export function SimDrawer({ snap, onClose }: { snap: Snapshot; onClose: () => vo
             <button className="btn sm" onClick={() => simFault("reset_arduino", true)}>Arduino reset (firmware reboot)</button>
             <button className="btn sm" onClick={() => simFault("fail_unit", "hp-moveit")}>Crash hp-moveit</button>
             <button className="btn sm" onClick={() => simFault("link_pause", 6)}>Drop console link 6 s</button>
+            <button className="btn sm" onClick={() => simFault("collision_overlay", true)}>Plan rejected: collision</button>
           </div>
         </div>
         <div className="group muted" style={{ fontSize: 13 }}>
