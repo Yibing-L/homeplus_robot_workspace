@@ -190,6 +190,13 @@ class GestureMotionExecutor(Node):
         self.declare_parameter("detection_stability_tolerance_m", 0.05)
         self.declare_parameter("detection_max_refresh_shift_m", 0.0)
         self.declare_parameter("clear_octomap_before_pose_plan", True)
+        # Held-cup collision height above its measured bottom: 16 oz Solo cup
+        # 12 cm + 0.5 cm margin.
+        self.declare_parameter("held_cup_height_m", 0.125)
+        # Held-cup collision radius: Solo rim 4.75 cm + 0.5 cm. The 6.5 cm pickup
+        # envelope reached under the brew head ~1.75 cm early; there is only 1-2 cm
+        # of real clearance under it (measured 2026-10-30).
+        self.declare_parameter("held_cup_radius_m", 0.0525)
         self.declare_parameter("clear_octomap_service", "/clear_octomap")
         self.declare_parameter("octomap_clear_timeout_sec", 2.0)
         self.declare_parameter("octomap_rebuild_wait_sec", 1.2)
@@ -263,6 +270,8 @@ class GestureMotionExecutor(Node):
         self.max_start_state_error = float(
             self.get_parameter("max_start_state_error").value
         )
+        self.held_cup_height_m = float(self.get_parameter("held_cup_height_m").value)
+        self.held_cup_radius_m = float(self.get_parameter("held_cup_radius_m").value)
         self.clear_octomap_before_pose_plan = bool(
             self.get_parameter("clear_octomap_before_pose_plan").value
         )
@@ -358,6 +367,7 @@ class GestureMotionExecutor(Node):
         self._cup_geometry = None
         self._cup_collision_object = None
         self._holding_cup = False
+        self._cup_map_contact_allowed = False
         self._finger_contacts_pending_restore = False
         self._base_link_height = 0.0
         # Arm reach model for deliberate base placement, built from the URDF.
@@ -588,19 +598,29 @@ class GestureMotionExecutor(Node):
                     return deepcopy(candidate)
 
             if required > 1 and len(samples) >= required:
-                candidates = samples[-required:]
-                xs = sorted(pose.pose.position.x for pose in candidates)
-                ys = sorted(pose.pose.position.y for pose in candidates)
-                zs = sorted(pose.pose.position.z for pose in candidates)
-                middle = required // 2
-                if required % 2:
-                    median_xyz = (xs[middle], ys[middle], zs[middle])
-                else:
-                    median_xyz = (
-                        0.5 * (xs[middle - 1] + xs[middle]),
-                        0.5 * (ys[middle - 1] + ys[middle]),
-                        0.5 * (zs[middle - 1] + zs[middle]),
-                    )
+                # Median of a window of recent samples, then keep those that agree
+                # with it: one outlier no longer resets the wait (a cup ~1 m away
+                # jittered 2-4 cm and never gave 3 consecutive within 2 cm,
+                # 2026-10-30), while two separate objects still can't form a
+                # cluster of `required` around one median.
+                window = samples[-2 * required:]
+
+                def _median(values):
+                    values = sorted(values)
+                    m = len(values) // 2
+                    return values[m] if len(values) % 2 else 0.5 * (values[m - 1] + values[m])
+
+                def _median_xyz(poses):
+                    return (_median([q.pose.position.x for q in poses]),
+                            _median([q.pose.position.y for q in poses]),
+                            _median([q.pose.position.z for q in poses]))
+
+                window_median = _median_xyz(window)
+                candidates = [q for q in window if math.dist(
+                    (q.pose.position.x, q.pose.position.y, q.pose.position.z), window_median) <= tolerance / 2.0]
+                if len(candidates) < required:
+                    candidates = window
+                median_xyz = _median_xyz(candidates)
 
                 max_deviation = max(
                     math.dist(
@@ -625,7 +645,7 @@ class GestureMotionExecutor(Node):
                     stable_pose.pose.position.y = median_xyz[1]
                     stable_pose.pose.position.z = median_xyz[2]
                     self.get_logger().info(
-                        f"  Detection stabilized from {required} samples "
+                        f"  Detection stabilized from {len(candidates)} agreeing samples of {len(window)} "
                         f"(max deviation {max_deviation:.3f} m, cluster diameter "
                         f"{diameter:.3f} m, limit {tolerance:.3f} m): "
                         + ", ".join(f"({p.pose.position.x:.3f}, {p.pose.position.y:.3f}, "
@@ -1023,7 +1043,7 @@ class GestureMotionExecutor(Node):
         if not isinstance(command_cfg, dict):
             return [f"{name}: command must be a mapping"]
 
-        allowed = set("endpoint_profile name type group_name joints value frame_id position orientation rpy_deg target steps task_id detection_topic detection_timeout_sec detection_min_stable_samples detection_stability_tolerance_m detection_max_refresh_shift_m max_replanning_attempts max_attempts settle_sec require_trajectory_approval planner_id allowed_planning_time num_planning_attempts link_name offset_x offset_y offset_z offset_frame orientation_from_detection gripper_value final_gripper_value position_tolerance_m position_tolerance_xy_m position_tolerance_z_m use_orientation_constraint orientation_tolerance_rad orientation_tolerance_x_rad orientation_tolerance_y_rad orientation_tolerance_z_rad safe_z_candidate_offsets_m base_goal_tcp_x_min_m base_goal_tcp_x_max_m base_goal_tcp_y_max_m max_base_goal_rotation_rad max_base_goal_translation_m max_base_goal_y_translation_m preserve_reference_z maintain_orientation_during_path post_delay_sec cartesian mobile_standoff lookahead_offsets velocity_scaling acceleration_scaling clear_octomap_before_plan octomap_clear_timeout_sec octomap_rebuild_wait_sec ik_candidate_attempts attach_cup joint_tolerance hardcoded_detection_pose hardcoded_detection_frame planning_service_timeout_sec phase_allowed_planning_time phase_num_planning_attempts phase_joint_tolerance continue_on_arduino_timeout base_placement heading_from_base max_arm_plane_error_m redo_from_step max_redos detach_cup held_cup_placement base_relative".split())
+        allowed = set("endpoint_profile name type group_name joints value frame_id position orientation rpy_deg target steps task_id detection_topic detection_timeout_sec detection_min_stable_samples detection_stability_tolerance_m detection_max_refresh_shift_m max_replanning_attempts max_attempts settle_sec require_trajectory_approval planner_id allowed_planning_time num_planning_attempts link_name offset_x offset_y offset_z offset_frame orientation_from_detection gripper_value final_gripper_value position_tolerance_m position_tolerance_xy_m position_tolerance_z_m use_orientation_constraint orientation_tolerance_rad orientation_tolerance_x_rad orientation_tolerance_y_rad orientation_tolerance_z_rad safe_z_candidate_offsets_m base_goal_tcp_x_min_m base_goal_tcp_x_max_m base_goal_tcp_y_max_m max_base_goal_rotation_rad max_base_goal_translation_m max_base_goal_y_translation_m preserve_reference_z maintain_orientation_during_path post_delay_sec cartesian mobile_standoff lookahead_offsets velocity_scaling acceleration_scaling clear_octomap_before_plan octomap_clear_timeout_sec octomap_rebuild_wait_sec ik_candidate_attempts attach_cup joint_tolerance hardcoded_detection_pose hardcoded_detection_frame planning_service_timeout_sec phase_allowed_planning_time phase_num_planning_attempts phase_joint_tolerance continue_on_arduino_timeout base_placement heading_from_base max_arm_plane_error_m redo_from_step max_redos detach_cup held_cup_placement base_relative allow_held_cup_map_contact".split())
         if command_cfg.get('endpoint_profile', 'precise') not in ('precise', 'transit'):
             errors.append(f'{name}: endpoint_profile must be precise or transit')
         if command_cfg.get('cartesian') and command_cfg.get('endpoint_profile') == 'transit':
@@ -1109,8 +1129,13 @@ class GestureMotionExecutor(Node):
             keys = {'cup_axis_behind_grasp_point_m', 'release_clearance_m'}
             if action_type != 'sequence' or not isinstance(placing, dict) or set(placing) != keys:
                 errors.append(f'{name}: held_cup_placement must be a sequence mapping with exactly {sorted(keys)}')
-            elif not all(math.isfinite(float(placing[k])) and float(placing[k]) >= 0.0 for k in keys):
-                errors.append(f'{name}: held_cup_placement values must be finite and nonnegative')
+            elif not all(math.isfinite(float(placing[k])) for k in keys) \
+                    or float(placing['cup_axis_behind_grasp_point_m']) < 0.0 \
+                    or float(placing['release_clearance_m']) < -0.02:
+                # A negative clearance (bounded) aims the cup bottom below a surface
+                # reading known to run high, e.g. a tray rim (2026-10-30).
+                errors.append(f'{name}: held_cup_placement values must be finite, the axis offset '
+                              f'nonnegative and release_clearance_m >= -0.02')
         if command_cfg.get('detach_cup') and (action_type != 'gripper' or float(command_cfg.get('value', 90.0)) > 1.0):
             errors.append(f'{name}: detach_cup requires a gripper step that opens (value <= 1)')
         if 'max_redos' in command_cfg:
@@ -1311,6 +1336,12 @@ class GestureMotionExecutor(Node):
             self.get_logger().error(f"Command {command_name} crashed: {exc}")
             self._publish_status(f"Command {command_name} FAILED: {exc}")
         finally:
+            if self._cup_map_contact_allowed:
+                try:
+                    self._set_allowed_collisions(self._CUP_MAP_PAIRS, False)
+                    self._cup_map_contact_allowed = False
+                except Exception as exc:
+                    self.get_logger().error(f'Could not restore held cup<->OctoMap collision checking: {exc}')
             if self._finger_contacts_pending_restore:
                 # A placement released the cup but kept fingers<->OctoMap
                 # contact allowed for the retreat; restore it however the
@@ -1351,6 +1382,11 @@ class GestureMotionExecutor(Node):
         elif action_type == "joint_state":
             joint_msg = self._build_joint_state_message(command_cfg)
             self.joint_target_pub.publish(joint_msg)
+            if command_cfg.get("allow_held_cup_map_contact") and self._holding_cup \
+                    and not self._cup_map_contact_allowed:
+                # e.g. back_up away from an appliance; reset in the finally below
+                self._set_allowed_collisions(self._CUP_MAP_PAIRS, True)
+                self._cup_map_contact_allowed = True
             if self.enable_moveit_planning:
                 context = self._plan_joint_state(command_name, joint_msg, command_cfg)
                 plan_succeeded = bool(
@@ -1481,6 +1517,18 @@ class GestureMotionExecutor(Node):
             step = steps[i]
             step_name = step.get("name", f"step_{i}")
             step_type = step.get("type", "command")
+            # Last approach under an appliance (e.g. the brew head over the drip tray):
+            # the operator-confirmed gap is below what the map resolves, so the held
+            # cup alone may touch map voxels on flagged steps; robot links, the table
+            # box and every other step stay fully checked.
+            # Not tied to holding: after release the hand is still under the appliance
+            # and must be able to back out (retreat_from_cup failed, 2026-10-30).
+            want_cup_contact = bool(step.get("allow_held_cup_map_contact"))
+            if want_cup_contact != self._cup_map_contact_allowed:
+                self._set_allowed_collisions(self._CUP_MAP_PAIRS, want_cup_contact)
+                self._cup_map_contact_allowed = want_cup_contact
+                self.get_logger().info(
+                    f"  {step_name}: held cup <-> map contact {'allowed' if want_cup_contact else 'checked'}")
 
             # Resolve detected positions
             effective_step = step
@@ -2754,6 +2802,12 @@ class GestureMotionExecutor(Node):
         self._report_holding('released')
 
     _FINGER_OCTOMAP_PAIRS = [('<octomap>', 'FingerL_new_1'), ('<octomap>', 'FingerR_new_1')]
+    # Operator-approved final approach (2026-10-30): the held cup and the hand that
+    # carries it may touch map voxels on flagged steps; arm links, base and the table
+    # box stay checked. The hand camera met voxels under the brew head that the
+    # operator judged to be clear.
+    _CUP_MAP_PAIRS = [('<octomap>', 'detected_cup'), ('<octomap>', 'hand_camera_link_1'),
+                      ('<octomap>', 'palm_1'), ('<octomap>', 'wrist_1')]
     _CUP_BOTTOM_SUBFRAME = 'bottom'
 
     def _attach_cup(self):
@@ -2775,10 +2829,15 @@ class GestureMotionExecutor(Node):
                 attached.object.subframe_names.index(self._CUP_BOTTOM_SUBFRAME)].position.z
             cylinder, center = attached.object.primitives[0], attached.object.primitive_poses[0]
             height = cylinder.dimensions[SolidPrimitive.CYLINDER_HEIGHT]
-            top = center.position.z + height / 2.0
+            # Nothing above bottom + held_cup_height_m is cup either: the configured
+            # envelope is 15 cm, the Solo cup 12 cm, and the extra 3 cm hit the
+            # coffee machine's brew head over the tray (2026-10-30).
+            top = min(center.position.z + height / 2.0, bottom_z + self.held_cup_height_m)
             if center.position.z - height / 2.0 < bottom_z < top:
                 cylinder.dimensions[SolidPrimitive.CYLINDER_HEIGHT] = top - bottom_z
                 center.position.z = (top + bottom_z) / 2.0
+            cylinder.dimensions[SolidPrimitive.CYLINDER_RADIUS] = min(
+                cylinder.dimensions[SolidPrimitive.CYLINDER_RADIUS], self.held_cup_radius_m)
         else:
             self.get_logger().warn('Cup has no measured bottom: it can be held but not placed')
         req.scene.robot_state.attached_collision_objects = [attached]

@@ -1073,7 +1073,20 @@ class MolmoPointNode(Node):
                         # Spread of heights (grate slots, rim, depth noise), for
                         # judging the surface estimate; not a rejection.
                         target_diag['surface_z_quartiles'] = [float(low), float(high)]
-                        centroid = np.array([np.median(world[:, 0]), np.median(world[:, 1]), height])
+                        # The target is where the model pointed (2026-10-30: the window
+                        # median mixed the tray with its lip and landed ~4 cm high and
+                        # forward of the model's point). Depth at the point: the median
+                        # of masked depths within +/-4 px, else the nearest masked pixel;
+                        # then along the camera ray through the point to that depth.
+                        near = (abs(cols - u) <= 4) & (abs(rows - v) <= 4)
+                        if np.count_nonzero(near) >= 5:
+                            d_at = float(np.median(points[near][:, 2]))
+                        else:
+                            nearest = int(np.argmin((cols - u) ** 2 + (rows - v) ** 2))
+                            d_at = float(points[nearest, 2])
+                        ray_point = np.array([(u - cx) * d_at / fx, (v - cy) * d_at / fy, d_at])
+                        centroid = rotation @ ray_point + translation
+                        target_diag['surface_point_depth_m'] = round(d_at, 4)
                         # Plane through the masked points (inner 80% by height, so
                         # a rim or stray background pixels don't tip the fit).
                         core = world[(world[:, 2] >= np.quantile(world[:, 2], 0.1))

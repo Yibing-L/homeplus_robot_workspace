@@ -18,7 +18,7 @@ from .tracker import Tracker
 MOTION = {"approve", "start_task", "home", "gripper_open", "gripper_close", "back_up",
           "return_to_start", "undo_step", "undo_sequence", "resume"}
 RECOVERY = ("return_to_start", "undo_step", "undo_sequence", "resume")
-TASK_COMMANDS = {1: "pick_up_coffee", 2: "press_square_button", 7: "place_cup_on_drip_tray"}
+TASK_COMMANDS = {1: "pick_up_coffee", 2: "press_square_button", 7: "place_cup_on_drip_tray", 8: "press_round_button"}
 # Tasks that need the cup in the gripper; every other task refuses to start while holding it
 # (the executor enforces both from the planning scene, this only mirrors it in the UI).
 HOLDING_TASKS = {7}

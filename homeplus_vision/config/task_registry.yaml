@@ -13,7 +13,8 @@ tasks:
 
   2:
     name: press_square_button
-    caption: square button
+    # Both buttons are silver; name the shape and place (2026-10-30).
+    caption: the rectangular silver button on the coffee machine
     command_name: press_square_button
     command_type: sequence
 
@@ -44,4 +45,12 @@ tasks:
     caption: the round drip tray at the base of the coffee machine
     target_geometry: horizontal_surface
     command_name: place_cup_on_drip_tray
+    command_type: sequence
+
+  # Round button on top of the coffee machine, pressed from above (task 8).
+  8:
+    name: press_round_button
+    caption: the round silver button on top of the coffee machine
+    target_geometry: horizontal_surface
+    command_name: press_round_button
     command_type: sequence

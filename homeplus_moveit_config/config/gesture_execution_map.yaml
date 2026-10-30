@@ -54,6 +54,9 @@ commands:
   # Planned on the base group against the OctoMap with the cup attached.
   back_up:
     type: joint_state
+    # Backing away is how to recover when the map disagrees with the held cup or
+    # hand at the current pose (2026-10-30); only those may touch map voxels.
+    allow_held_cup_map_contact: true
     group_name: base
     base_relative: true
     endpoint_profile: transit
@@ -241,6 +244,138 @@ commands:
         allowed_planning_time: 10.0
         num_planning_attempts: 5
 
+  # Round button on top of the machine (task 8): from above, press_tcp pointing
+  # down (+X down = pitch +90 deg), look down from 12 cm, press 0.8 cm, back up,
+  # retract. First runs: approve the approach and the press.
+  press_round_button:
+    type: sequence
+    task_id: 8
+    detection_topic: /molmopoint/task_8/pose
+    detection_timeout_sec: 30.0
+    detection_min_stable_samples: 3
+    detection_stability_tolerance_m: 0.02
+    max_replanning_attempts: 5
+    steps:
+      - name: set_single_contact_point
+        type: gripper
+        value: 70.0
+        max_attempts: 2
+        settle_sec: 1.0
+
+      - name: move_above_round_button
+        endpoint_profile: transit
+        type: pose
+        mobile_standoff: true
+        lookahead_offsets: [[0.0, 0.0, -0.12]]
+        require_trajectory_approval: true
+        velocity_scaling: 0.5
+        acceleration_scaling: 0.5
+        frame_id: world
+        group_name: base_press_arm
+        link_name: press_tcp
+        target: detected
+        orientation_from_detection: false
+        offset_frame: world
+        offset_x: 0.0
+        offset_z: 0.12
+        gripper_value: 70.0
+        rpy_deg: [0.0, 90.0, 0.0]
+        position_tolerance_m: 0.02
+        use_orientation_constraint: true
+        orientation_tolerance_rad: 0.08
+        safe_z_candidate_offsets_m: [0.0]
+        max_replanning_attempts: 3
+        base_goal_tcp_x_min_m: 0.35
+        base_goal_tcp_x_max_m: 0.75
+        base_goal_tcp_y_max_m: 0.20
+        max_base_goal_rotation_rad: 0.20
+        planner_id: RRTConnectkConfigDefault
+        allowed_planning_time: 10.0
+        num_planning_attempts: 5
+
+      - name: refine_round_button
+        type: detect
+        detection_timeout_sec: 30.0
+        detection_min_stable_samples: 2
+        detection_stability_tolerance_m: 0.02
+        preserve_reference_z: false
+
+      - name: align_above_round_button
+        type: pose
+        group_name: press_arm
+        link_name: press_tcp
+        frame_id: world
+        target: detected
+        orientation_from_detection: false
+        offset_frame: world
+        offset_z: 0.10
+        rpy_deg: [0.0, 90.0, 0.0]
+        gripper_value: 70.0
+        position_tolerance_m: 0.005
+        orientation_tolerance_rad: 0.05
+        use_orientation_constraint: true
+        require_trajectory_approval: false
+        clear_octomap_before_plan: true
+        max_replanning_attempts: 2
+
+      - name: press_round_button
+        type: pose
+        clear_octomap_before_plan: false
+        cartesian: true
+        require_trajectory_approval: true
+        velocity_scaling: 0.3
+        acceleration_scaling: 0.3
+        frame_id: world
+        group_name: press_arm
+        link_name: press_tcp
+        target: detected
+        orientation_from_detection: false
+        offset_frame: world
+        offset_z: -0.008
+        gripper_value: 70.0
+        rpy_deg: [0.0, 90.0, 0.0]
+        position_tolerance_m: 0.01
+        use_orientation_constraint: true
+        orientation_tolerance_rad: 0.08
+        maintain_orientation_during_path: true
+        safe_z_candidate_offsets_m: [0.0]
+        max_replanning_attempts: 3
+        post_delay_sec: 1.0
+
+      - name: retreat_up_from_round_button
+        type: pose
+        clear_octomap_before_plan: false
+        cartesian: true
+        require_trajectory_approval: false
+        frame_id: world
+        group_name: press_arm
+        link_name: press_tcp
+        target: detected
+        orientation_from_detection: false
+        offset_frame: world
+        offset_z: 0.12
+        gripper_value: 70.0
+        rpy_deg: [0.0, 90.0, 0.0]
+        position_tolerance_m: 0.01
+        use_orientation_constraint: true
+        orientation_tolerance_rad: 0.08
+        maintain_orientation_during_path: true
+        safe_z_candidate_offsets_m: [0.0]
+        max_replanning_attempts: 3
+
+      - name: retract_arm_after_round_button
+        endpoint_profile: transit
+        type: joint_state
+        require_trajectory_approval: false
+        velocity_scaling: 0.3
+        acceleration_scaling: 0.3
+        group_name: arm
+        joints:
+          joint_shoulder: 0.0
+          joint_elbow: 0.0
+          joint_wrist: 0.0
+          joint_hand: 0.0
+
   pick_up_coffee:
     type: sequence
     task_id: 1
@@ -259,18 +394,11 @@ commands:
 
       # First plan to a standoff pose. This gives MoveIt room to avoid the
       # scene instead of forcing one long motion directly into the object.
-      - name: retract_arm_for_pickup
-        endpoint_profile: transit
-        type: joint_state
-        group_name: arm
-        require_trajectory_approval: false
-        joints:
-          joint_shoulder: 0.0
-          joint_elbow: 0.0
-          joint_wrist: 0.0
-          joint_hand: 0.0
-
       - name: move_to_pregrasp
+        # Keep the map built before the base move (cup in view, cut out). Without the
+        # retract the camera may not see the cup after the base moves, and a
+        # clear-and-wait then aborts (2026-10-30).
+        clear_octomap_before_plan: false
         endpoint_profile: transit
         type: pose
         mobile_standoff: true
@@ -339,7 +467,7 @@ commands:
         # waypoints are out of reach from here, back off and re-place the
         # base from this close-up detection instead.
         max_arm_plane_error_m: 0.02
-        redo_from_step: retract_arm_for_pickup
+        redo_from_step: move_to_pregrasp  # no retract (operator, 2026-10-30)
         max_redos: 1
 
       - name: align_refined_grasp
@@ -475,23 +603,19 @@ commands:
       # Cup bottom this far above the measured tray surface when the gripper
       # opens: covers the close-up surface/bottom measurement error so the arm
       # never pushes the cup into the tray (it then drops at most this much).
-      release_clearance_m: 0.01
+      # -1 cm (2026-10-30): the tray reading runs ~1 cm high (rim/lip), and the hand
+      # camera, ~6 cm above grasp_tcp, meets the brew head unless the cup goes this low.
+      release_clearance_m: -0.01
     steps:
-      # Carry pose: arm upright with the hand pitched up 0.349 rad (the
-      # grasp_tcp mount pitch, palm_to_grasp_tcp) so the cup stays level;
-      # the upright pose with joint_hand 0 would tilt it 20 deg forward.
-      - name: retract_arm_to_carry
-        endpoint_profile: transit
-        type: joint_state
-        group_name: arm
-        require_trajectory_approval: false
-        joints:
-          joint_shoulder: 0.0
-          joint_elbow: 0.0
-          joint_wrist: 0.0
-          joint_hand: 0.349066
-
+      # No carry retract (2026-10-30): straight from the post-pickup pose to the
+      # tray standoff in one collision-checked base+arm motion (the approval).
       - name: move_to_tray_standoff
+        clear_octomap_before_plan: false  # place keeps the map
+        allow_held_cup_map_contact: true
+        # Base+arm transit with the arm out (no retract first): 50% keeps the
+        # shoulder inside its 3 deg tracking limit.
+        velocity_scaling: 0.5
+        acceleration_scaling: 0.5
         endpoint_profile: transit
         type: pose
         mobile_standoff: true
@@ -506,7 +630,8 @@ commands:
           reach_preference: centre
           base_motion: combined
         # Check the slide in over the tray (standoff -> above the tray).
-        lookahead_offsets: [[0.20, 0.0, 0.0]]
+        # Check the slide only as far as the cup actually goes (0.20 - 0.025, see move_over_tray).
+        lookahead_offsets: [[0.19, 0.0, 0.0]]
         require_trajectory_approval: true  # base drive toward the table: operator checks the plan (2026-10-29)
         frame_id: world
         group_name: base_arm
@@ -516,7 +641,8 @@ commands:
         # Cup 20 cm in front of the tray point, 3 cm above the release
         # height: clear of the tray's front lip on the way in.
         offset_x: -0.20
-        offset_z: 0.03
+        # Same height as move_over_tray so the slide under the brew head is level.
+        offset_z: 0.0
         gripper_value: 75.0
         rpy_deg: [0.0, 0.0, 0.0]
         position_tolerance_m: 0.03
@@ -533,6 +659,9 @@ commands:
       # the detection taken at its start, from a pose that can see past the cup.
 
       - name: move_over_tray
+        allow_held_cup_map_contact: true
+        velocity_scaling: 0.3
+        acceleration_scaling: 0.3
         type: pose
         clear_octomap_before_plan: false
         cartesian: true
@@ -543,8 +672,13 @@ commands:
         target: detected
         orientation_from_detection: true
         offset_frame: target
-        offset_x: 0.0
-        offset_z: 0.03
+        # 2026-10-30: the hand camera (~5 cm above grasp_tcp) met the brew head's
+        # front edge; set down 1.5 cm in front of the tray centre (the 6 cm cup base
+        # stays on the 9 cm platform) and slide at release height.
+        offset_x: -0.01  # operator: placed too far forward at -0.025 (15:22)
+        # Slide in just above the release height: the 12 cm cup clears the brew
+        # head over the tray with ~1 cm, not with an extra 3 cm (2026-10-30).
+        offset_z: 0.0
         gripper_value: 75.0
         rpy_deg: [0.0, 0.0, 0.0]
         position_tolerance_m: 0.02
@@ -559,6 +693,9 @@ commands:
 
       # Straight down to the release height (offset_z 0, see above).
       - name: lower_cup_onto_tray
+        allow_held_cup_map_contact: true
+        velocity_scaling: 0.3
+        acceleration_scaling: 0.3
         type: pose
         clear_octomap_before_plan: false
         cartesian: true
@@ -569,7 +706,7 @@ commands:
         target: detected
         orientation_from_detection: true
         offset_frame: target
-        offset_x: 0.0
+        offset_x: -0.01
         offset_z: 0.0
         gripper_value: 75.0
         rpy_deg: [0.0, 0.0, 0.0]
@@ -595,6 +732,7 @@ commands:
 
       # Straight back first: the machine's spout is above the cup.
       - name: retreat_from_cup
+        allow_held_cup_map_contact: true  # backing out from under the brew head
         type: pose
         clear_octomap_before_plan: false
         cartesian: true
@@ -618,6 +756,8 @@ commands:
         num_planning_attempts: 5
 
       - name: retract_arm_after_place
+        allow_held_cup_map_contact: true  # backing out from under the brew head
+        clear_octomap_before_plan: false  # place keeps the map
         endpoint_profile: transit
         type: joint_state
         group_name: arm

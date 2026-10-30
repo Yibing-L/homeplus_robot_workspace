@@ -83,6 +83,15 @@ class ObstacleCloudNode(Node):
         # beside the cup (2026-10-30: 1.0-1.2 cm outside its sides). Appliance
         # targets (tray, button) keep target_padding_m so nearby surfaces stay.
         self.declare_parameter("cup_task_ids", [1])
+        # Never map what the gripper holds: drop points inside the held cup's space
+        # around held_object_frame before MoveIt sees them. MoveIt's own
+        # attached-object filter let the held cup into the map, which then blocked
+        # every move out of the current pose (2026-10-30). Empty frame disables.
+        self.declare_parameter("held_object_frame", "grasp_tcp")
+        self.declare_parameter("held_object_axis_forward_m", 0.043)
+        self.declare_parameter("held_object_radius_m", 0.07)
+        self.declare_parameter("held_object_below_m", 0.12)
+        self.declare_parameter("held_object_above_m", 0.08)
         self.declare_parameter("cup_target_padding_m", 0.02)
         self.declare_parameter("mask_timeout_sec", 1.0)
         self.declare_parameter("clear_octomap_on_mask", False)
@@ -465,6 +474,7 @@ class ObstacleCloudNode(Node):
         )
         if self.table_enable:
             obstacle_points = self._model_table(obstacle_points, object_points, frame_id, msg.header.stamp)
+        obstacle_points = self._remove_held_object(obstacle_points, frame_id, msg.header.stamp)
         header = Header(stamp=msg.header.stamp, frame_id=frame_id)
         self.full_pub.publish(
             point_cloud2.create_cloud_xyz32(header, full_points.tolist())
@@ -783,6 +793,20 @@ class ObstacleCloudNode(Node):
             f"obstacles={obstacle_count} bounds_removed={bounds_removed} "
             f"mask={'active' if mask_active else 'missing'}"
         )
+
+    def _remove_held_object(self, points, frame_id, stamp_msg):
+        frame = str(self.get_parameter("held_object_frame").value).strip()
+        if not frame or not len(points):
+            return points
+        tf = self._lookup_transform(frame, frame_id, stamp_msg)
+        if tf is None:
+            return points
+        local = self._transform_points(points, tf)
+        radial = np.hypot(local[:, 0] - float(self.get_parameter("held_object_axis_forward_m").value), local[:, 1])
+        inside = ((radial < float(self.get_parameter("held_object_radius_m").value))
+                  & (local[:, 2] > -float(self.get_parameter("held_object_below_m").value))
+                  & (local[:, 2] < float(self.get_parameter("held_object_above_m").value)))
+        return points[~inside]
 
     def _remove_target_box(self, obstacle_points, object_points):
         if not len(obstacle_points) or not len(object_points):

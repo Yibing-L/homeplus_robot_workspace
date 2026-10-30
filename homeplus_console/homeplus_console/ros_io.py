@@ -70,7 +70,7 @@ FEEDS = {  # feed id → (topic, max publish-to-browser rate)
 }
 # gesture_behavior_map.yaml / gesture_execution_map.yaml
 COMMAND_TYPES = {"home": ("joint_state", 0), "pick_up_coffee": ("sequence", -1), "press_square_button": ("sequence", -1),
-                 "place_cup_on_drip_tray": ("sequence", -1),
+                 "place_cup_on_drip_tray": ("sequence", -1), "press_round_button": ("sequence", -1),
                  "gripper_open": ("gripper", -1), "gripper_close": ("gripper", -1), "back_up": ("joint_state", 0)}
 DEPTH_RANGE = (0.15, 1.50)
 

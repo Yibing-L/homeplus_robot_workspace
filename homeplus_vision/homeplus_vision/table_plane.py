@@ -118,6 +118,16 @@ def _fit_level(pts, candidates, z_min, z_max, inlier_tol, min_inliers, min_width
     best = int(np.argmax(counts))
     if counts[best] < min_inliers:
         return None
+    if support is not None:
+        # The surface an object stands on is the first level surface below it, not
+        # the largest one in the band: a robot deck/shelf ~8 cm lower out-voted the
+        # strip of table beside the cup (0.62 vs 0.70 m, 2026-10-30). Highest local
+        # peak with enough support.
+        peaks = [i for i in range(len(counts)) if counts[i] >= min_inliers
+                 and (i == 0 or counts[i] >= counts[i - 1])
+                 and (i == len(counts) - 1 or counts[i] >= counts[i + 1])]
+        if peaks:
+            best = max(peaks, key=lambda i: heights[i])
     height = float(np.median(z[np.abs(z - heights[best]) <= inlier_tol]))
     inl = np.abs(z - height) <= inlier_tol
     xy = candidates[inl][:, :2] - candidates[inl][:, :2].mean(axis=0)
