@@ -191,6 +191,48 @@ export interface PlanPreview {
   trajectory: { t: number; joints: Record<string, number> }[];
 }
 
+/** MoveIt planning scene (scene.py), polled ~1 Hz from /get_planning_scene. Poses are {p: [x,y,z], q: [x,y,z,w]}. */
+export interface ScenePrim {
+  id: string;
+  kind: "box" | "sphere" | "cylinder" | "cone" | "mesh" | string;
+  dims: number[]; // SolidPrimitive dimensions: box [x,y,z], sphere [r], cylinder/cone [height, radius]
+  p: number[];
+  q: number[];
+  link?: string; // attached objects: pose is relative to this robot link
+}
+
+export interface SceneView {
+  polling: boolean;
+  age: number | null;
+  stale: boolean;
+  error: string | null;
+  frame: string | null;
+  octomap: {
+    seq: number;
+    id: string;
+    format: "full" | "binary";
+    bytes: number;
+    resolution: number;
+    count: number;
+    truncated: boolean;
+    decode_ms: number | null;
+    error: string | null;
+  } | null;
+  objects: ScenePrim[]; // world frame
+  attached: ScenePrim[];
+  skipped: string[];
+  collision: { a: string; b: string; frame: string; p: number[]; t_wall: number; age: number } | null;
+}
+
+/** GET /api/scene/voxels: base64 little-endian int16 rows (x, y, z, level); centre = (xyz + 2^level/2) * resolution. */
+export interface SceneVoxels {
+  seq: number;
+  count: number;
+  resolution: number | null;
+  origin: { p: number[]; q: number[] };
+  data: string;
+}
+
 export interface Approval {
   plan_id: number | null;
   step: string;
@@ -331,4 +373,5 @@ export interface Snapshot {
   allowed: Record<string, Allowed>;
   control: { holder: string | null; held: boolean; you: boolean };
   sim: Record<string, unknown> | null;
+  scene?: SceneView;
 }

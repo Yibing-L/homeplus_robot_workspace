@@ -20,6 +20,7 @@ from .images import FrameStore
 from .log_filter import LogBuffer
 from . import robot_model
 from .robot_io import RobotIO
+from .scene import SceneWorker
 from .signals import SignalStore
 from .state_machine import FEEDS, Inputs, derive
 from .tracker import Tracker
@@ -40,9 +41,12 @@ class Console:
         self.seq = 0
         self.link_paused_until = 0.0  # sim only: simulate a dropped console link
         self._stop = threading.Event()
+        # MoveIt planning scene for the 3D view: polled on its own thread, only while a browser is connected
+        self.scene = SceneWorker(getattr(io, "fetch_scene", None), logs, store.clock)
 
     def start(self) -> None:
         threading.Thread(target=self._loop, name="derive", daemon=True).start()
+        self.scene.start()
 
     def _loop(self) -> None:
         while not self._stop.is_set():
@@ -98,6 +102,7 @@ class Console:
         state["mode"] = self.io.mode
         state["profile"] = self.profile
         state["sim"] = self.io.fault_state() if self.io.mode == "sim" else None
+        state["scene"] = self.scene.view(now)
         with self._lock:
             self.state = state
         return state
@@ -137,6 +142,7 @@ def create_app(console: Console) -> FastAPI:
                     console.actions.lease.beat(client, console.store.clock())
 
         task = asyncio.create_task(reader())
+        console.scene.clients += 1
         try:
             while True:
                 if time.time() >= console.link_paused_until:
@@ -147,6 +153,7 @@ def create_app(console: Console) -> FastAPI:
         except (WebSocketDisconnect, RuntimeError):
             pass
         finally:
+            console.scene.clients -= 1
             task.cancel()
 
     @app.post("/api/actions/{name}")
@@ -184,6 +191,12 @@ def create_app(console: Console) -> FastAPI:
         if p is None:
             raise HTTPException(404, "no such mesh")
         return FileResponse(p, media_type="model/stl", headers={"Cache-Control": "max-age=3600"})
+
+    @app.get("/api/scene/voxels")
+    async def scene_voxels():
+        # OctoMap occupied voxels: base64 int16 rows (x, y, z, level), centre = (xyz + 2^level / 2) * resolution
+        # in the octree frame placed at `origin` in world. Fetched by the 3D view when snapshot scene.octomap.seq changes.
+        return JSONResponse(console.scene.voxels(), headers={"Cache-Control": "no-store"})
 
     @app.get("/api/logs")
     async def logs(since: int = 0, important: bool = False):
