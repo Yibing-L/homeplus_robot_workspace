@@ -41,6 +41,11 @@ struct ArmPIDConfig {
   int last_pwm;
   float current_pwm_float;
   float current_pwm_speed;
+  // True while the interpolated target for this joint is changing. The hold
+  // deadband applies only to a stationary target: inside a moving trajectory
+  // it froze the PWM and reset current_pwm_speed to zero, so the joint stalled
+  // and then re-accelerated from rest (stick-slip, shoulder lag > 3 deg).
+  bool target_moving;
 };
 
 const JointConfig GRIP = { 0, 90, 1200, 1100 };
@@ -435,6 +440,8 @@ void loop() {
     Serial.print(" shoulder_deg="); Serial.println(dshoulder, 3);
     queueActive = false;
   }
+  ELBOW_PID.target_moving = false;
+  SHOULDER_PID.target_moving = false;
   if (queueActive) {
     // Interpolate the time-parameterized trajectory instead of applying every
     // point at a fixed cadence. Intermediate samples are not stop goals.
@@ -445,6 +452,8 @@ void loop() {
     if (currentCommandIndex < commandCount) {
       const CommandWaypoint& a = commandQueue[currentCommandIndex - 1];
       const CommandWaypoint& b = commandQueue[currentCommandIndex];
+      ELBOW_PID.target_moving = a.value[6] != b.value[6];
+      SHOULDER_PID.target_moving = a.value[7] != b.value[7];
       float u = (elapsed - a.value[10]) / (b.value[10] - a.value[10]);
       CommandWaypoint interpolated;
       for (int j = 0; j < 10; ++j)
@@ -750,7 +759,7 @@ void updateArmJointPID(ArmPIDConfig& joint,
   int base_pwm = armAngleToBasePWM(joint, command_angle);
   int requested_pwm = current_pwm;
 
-  if (abs(joint_error) <= ARM_TARGET_TOLERANCE) {
+  if (abs(joint_error) <= ARM_TARGET_TOLERANCE && !joint.target_moving) {
     // Keep the correction that established this hold; zeroing it causes a
     // PWM discontinuity on the first update outside the deadband.
     joint.current_pwm_float = current_pwm;

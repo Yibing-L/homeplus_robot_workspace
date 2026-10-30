@@ -100,6 +100,15 @@ int main(){
  updateArmJointPID(ELBOW_PID,elbow,elbowPID,heldInput,heldOutput,heldSetpoint,
    armRawToAngle(ELBOW_PID,2048),heldAngle,heldError,heldPWM,.02);
  assert(heldOutput==42);
+ assert(ELBOW_PID.current_pwm_speed==0.0f);
+ // Inside a moving trajectory the hold deadband must not freeze the PWM or
+ // reset the rate limiter's speed (stall, then lurch).
+ ELBOW_PID.target_moving=true;ELBOW_PID.current_pwm_speed=50;
+ updateArmJointPID(ELBOW_PID,elbow,elbowPID,heldInput,heldOutput,heldSetpoint,
+   armRawToAngle(ELBOW_PID,2048)+0.2,heldAngle,heldError,heldPWM,.02);
+ assert(ELBOW_PID.current_pwm_speed!=0.0f && heldPWM!=1500);
+ ELBOW_PID.target_moving=false;heldPWM=1500;
+ ELBOW_PID.current_pwm_float=1500;ELBOW_PID.current_pwm_speed=0;
  assert(commandCount==2 && activeCommandId==42);
  fakeTime=600;lastHostMillis=600;lastArmPIDMillis=600;
  loop();

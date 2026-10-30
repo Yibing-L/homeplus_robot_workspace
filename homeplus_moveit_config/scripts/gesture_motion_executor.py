@@ -3363,6 +3363,10 @@ class GestureMotionExecutor(Node):
         selected = None
         rejections = {}
         diagnosed = False
+        # Base phases honour the step's speed scaling. With {} they were timed at
+        # the joint_limits maximum (1.0 m/s; 40-44 cm/s peaks in the logs), which
+        # the base cannot follow, so it ran saturated and lagged the plan.
+        phase_cfg = {k: cfg[k] for k in ('velocity_scaling', 'acceleration_scaling') if k in cfg}
         def rejected(reason):
             rejections[reason] = rejections.get(reason, 0) + 1
         for candidate in candidates:
@@ -3405,10 +3409,10 @@ class GestureMotionExecutor(Node):
                 here = dict(zip(self.latest_joint_state.name, self.latest_joint_state.position))
                 turn = {'base_x': here['base_x'], 'base_y': here['base_y'], 'base_theta': goal['base_theta']}
                 phases = [(f'{name}/base_turn', turn), (f'{name}/base_drive', goal)]
-            trajectory = self._plan_joint_phase(phases[0][0], 'base', self.latest_joint_state, phases[0][1], {})
+            trajectory = self._plan_joint_phase(phases[0][0], 'base', self.latest_joint_state, phases[0][1], phase_cfg)
             if trajectory is not None and len(phases) > 1:
                 after_turn = self._joint_state_with_updates(phases[0][1])
-                if self._plan_joint_phase(phases[1][0], 'base', after_turn, phases[1][1], {}) is None:
+                if self._plan_joint_phase(phases[1][0], 'base', after_turn, phases[1][1], phase_cfg) is None:
                     trajectory = None
             if trajectory is None:
                 rejected('base path planning failed')
@@ -3422,7 +3426,7 @@ class GestureMotionExecutor(Node):
         for index, (label, target) in enumerate(phases):
             if index:
                 # Later phases start from the measured state the previous one reached.
-                selected = self._plan_joint_phase(label, 'base', self.latest_joint_state, target, {})
+                selected = self._plan_joint_phase(label, 'base', self.latest_joint_state, target, phase_cfg)
                 if selected is None:
                     self.stop_pub.publish(Bool(data=True))
                     raise RuntimeError(f'{label}: no base path from the measured state')
