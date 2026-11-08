@@ -18,7 +18,7 @@ from .tracker import Tracker
 MOTION = {"approve", "start_task", "home", "gripper_open", "gripper_close", "back_up",
           "return_to_start", "undo_step", "undo_sequence", "resume"}
 RECOVERY = ("return_to_start", "undo_step", "undo_sequence", "resume")
-TASK_COMMANDS = {1: "pick_up_coffee", 2: "press_square_button", 7: "place_cup_on_drip_tray"}
+TASK_COMMANDS = {1: "pick_up_coffee", 2: "press_square_button", 7: "place_cup_on_drip_tray", 8: "press_round_button"}
 # Tasks that need the cup in the gripper; every other task refuses to start while holding it
 # (the executor enforces both from the planning scene, this only mirrors it in the UI).
 HOLDING_TASKS = {7}
@@ -213,6 +213,8 @@ class ActionService:
         put("gripper_open", ok, why)
         put("gripper_close", ok, why)
         put("back_up", ok, why)  # relative to the measured base pose: no confirmed origin needed
+        # Choosing a task points the detector at its target right away (no motion).
+        put("select_task", idle is not False, "executor busy")
         n_undo = rec.get("undo_count", 0)
         ok, why = why_motion(bool(caps.get("undo")) and n_undo > 0,
                              "nothing to undo" if caps.get("undo") else "executor has no undo (§7.8 not merged)")
@@ -397,6 +399,13 @@ class ActionService:
             method = "zero" if self.tracker.mem.zero_supported else "reset"
             self.flow = Flow(args.get("reason", "operator request"), operator, now, method)
             return {"status": "confirmed", "detail": f"set-start flow started ({method})"}
+        if name == "select_task":
+            task = int(args.get("task", 1))
+            if task not in TASK_COMMANDS:
+                return {"status": "rejected", "detail": f"unknown task {task}"}
+            self.requested_task = task
+            self.io.set_task_id(task)
+            return {"status": "confirmed", "detail": f"detector on task {task}"}
         if name == "flow_cancel":
             self.flow.status = "cancelled"
             self.tracker.mem.rezero_expected = False

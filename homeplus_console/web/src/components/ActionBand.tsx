@@ -524,7 +524,7 @@ function StartBand({ snap, arm, setArm }: BandProps) {
             const gate = a.start_task?.tasks?.[key];
             return (
               <button key={id} className={`btn sm ${task === id ? "primary" : ""}`} role="radio" aria-checked={task === id}
-                disabled={gate?.allowed === false} title={gate?.reason ?? ""} onClick={() => setTask(id)}>
+                disabled={gate?.allowed === false} title={gate?.reason ?? ""} onClick={() => { setTask(id); act("select_task", { task: id }); }}>
                 {t.radio}
               </button>
             );

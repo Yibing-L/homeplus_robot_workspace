@@ -180,7 +180,7 @@ export function Feeds({ snap }: { snap: Snapshot }) {
           )}
         </div>
       ) : (
-        <Plan3D plan={plan} planAge={snap.approval ? null : snap.plan_preview_age} now={snap.joints.si} />
+        <Plan3D plan={plan} planAge={snap.approval ? null : snap.plan_preview_age} now={snap.joints.si} scene={snap.scene ?? null} />
       )}
       <Detection p={snap.perception} />
     </section>

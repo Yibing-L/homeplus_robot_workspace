@@ -19,7 +19,7 @@ import uuid
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional
 
-from . import sim_render
+from . import scene, sim_render
 from .images import FrameStore
 from .log_filter import LogBuffer
 from .signals import SignalStore
@@ -29,6 +29,8 @@ FOLDED = {"joint_elbow": -35.0, "joint_shoulder": -30.0}
 CUP = (0.95, 0.02, 0.762)          # cup in world (start spot = origin), metres
 SECOND_OBJECT = (0.95, 0.42, 0.765)
 TRAY = (1.10, -0.25, 0.80)         # coffee machine drip tray surface (task 7)
+SIM_TABLE_TOP = 0.712              # planning scene stub: detected_table top (cup base)
+SIM_OCTOMAP_RES = 0.02
 
 EXECUTOR = "gesture_motion_executor"
 BRIDGE = "arduino_bridge"
@@ -245,6 +247,7 @@ class SimWorld:
         self._last_exec_pub = -99.0
         self._last_gpu = -99.0
         self._last_task_poll = -99.0
+        self._sim_octree: Optional[bytes] = None
 
     # ------------------------------------------------------------------ lifecycle
     def start(self) -> None:
@@ -342,6 +345,35 @@ class SimWorld:
     def set_task_id(self, task_id: int) -> None:
         self.task_id = task_id
 
+    def fetch_scene(self) -> Optional[Dict[str, Any]]:
+        """Planning scene stub, in the shape ros_io.fetch_scene returns: the table box, the cup (a world
+        object, or attached to grasp_tcp while held) and a few OctoMap voxels (a wall behind the table and
+        the coffee machine), encoded as the full OcTree stream move_group sends, so the decoder runs too."""
+        if not self.supervisor.is_active("hp-moveit"):
+            return {"error": "/get_planning_scene not available (move_group down?)"}
+        if self._sim_octree is None:
+            r = SIM_OCTOMAP_RES
+            pts = [(1.62, y * r, 0.72 + z * r) for y in range(-25, 26) for z in range(0, 30)]       # wall
+            box = [(1.04 + x * r, TRAY[1] - 0.15 + y * r, SIM_TABLE_TOP + 0.01 + z * r)            # machine
+                   for x in range(0, 11) for y in range(0, 16) for z in range(0, 18)]
+            pts += [p for p in box if p[2] >= TRAY[2] + 0.12 or p[0] >= 1.20 or abs(p[1] - TRAY[1]) >= 0.13]
+            self._sim_octree = scene.encode_octree(pts, r, binary=False)
+        h = SIM_TABLE_TOP - 0.02
+        objects = [{"id": "detected_table", "kind": "box", "dims": [0.66, 1.04, 0.04], "p": [1.20, 0.0, h],
+                    "q": [0.0, 0.0, 0.0, 1.0]}]
+        attached = []
+        with self._lock:
+            holding = self.holding_cup
+        if holding:
+            attached.append({"id": "detected_cup", "link": "grasp_tcp", "kind": "cylinder", "dims": [0.125, 0.0525],
+                             "p": [0.073, -0.008, -0.021], "q": [0.0, 0.0, 0.0, 1.0]})
+        else:
+            objects.append({"id": "detected_cup", "kind": "cylinder", "dims": [0.10, 0.04],
+                            "p": [CUP[0], CUP[1], SIM_TABLE_TOP + 0.05], "q": [0.0, 0.0, 0.0, 1.0]})
+        return {"frame": "world", "objects": objects, "attached": attached, "skipped": [],
+                "octomap": {"id": "OcTree", "binary": False, "resolution": SIM_OCTOMAP_RES, "data": self._sim_octree,
+                            "origin": {"p": [0.0, 0.0, 0.0], "q": [0.0, 0.0, 0.0, 1.0]}}}
+
     def external_instance(self, unit: str) -> List[str]:
         if unit == "hp-bridge" and self.faults.external_bridge:
             return ["$HOME/ttyArduino is open by pid 4242 (python3 arduino_reader.py --port $HOME/ttyArduino) [sim]"]
@@ -391,6 +423,11 @@ class SimWorld:
             if name == "abort_scenario":
                 # A realistic abort: the camera died, the detector sat on stale frames, refine timed out.
                 self.faults.detector_scenario = "stale_frames"
+                return {"ok": True}
+            if name == "collision_overlay":
+                # what the executor logs when it rejects a plan for a contact (_publish_collision_debug)
+                self.logs.add(EXECUTOR, "WARN", "Collision overlay: palm_1 / detected_table at world "
+                              f"[{CUP[0] - 0.08:.3f}, {CUP[1] + 0.03:.3f}, {SIM_TABLE_TOP + 0.005:.3f}]")
                 return {"ok": True}
             if name == "fail_unit":
                 self.supervisor.fail(str(value))

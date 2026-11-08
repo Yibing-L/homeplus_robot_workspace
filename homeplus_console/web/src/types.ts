@@ -191,6 +191,65 @@ export interface PlanPreview {
   trajectory: { t: number; joints: Record<string, number> }[];
 }
 
+/** MoveIt planning scene (scene.py), polled ~1 Hz from /get_planning_scene. Poses are {p: [x,y,z], q: [x,y,z,w]}. */
+export interface ScenePrim {
+  id: string;
+  kind: "box" | "sphere" | "cylinder" | "cone" | "mesh" | string;
+  dims: number[]; // SolidPrimitive dimensions: box [x,y,z], sphere [r], cylinder/cone [height, radius]
+  p: number[];
+  q: number[];
+  link?: string; // attached objects: pose is relative to this robot link
+  triangles?: number; // kind "mesh": triangle count
+}
+
+export interface SceneView {
+  polling: boolean;
+  age: number | null;
+  stale: boolean;
+  error: string | null;
+  frame: string | null;
+  octomap: {
+    seq: number;
+    id: string;
+    format: "full" | "binary";
+    bytes: number;
+    resolution: number;
+    count: number;
+    truncated: boolean;
+    decode_ms: number | null;
+    error: string | null;
+  } | null;
+  /** nvblox collision mesh (world mesh objects); null with an OctoMap or no map. Fetched from /api/scene/mesh by seq. */
+  mesh: {
+    seq: number;
+    ids: string[];
+    triangles: number; // sent to the browser (thinned beyond the cap)
+    total_triangles: number; // in the planning scene
+    truncated: boolean;
+    error: string | null;
+  } | null;
+  objects: ScenePrim[]; // world frame
+  attached: ScenePrim[];
+  skipped: string[];
+  collision: { a: string; b: string; frame: string; p: number[]; t_wall: number; age: number } | null;
+}
+
+/** GET /api/scene/voxels: base64 little-endian int16 rows (x, y, z, level); centre = (xyz + 2^level/2) * resolution. */
+export interface SceneVoxels {
+  seq: number;
+  count: number;
+  resolution: number | null;
+  origin: { p: number[]; q: number[] };
+  data: string;
+}
+
+/** GET /api/scene/mesh: per object a world pose, base64 LE float32 vertices (x, y, z) and uint32 triangles (a, b, c). */
+export interface SceneMesh {
+  seq: number;
+  triangles: number;
+  objects: { id: string; pose: { p: number[]; q: number[] }; vertex_count: number; triangle_count: number; vertices: string; triangles: string }[];
+}
+
 export interface Approval {
   plan_id: number | null;
   step: string;
@@ -331,4 +390,5 @@ export interface Snapshot {
   allowed: Record<string, Allowed>;
   control: { holder: string | null; held: boolean; you: boolean };
   sim: Record<string, unknown> | null;
+  scene?: SceneView;
 }

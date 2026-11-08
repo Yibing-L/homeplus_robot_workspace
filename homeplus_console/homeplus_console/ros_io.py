@@ -37,15 +37,17 @@ from std_srvs.srv import Trigger
 
 from .images import FrameStore
 from .log_filter import LogBuffer, parse_status_text
+from .scene import IDENTITY, compose
 from .signals import SignalStore
 from .supervisor import SystemdSupervisor
 
 try:  # optional: only needed for the degraded-mode plan preview and MoveIt readiness
     from moveit_msgs.action import MoveGroup
-    from moveit_msgs.msg import DisplayTrajectory
+    from moveit_msgs.msg import DisplayTrajectory, PlanningSceneComponents
+    from moveit_msgs.srv import GetPlanningScene
     from rclpy.action import ActionClient
 except ImportError:  # pragma: no cover
-    MoveGroup = DisplayTrajectory = ActionClient = None
+    MoveGroup = DisplayTrajectory = ActionClient = PlanningSceneComponents = GetPlanningScene = None
 
 try:
     from homeplus_interfaces.msg import GestureCommand
@@ -70,9 +72,11 @@ FEEDS = {  # feed id → (topic, max publish-to-browser rate)
 }
 # gesture_behavior_map.yaml / gesture_execution_map.yaml
 COMMAND_TYPES = {"home": ("joint_state", 0), "pick_up_coffee": ("sequence", -1), "press_square_button": ("sequence", -1),
-                 "place_cup_on_drip_tray": ("sequence", -1),
+                 "place_cup_on_drip_tray": ("sequence", -1), "press_round_button": ("sequence", -1),
                  "gripper_open": ("gripper", -1), "gripper_close": ("gripper", -1), "back_up": ("joint_state", 0)}
 DEPTH_RANGE = (0.15, 1.50)
+PRIMITIVES = {1: "box", 2: "sphere", 3: "cylinder", 4: "cone"}  # shape_msgs/SolidPrimitive types
+SCENE_TIMEOUT = 3.0
 
 
 def image_to_pil(msg: Image) -> Optional[PILImage.Image]:
@@ -102,6 +106,14 @@ def image_to_pil(msg: Image) -> Optional[PILImage.Image]:
     except ValueError:
         return None
     return None
+
+
+def _pose(p: Any) -> Dict[str, List[float]]:
+    """geometry_msgs/Pose → {"p", "q"}; an all-zero quaternion (unset) counts as identity."""
+    if p is None:
+        return IDENTITY
+    q = [p.orientation.x, p.orientation.y, p.orientation.z, p.orientation.w]
+    return {"p": [p.position.x, p.position.y, p.position.z], "q": q if any(q) else [0.0, 0.0, 0.0, 1.0]}
 
 
 class _Fallback:
@@ -259,6 +271,10 @@ class RosIO:
         self._getp = n.create_client(GetParameters, "/molmopoint/get_parameters", callback_group=cb)
         self._setp = n.create_client(SetParameters, "/molmopoint/set_parameters", callback_group=cb)
         self._move = ActionClient(n, MoveGroup, "/move_action", callback_group=cb) if MoveGroup else None
+        self._mesh_cache: Dict[Any, Any] = {}  # fetch_scene (SceneWorker thread only)
+        # read-only: the console never applies or clears anything through this client
+        self._scene_cli = n.create_client(GetPlanningScene, "/get_planning_scene", callback_group=cb) \
+            if GetPlanningScene else None
         if tf2_ros is not None:
             self._tf_buf = tf2_ros.Buffer()
             self._tf_listener = tf2_ros.TransformListener(self._tf_buf, n)
@@ -553,6 +569,106 @@ class RosIO:
         # mapper logs a rejected or timed-out reset itself.
         self._map_clear_cli.call_async(Trigger.Request())
         return True
+
+    def fetch_scene(self) -> Optional[Dict[str, Any]]:
+        """Blocking (SceneWorker thread): /get_planning_scene OCTOMAP | WORLD_OBJECT_GEOMETRY |
+        ROBOT_STATE_ATTACHED_OBJECTS → world-frame objects, link-relative attached objects, raw octree."""
+        if self._node is None:
+            return None
+        if self._scene_cli is None:
+            return {"error": "moveit_msgs not importable"}
+        if not self._scene_cli.service_is_ready():
+            return {"error": "/get_planning_scene not available (move_group down?)"}
+        C = PlanningSceneComponents
+        req = GetPlanningScene.Request()
+        req.components.components = C.OCTOMAP | C.WORLD_OBJECT_GEOMETRY | C.ROBOT_STATE_ATTACHED_OBJECTS
+        done = threading.Event()
+        fut = self._scene_cli.call_async(req)
+        fut.add_done_callback(lambda _f: done.set())
+        if not done.wait(SCENE_TIMEOUT):
+            fut.cancel()
+            return {"error": f"/get_planning_scene timed out ({SCENE_TIMEOUT:.0f} s)"}
+        sc = fut.result().scene
+        out: Dict[str, Any] = {"frame": "world", "objects": [], "attached": [], "octomap": None, "meshes": [],
+                               "skipped": []}
+        for co in sc.world.collision_objects:
+            base = self._world_from(co.header.frame_id)
+            if base is None:
+                out["skipped"].append(f"{co.id}: no TF world←{co.header.frame_id}")
+                continue
+            obj_pose = compose(base, _pose(getattr(co, "pose", None)))
+            out["objects"] += self._prims(co, obj_pose)
+            # With nvblox the collision map is the world mesh object 'nvblox_environment' (no OctoMap).
+            out["meshes"] += self._mesh_arrays(co, obj_pose)
+        for aco in sc.robot_state.attached_collision_objects:
+            co = aco.object
+            rel = IDENTITY if co.header.frame_id in ("", aco.link_name) else self._tf_pose(aco.link_name, co.header.frame_id)
+            if rel is None:
+                out["skipped"].append(f"{co.id}: no TF {aco.link_name}←{co.header.frame_id}")
+                continue
+            out["attached"] += [dict(o, link=aco.link_name)
+                                for o in self._prims(co, compose(rel, _pose(getattr(co, "pose", None))))]
+        om = sc.world.octomap
+        if om.octomap.data:
+            base = self._world_from(om.header.frame_id)
+            if base is None:
+                out["skipped"].append(f"octomap: no TF world←{om.header.frame_id}")
+            else:
+                out["octomap"] = {"id": om.octomap.id, "binary": bool(om.octomap.binary),
+                                  "resolution": float(om.octomap.resolution),
+                                  "data": np.asarray(om.octomap.data, dtype=np.int8).tobytes(),
+                                  "origin": compose(base, _pose(om.origin))}
+        return out
+
+    @staticmethod
+    def _prims(co: Any, base: Dict[str, List[float]]) -> List[Dict[str, Any]]:
+        out = []
+        for prim, pp in zip(co.primitives, co.primitive_poses):
+            w = compose(base, _pose(pp))
+            out.append({"id": co.id, "kind": PRIMITIVES.get(prim.type, f"type {prim.type}"),
+                        "dims": [round(float(v), 4) for v in prim.dimensions],
+                        "p": [round(v, 4) for v in w["p"]], "q": [round(v, 5) for v in w["q"]]})
+        if co.meshes:  # world meshes are drawn from "meshes" (scene.mesh); listed here for the legend
+            out.append({"id": co.id, "kind": "mesh", "dims": [], "p": [round(v, 4) for v in base["p"]], "q": base["q"],
+                        "triangles": sum(len(m.triangles) for m in co.meshes)})
+        return out
+
+    def _mesh_arrays(self, co: Any, base: Dict[str, List[float]]) -> List[Dict[str, Any]]:
+        """shape_msgs/Mesh → float32 vertex / uint32 triangle bytes in a world pose, for SceneWorker.
+
+        The nvblox mesh can hold ~10^5 triangles; converting the message lists costs a few hundred ms, so
+        the arrays are cached per object and rebuilt only when the counts or sampled vertices change."""
+        out = []
+        for i, mesh in enumerate(co.meshes):
+            nv, nt = len(mesh.vertices), len(mesh.triangles)
+            if not nv or not nt:
+                continue
+            mp = co.mesh_poses[i] if i < len(co.mesh_poses) else None
+            pose = compose(base, _pose(mp))
+            sample = tuple((p.x, p.y, p.z) for p in (mesh.vertices[0], mesh.vertices[nv // 2], mesh.vertices[-1]))
+            key = (nv, nt, sample)
+            cached = self._mesh_cache.get((co.id, i))
+            if cached is None or cached[0] != key:
+                verts = np.fromiter((c for p in mesh.vertices for c in (p.x, p.y, p.z)), np.float32, count=3 * nv)
+                tris = np.fromiter((int(k) for t in mesh.triangles for k in t.vertex_indices), np.uint32, count=3 * nt)
+                cached = (key, verts.astype("<f4").tobytes(), tris.astype("<u4").tobytes())
+                self._mesh_cache[(co.id, i)] = cached
+            out.append({"id": co.id if len(co.meshes) == 1 else f"{co.id}#{i}", "pose": pose,
+                        "vertices": cached[1], "triangles": cached[2]})
+        return out
+
+    def _world_from(self, frame: str) -> Optional[Dict[str, List[float]]]:
+        return IDENTITY if frame in ("", "world") else self._tf_pose("world", frame)
+
+    def _tf_pose(self, target: str, source: str) -> Optional[Dict[str, List[float]]]:
+        if tf2_ros is None:
+            return None
+        try:
+            t = self._tf_buf.lookup_transform(target, source, rclpy.time.Time()).transform
+        except Exception:  # noqa: BLE001 (tf2 raises several types)
+            return None
+        return {"p": [t.translation.x, t.translation.y, t.translation.z],
+                "q": [t.rotation.x, t.rotation.y, t.rotation.z, t.rotation.w]}
 
     def set_task_id(self, task_id: int) -> None:
         if not self._setp.service_is_ready():
