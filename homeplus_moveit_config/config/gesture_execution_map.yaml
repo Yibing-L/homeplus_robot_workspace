@@ -141,6 +141,8 @@ commands:
       # short final approach. press_tcp is the selected fingertip at gripper 70
       # and its +X points forward at world RPY 0/0/0.
       - name: move_to_button_standoff
+        # The closed fingers press into the appliance face; only they may touch map voxels.
+        allow_finger_map_contact: true
         endpoint_profile: transit
         type: pose
         mobile_standoff: true
@@ -184,6 +186,10 @@ commands:
         preserve_reference_z: false
 
       - name: align_refined_button
+        acceleration_scaling: 0.3  # elbow TRACKING_ERROR at 0.5 on align_refined_button (2026-11-08)
+        velocity_scaling: 0.3  # elbow TRACKING_ERROR at 0.5 on align_refined_button (2026-11-08)
+        # The closed fingers press into the appliance face; only they may touch map voxels.
+        allow_finger_map_contact: true
         heading_from_base: true  # planar arm: tool yaw = base heading
         type: pose
         group_name: press_arm
@@ -202,6 +208,10 @@ commands:
         max_replanning_attempts: 2
 
       - name: press_button
+        acceleration_scaling: 0.3  # elbow TRACKING_ERROR at 0.5 on align_refined_button (2026-11-08)
+        velocity_scaling: 0.3  # elbow TRACKING_ERROR at 0.5 on align_refined_button (2026-11-08)
+        # The closed fingers press into the appliance face; only they may touch map voxels.
+        allow_finger_map_contact: true
         contact_ends_step: true  # guarded press: a stall here = contact
         heading_from_base: true  # planar arm: tool yaw = base heading
         type: pose
@@ -214,7 +224,7 @@ commands:
         target: detected
         orientation_from_detection: true
         offset_frame: target
-        offset_x: 0.01
+        offset_x: 0.03  # 3 cm past the surface: the button is firm; 1 cm reached it without a click (2026-11-08)
         offset_z: 0
         gripper_value: 75.0
         rpy_deg: [0.0, 0.0, 0.0]
@@ -230,6 +240,10 @@ commands:
         post_delay_sec: 1.0
 
       - name: retreat_from_button
+        acceleration_scaling: 0.15  # shoulder TRACKING_ERROR at 0.3 lifting out of the press (2026-11-08)
+        velocity_scaling: 0.15  # shoulder TRACKING_ERROR at 0.3 lifting out of the press (2026-11-08)
+        # The closed fingers press into the appliance face; only they may touch map voxels.
+        allow_finger_map_contact: true
         type: pose
         clear_octomap_before_plan: false
         cartesian: true
@@ -271,10 +285,12 @@ commands:
         settle_sec: 1.0
 
       - name: move_above_round_button
+        # The closed fingers press into the appliance face; only they may touch map voxels.
+        allow_finger_map_contact: true
         endpoint_profile: transit
         type: pose
         mobile_standoff: true
-        lookahead_offsets: [[0.0, 0.0, -0.12]]
+        lookahead_offsets: [[0.15, 0.0, 0.0]]
         require_trajectory_approval: true
         velocity_scaling: 0.5
         acceleration_scaling: 0.5
@@ -282,12 +298,10 @@ commands:
         group_name: base_press_arm
         link_name: press_tcp
         target: detected
-        orientation_from_detection: false
-        offset_frame: world
-        offset_x: 0.0
-        offset_z: 0.12
+        orientation_from_detection: true
+        offset_frame: target
+        offset_x: -0.12  # along the 60 deg press line (2026-11-08)
         gripper_value: 75.0
-        rpy_deg: [0.0, 90.0, 0.0]
         position_tolerance_m: 0.02
         use_orientation_constraint: true
         orientation_tolerance_rad: 0.08
@@ -309,16 +323,19 @@ commands:
         preserve_reference_z: false
 
       - name: align_above_round_button
+        acceleration_scaling: 0.3  # elbow TRACKING_ERROR at 0.5 on align_refined_button (2026-11-08)
+        velocity_scaling: 0.3  # elbow TRACKING_ERROR at 0.5 on align_refined_button (2026-11-08)
+        # The closed fingers press into the appliance face; only they may touch map voxels.
+        allow_finger_map_contact: true
         heading_from_base: true
         type: pose
         group_name: press_arm
         link_name: press_tcp
         frame_id: world
         target: detected
-        orientation_from_detection: false
-        offset_frame: world
-        offset_z: 0.10
-        rpy_deg: [0.0, 90.0, 0.0]
+        orientation_from_detection: true
+        offset_frame: target
+        offset_x: -0.12  # along the 60 deg press line (2026-11-08)
         gripper_value: 75.0
         position_tolerance_m: 0.005
         orientation_tolerance_rad: 0.05
@@ -328,23 +345,24 @@ commands:
         max_replanning_attempts: 2
 
       - name: press_round_button
+        # The closed fingers press into the appliance face; only they may touch map voxels.
+        allow_finger_map_contact: true
         contact_ends_step: true  # guarded press: a stall here = contact
         heading_from_base: true
         type: pose
         clear_octomap_before_plan: false
         cartesian: true
         require_trajectory_approval: true
-        velocity_scaling: 0.3
-        acceleration_scaling: 0.3
+        velocity_scaling: 0.3  # elbow TRACKING_ERROR at 0.5 on align_refined_button (2026-11-08)
+        acceleration_scaling: 0.3  # elbow TRACKING_ERROR at 0.5 on align_refined_button (2026-11-08)
         frame_id: world
         group_name: press_arm
         link_name: press_tcp
         target: detected
-        orientation_from_detection: false
-        offset_frame: world
-        offset_z: -0.008
+        orientation_from_detection: true
+        offset_frame: target
+        offset_x: 0.03  # along the 60 deg press line (2026-11-08)
         gripper_value: 75.0
-        rpy_deg: [0.0, 90.0, 0.0]
         position_tolerance_m: 0.01
         use_orientation_constraint: true
         orientation_tolerance_rad: 0.08
@@ -354,6 +372,10 @@ commands:
         post_delay_sec: 1.0
 
       - name: retreat_up_from_round_button
+        acceleration_scaling: 0.15  # shoulder TRACKING_ERROR at 0.3 lifting out of the press (2026-11-08)
+        velocity_scaling: 0.15  # shoulder TRACKING_ERROR at 0.3 lifting out of the press (2026-11-08)
+        # The closed fingers press into the appliance face; only they may touch map voxels.
+        allow_finger_map_contact: true
         heading_from_base: true
         type: pose
         clear_octomap_before_plan: false
@@ -363,11 +385,10 @@ commands:
         group_name: press_arm
         link_name: press_tcp
         target: detected
-        orientation_from_detection: false
-        offset_frame: world
-        offset_z: 0.12
+        orientation_from_detection: true
+        offset_frame: target
+        offset_x: -0.12  # along the 60 deg press line (2026-11-08)
         gripper_value: 75.0
-        rpy_deg: [0.0, 90.0, 0.0]
         position_tolerance_m: 0.01
         use_orientation_constraint: true
         orientation_tolerance_rad: 0.08
@@ -407,10 +428,11 @@ commands:
       # First plan to a standoff pose. This gives MoveIt room to avoid the
       # scene instead of forcing one long motion directly into the object.
       - name: move_to_pregrasp
-        # Keep the map built before the base move (cup in view, cut out). Without the
-        # retract the camera may not see the cup after the base moves, and a
-        # clear-and-wait then aborts (2026-10-30).
-        clear_octomap_before_plan: false
+        # Rebuild the map from the current view before planning: stale voxels where
+        # the cup stood on an earlier attempt blocked the approach (2026-11-08). This
+        # was off because the clear never got a fresh cloud; that was the obstacle
+        # node's TF bug, fixed 2026-11-08. A failed wait retries on the kept map.
+        clear_octomap_before_plan: true
         endpoint_profile: transit
         type: pose
         mobile_standoff: true
@@ -506,6 +528,9 @@ commands:
         type: pose
         clear_octomap_before_plan: false
         cartesian: true
+        # Full joint_limits.yaml speed, matching the smooth OMPL move_to_pregrasp (2026-11-08).
+        velocity_scaling: 1.0
+        acceleration_scaling: 1.0
         require_trajectory_approval: false
         frame_id: world
         group_name: arm
@@ -527,7 +552,7 @@ commands:
         planner_id: RRTConnectkConfigDefault
         allowed_planning_time: 5.0
         num_planning_attempts: 3
-        post_delay_sec: 3.0
+        post_delay_sec: 0.5
 
       - name: close_gripper_at_target
         type: gripper
@@ -536,7 +561,7 @@ commands:
         # Retry only if no DONE acknowledgement arrives. A successful close is
         # not repeated unnecessarily.
         max_attempts: 2
-        settle_sec: 2.0
+        settle_sec: 1.0
 
       - name: lift
         type: pose
@@ -545,6 +570,8 @@ commands:
         # unmasked surface) stay and collide with the held cup (2026-10-29).
         clear_octomap_before_plan: true
         cartesian: true
+        velocity_scaling: 0.3  # carries the cup; 0.5 tripped shoulder TRACKING_ERROR (2026-11-08)
+        acceleration_scaling: 0.3  # carries the cup; 0.5 tripped shoulder TRACKING_ERROR (2026-11-08)
         require_trajectory_approval: false
         frame_id: world
         group_name: arm
@@ -571,6 +598,8 @@ commands:
         # unmasked surface) stay and collide with the held cup (2026-10-29).
         clear_octomap_before_plan: true
         cartesian: true
+        velocity_scaling: 0.3  # carries the cup; 0.5 tripped shoulder TRACKING_ERROR (2026-11-08)
+        acceleration_scaling: 0.3  # carries the cup; 0.5 tripped shoulder TRACKING_ERROR (2026-11-08)
         require_trajectory_approval: false
         frame_id: world
         group_name: arm
@@ -596,6 +625,13 @@ commands:
   place_cup_on_drip_tray:
     type: sequence
     task_id: 7
+    # The tray height is fixed above the floor (world z), so it survives set-start.
+    # A reading more than 2 cm off the remembered height is the hand camera's
+    # pose-dependent error; keep live x/y, use the remembered height.
+    # Prior = median of 11 consistent readings on 2026-10-30 (0.780-0.791).
+    surface_height_memory: drip_tray
+    surface_height_prior_m: 0.787
+    surface_height_tolerance_m: 0.02
     detection_topic: /molmopoint/task_7/pose
     detection_timeout_sec: 30.0
     detection_min_stable_samples: 3

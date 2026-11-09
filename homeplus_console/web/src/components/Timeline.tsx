@@ -131,7 +131,6 @@ export function Timeline({ snap }: { snap: Snapshot }) {
 // Detection history (§4.2): the last poses the start gate is judged on, newest first.
 function DetectionHistory({ snap }: { snap: Snapshot }) {
   const w = snap.perception.window;
-  const [lo, hi] = w.z_band;
   const rows = [...w.samples].reverse().slice(0, 8);
   const st = snap.perception.state;
   const untrusted = ["CAMERA_DOWN", "CAMERA_FROZEN", "DETECTOR_OLD_FRAMES", "DETECTOR_DOWN"].includes(st);
@@ -141,7 +140,7 @@ function DetectionHistory({ snap }: { snap: Snapshot }) {
       <div className="undo-head">
         <span className="label">Detections · task {w.task_id}</span>
         <span className="muted" style={{ fontSize: 12 }}>
-          {w.consecutive} consecutive · spread {w.spread_cm ?? "—"} cm · z band {lo.toFixed(2)}–{hi.toFixed(2)} m
+          {w.consecutive} consecutive · spread {w.spread_cm ?? "—"} cm
         </span>
       </div>
       {rows.length === 0 ? (
@@ -158,7 +157,7 @@ function DetectionHistory({ snap }: { snap: Snapshot }) {
           </thead>
           <tbody>
             {rows.map((r, i) => (
-              <tr key={i} className={r.z < lo || r.z > hi ? "out" : ""}>
+              <tr key={i}>
                 <td>{r.age.toFixed(1)} s</td>
                 <td>{r.x.toFixed(3)}</td>
                 <td>{r.y.toFixed(3)}</td>

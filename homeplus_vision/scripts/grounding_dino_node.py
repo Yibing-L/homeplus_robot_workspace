@@ -485,6 +485,27 @@ class MolmoPointNode(Node):
             return None
         return table[0]
 
+    def _above_surface_memory(self, task_id, z) -> Optional[str]:
+        """Reason to reject a support-surface candidate far above the remembered
+        height (e.g. a ledge above the drip tray), else None."""
+        task = self.tasks.get(task_id, {})
+        key = task.get('surface_height_memory')
+        if not key:
+            return None
+        try:
+            with open(os.path.expanduser('~/.homeplus/surface_heights.json')) as fh:
+                history = json.load(fh).get(key, {}).get('z_history', [])
+        except (OSError, ValueError):
+            return None
+        if not history:
+            return None
+        remembered = float(np.median(history))
+        limit = float(task.get('surface_max_above_memory_m', 0.04))
+        if z - remembered > limit:
+            return (f'above_remembered_surface: {z:.3f} m is {z - remembered:+.3f} m above the '
+                    f'remembered {key} height {remembered:.3f} m (limit {limit:.2f}); likely a ledge above it')
+        return None
+
     def _inside_held_object(self, point_world, stamp) -> Optional[str]:
         """Reason to reject a placement target inside the held-object volume around
         held_object_frame, else None (also None when that frame has no TF)."""
@@ -983,6 +1004,13 @@ class MolmoPointNode(Node):
                                     <= float(self.get_parameter('cup_bottom_from_table_max_diff_m').value)):
                                 target_diag['cup_bottom_from_table'] = [float(bottom), float(table_z)]
                                 bottom = table_z
+                            if table_z is not None and bottom < table_z:
+                                # A cup standing on the table cannot start below
+                                # it. One-sided: only raises the grasp, so a bad
+                                # table fit errs high (2026-11-08: noisy extent put
+                                # the bottom 4.6 cm under the table; palm hit it).
+                                target_diag['cup_bottom_raised_to_table'] = [float(bottom), float(table_z)]
+                                bottom = table_z
                             cup_bottom_z = float(bottom)
                             target_diag['near_cluster_z'] = float(surface_world[2])
                             surface_world[2] = 0.5 * (bottom + top)
@@ -1122,31 +1150,75 @@ class MolmoPointNode(Node):
                         else:
                             nearest = int(np.argmin((cols - u) ** 2 + (rows - v) ** 2))
                             d_at = float(points[nearest, 2])
-                        ray_point = np.array([(u - cx) * d_at / fx, (v - cy) * d_at / fy, d_at])
-                        centroid = rotation @ ray_point + translation
                         target_diag['surface_point_depth_m'] = round(d_at, 4)
-                        # Plane through the masked points (inner 80% by height, so
-                        # a rim or stray background pixels don't tip the fit).
-                        core = world[(world[:, 2] >= np.quantile(world[:, 2], 0.1))
-                                     & (world[:, 2] <= np.quantile(world[:, 2], 0.9))]
-                        normal = np.linalg.svd(core - core.mean(axis=0), full_matrices=False)[2][-1]
-                        tilt = float(np.degrees(np.arccos(min(1.0, abs(normal[2])))))
+                        # Level surface where a cup would stand. The drip tray is a
+                        # grate: depth hits the bars and, through the slots, the
+                        # basin below, so a plane through all window points tipped
+                        # 30-70 deg and the point depth jumped between levels
+                        # (2026-11-08). Take the highest well-supported horizontal
+                        # level in the window (the bars), then the camera ray
+                        # through the model's point at that height.
+                        # Anchor on the depth at the model's point (tray bars, or the
+                        # basin under a slot): SAM's mask can cover the whole machine,
+                        # and its front face rises above the tray, so search only up
+                        # to 4 cm above that point and take the highest level there.
+                        point_z = float((rotation @ np.array([(u - cx) * d_at / fx,
+                                                              (v - cy) * d_at / fy, d_at]) + translation)[2])
+                        target_diag['surface_point_z_m'] = round(point_z, 4)
+                        zs = world[:, 2]
+                        grid = np.arange(point_z - 0.05, point_z + 0.04 + 1e-9, 0.002)
+                        counts = np.array([np.count_nonzero(np.abs(zs - h) <= 0.006) for h in grid])
+                        min_support = max(need, int(0.12 * len(zs)))
+                        peaks = [i for i in range(len(grid)) if counts[i] >= min_support
+                                 and (i == 0 or counts[i] >= counts[i - 1])
+                                 and (i == len(grid) - 1 or counts[i] >= counts[i + 1])]
+                        level_plane = None
+                        if peaks:
+                            best = max(peaks, key=lambda i: grid[i])
+                            level_z = float(np.median(zs[np.abs(zs - grid[best]) <= 0.006]))
+                            level_plane = type('Level', (), {'height': level_z,
+                                                             'inliers': np.abs(zs - level_z) <= 0.006})()
+                        ray = rotation @ np.array([(u - cx) / fx, (v - cy) / fy, 1.0])
+                        if level_plane is not None:
+                            # x/y from the measured bar points next to the model's point:
+                            # intersecting the shallow camera ray with the level turned
+                            # 1 cm of height noise into ~5 cm of forward error (2026-11-08).
+                            height = float(level_plane.height)
+                            inl = level_plane.inliers
+                            centroid = np.array([float(np.median(world[inl, 0])),
+                                                 float(np.median(world[inl, 1])), height])
+                            tilt = 0.0
+                            target_diag['surface_level_height_m'] = round(height, 4)
+                            target_diag['surface_level_inliers'] = int(np.count_nonzero(level_plane.inliers))
+                        else:
+                            ray_point = np.array([(u - cx) * d_at / fx, (v - cy) * d_at / fy, d_at])
+                            centroid = rotation @ ray_point + translation
+                            tilt = 90.0
                         target_diag['surface_tilt_deg'] = round(tilt, 1)
                         held = self._inside_held_object(centroid, header.stamp)
                         max_tilt = float(self.get_parameter('surface_max_tilt_deg').value)
                         if tilt > max_tilt:
                             geometry_diagnostics['reason'] = (
-                                f'surface_not_level: masked surface tilts {tilt:.0f} deg from horizontal '
-                                f'(limit {max_tilt:.0f}); not something to set an object on')
+                                'surface_not_level: no level surface with enough support around the '
+                                'model point; not something to set an object on')
+                        elif self._above_surface_memory(task_id, centroid[2]) is not None:
+                            geometry_diagnostics['reason'] = self._above_surface_memory(task_id, centroid[2])
                         elif held is not None:
                             # e.g. the inside of the held cup when it hides the tray
                             geometry_diagnostics['reason'] = held
                         else:
                             point_3d = tuple(rotation.T @ (centroid - translation))
-                        # Horizontal camera-to-target direction: a level pose
-                        # facing the surface (pitch 0), like the cup's.
-                        approach = centroid - translation
-                        approach[2] = 0.0
+                        # Camera-to-target direction, level (pitch 0) like the cup's,
+                        # or tilted approach_pitch_down_deg for a surface pressed at an
+                        # angle (top button, 60 deg: position from the level surface,
+                        # since the point depth at a shallow view hit the background
+                        # behind the top edge and read 9 cm high, 2026-11-08).
+                        horizontal = centroid - translation
+                        horizontal[2] = 0.0
+                        horizontal /= max(np.linalg.norm(horizontal), 1e-9)
+                        pitch = math.radians(float(self.tasks[task_id].get('approach_pitch_down_deg', 0.0)))
+                        approach = np.array([horizontal[0] * math.cos(pitch),
+                                             horizontal[1] * math.cos(pitch), -math.sin(pitch)])
                         depth_source = 'segmented_surface_centroid'
                 else:
                     estimate = self._estimate_point_from_mask_depth(

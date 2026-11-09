@@ -2,11 +2,14 @@
 
 import math
 import json
+import os
 import random
 from collections import deque
 from concurrent.futures import Future
 from types import SimpleNamespace
 import time
+
+import numpy as np
 import threading
 import tempfile
 from copy import deepcopy
@@ -57,6 +60,16 @@ TRAJECTORY_JOINT_ORDER = [
     "base_x", "base_y", "base_theta",
     "joint_grip_L", "joint_hand", "joint_wrist", "joint_elbow", "joint_shoulder",
 ]
+
+# (max_velocity, max_acceleration) mirrored from config/joint_limits.yaml; used
+# to time Cartesian paths, which the GetCartesianPath service leaves untimed.
+CARTESIAN_JOINT_LIMITS = {
+    "base_x": (1.0, 0.25), "base_y": (1.0, 0.25), "base_theta": (1.0, 0.25),
+    "joint_shoulder": (0.35, 0.25), "joint_elbow": (0.7, 0.25),
+    "joint_wrist": (1.0, 0.25), "joint_hand": (1.0, 0.25),
+}
+# Cartesian steps without velocity_scaling/acceleration_scaling in the YAML.
+CARTESIAN_DEFAULT_SCALING = 0.5
 
 WHEEL_JOINT_NAMES = [
     "joint_wheel_FL", "joint_wheel_FR", "joint_wheel_RL", "joint_wheel_RR",
@@ -691,6 +704,71 @@ class GestureMotionExecutor(Node):
         )
         return None
 
+    _SURFACE_MEMORY_PATH = os.path.expanduser("~/.homeplus/surface_heights.json")
+
+    def _load_surface_memory(self) -> Dict:
+        try:
+            with open(self._SURFACE_MEMORY_PATH) as fh:
+                return json.load(fh)
+        except (OSError, ValueError):
+            return {}
+
+    def _apply_surface_height_memory(self, sequence_cfg: Dict, pose: PoseStamped) -> PoseStamped:
+        """Keep the live x/y but replace a disagreeing height with the remembered one.
+
+        A support surface (drip tray) has a fixed height above the floor, and the
+        world z axis is floor-referenced, so the height stays valid across
+        set-start; x/y do not. The hand camera misreads height by 2-4 cm from some
+        poses, so a reading far from the confident history is the outlier."""
+        key = sequence_cfg.get("surface_height_memory")
+        self._surface_memory_pending = None
+        if not key or pose.header.frame_id not in ("world", "map", "odom"):
+            return pose
+        entry = self._load_surface_memory().get(key, {})
+        history = [float(z) for z in entry.get("z_history", [])]
+        prior = sequence_cfg.get("surface_height_prior_m")
+        if history:
+            remembered = float(np.median(history))
+            source = f"median of {len(history)} successful run(s)"
+        elif prior is not None:
+            remembered = float(prior)
+            source = "configured prior"
+        else:
+            return pose
+        tolerance = float(sequence_cfg.get("surface_height_tolerance_m", 0.02))
+        detected = pose.pose.position.z
+        if abs(detected - remembered) > tolerance:
+            self.get_logger().warn(
+                f"  {key}: detected height {detected:.3f} m is {detected - remembered:+.3f} m from "
+                f"the remembered {remembered:.3f} m ({source}); using the remembered height, "
+                f"live x/y ({pose.pose.position.x:.3f}, {pose.pose.position.y:.3f})")
+            pose.pose.position.z = remembered
+            self._surface_memory_pending = (key, remembered)
+        else:
+            self.get_logger().info(
+                f"  {key}: detected height {detected:.3f} m agrees with remembered "
+                f"{remembered:.3f} m ({source})")
+            self._surface_memory_pending = (key, detected)
+        return pose
+
+    def _store_surface_height_memory(self, sequence_cfg: Dict) -> None:
+        pending = getattr(self, "_surface_memory_pending", None)
+        self._surface_memory_pending = None
+        if not pending or pending[0] != sequence_cfg.get("surface_height_memory"):
+            return
+        key, z = pending
+        memory = self._load_surface_memory()
+        entry = memory.setdefault(key, {})
+        entry["z_history"] = (list(entry.get("z_history", [])) + [round(float(z), 4)])[-10:]
+        entry["updated"] = time.strftime("%Y-%m-%dT%H:%M:%S")
+        try:
+            os.makedirs(os.path.dirname(self._SURFACE_MEMORY_PATH), exist_ok=True)
+            with open(self._SURFACE_MEMORY_PATH, "w") as fh:
+                json.dump(memory, fh, indent=1)
+            self.get_logger().info(f"  {key}: remembered height {z:.3f} m after success")
+        except OSError as exc:
+            self.get_logger().warn(f"  {key}: could not save surface height: {exc}")
+
     def _refresh_detection(
         self,
         sequence_name: str,
@@ -1054,7 +1132,7 @@ class GestureMotionExecutor(Node):
         if not isinstance(command_cfg, dict):
             return [f"{name}: command must be a mapping"]
 
-        allowed = set("endpoint_profile name type group_name joints value frame_id position orientation rpy_deg target steps task_id detection_topic detection_timeout_sec detection_min_stable_samples detection_stability_tolerance_m detection_max_refresh_shift_m max_replanning_attempts max_attempts settle_sec require_trajectory_approval planner_id allowed_planning_time num_planning_attempts link_name offset_x offset_y offset_z offset_frame orientation_from_detection gripper_value final_gripper_value position_tolerance_m position_tolerance_xy_m position_tolerance_z_m use_orientation_constraint orientation_tolerance_rad orientation_tolerance_x_rad orientation_tolerance_y_rad orientation_tolerance_z_rad safe_z_candidate_offsets_m base_goal_tcp_x_min_m base_goal_tcp_x_max_m base_goal_tcp_y_max_m max_base_goal_rotation_rad max_base_goal_translation_m max_base_goal_y_translation_m preserve_reference_z maintain_orientation_during_path post_delay_sec cartesian mobile_standoff lookahead_offsets velocity_scaling acceleration_scaling clear_octomap_before_plan octomap_clear_timeout_sec octomap_rebuild_wait_sec ik_candidate_attempts attach_cup joint_tolerance hardcoded_detection_pose hardcoded_detection_frame planning_service_timeout_sec phase_allowed_planning_time phase_num_planning_attempts phase_joint_tolerance continue_on_arduino_timeout base_placement heading_from_base max_arm_plane_error_m redo_from_step max_redos detach_cup held_cup_placement base_relative allow_held_cup_map_contact contact_ends_step".split())
+        allowed = set("endpoint_profile name type group_name joints value frame_id position orientation rpy_deg target steps task_id detection_topic detection_timeout_sec detection_min_stable_samples detection_stability_tolerance_m detection_max_refresh_shift_m max_replanning_attempts max_attempts settle_sec require_trajectory_approval planner_id allowed_planning_time num_planning_attempts link_name offset_x offset_y offset_z offset_frame orientation_from_detection gripper_value final_gripper_value position_tolerance_m position_tolerance_xy_m position_tolerance_z_m use_orientation_constraint orientation_tolerance_rad orientation_tolerance_x_rad orientation_tolerance_y_rad orientation_tolerance_z_rad safe_z_candidate_offsets_m base_goal_tcp_x_min_m base_goal_tcp_x_max_m base_goal_tcp_y_max_m max_base_goal_rotation_rad max_base_goal_translation_m max_base_goal_y_translation_m preserve_reference_z maintain_orientation_during_path post_delay_sec cartesian mobile_standoff lookahead_offsets velocity_scaling acceleration_scaling clear_octomap_before_plan octomap_clear_timeout_sec octomap_rebuild_wait_sec ik_candidate_attempts attach_cup joint_tolerance hardcoded_detection_pose hardcoded_detection_frame planning_service_timeout_sec phase_allowed_planning_time phase_num_planning_attempts phase_joint_tolerance continue_on_arduino_timeout base_placement heading_from_base max_arm_plane_error_m redo_from_step max_redos detach_cup held_cup_placement base_relative allow_held_cup_map_contact allow_finger_map_contact contact_ends_step surface_height_memory surface_height_prior_m surface_height_tolerance_m".split())
         if command_cfg.get('endpoint_profile', 'precise') not in ('precise', 'transit'):
             errors.append(f'{name}: endpoint_profile must be precise or transit')
         if command_cfg.get('cartesian') and command_cfg.get('endpoint_profile') == 'transit':
@@ -1347,6 +1425,12 @@ class GestureMotionExecutor(Node):
             self.get_logger().error(f"Command {command_name} crashed: {exc}")
             self._publish_status(f"Command {command_name} FAILED: {exc}")
         finally:
+            if getattr(self, '_finger_map_contact_allowed', False):
+                try:
+                    self._set_allowed_collisions(self._FINGER_MAP_PAIRS, False)
+                    self._finger_map_contact_allowed = False
+                except Exception as exc:
+                    self.get_logger().error(f'Could not restore finger<->OctoMap collision checking: {exc}')
             if self._cup_map_contact_allowed:
                 try:
                     self._set_allowed_collisions(self._CUP_MAP_PAIRS, False)
@@ -1506,6 +1590,8 @@ class GestureMotionExecutor(Node):
                 ),
                 stability_tolerance_m=sequence_cfg.get("detection_stability_tolerance_m"),
             )
+            if detected_pose is not None:
+                detected_pose = self._apply_surface_height_memory(sequence_cfg, detected_pose)
             if detected_pose is None:
                 self._abort_sequence(
                     sequence_name,
@@ -1534,6 +1620,12 @@ class GestureMotionExecutor(Node):
             # box and every other step stay fully checked.
             # Not tied to holding: after release the hand is still under the appliance
             # and must be able to back out (retreat_from_cup failed, 2026-10-30).
+            want_finger_contact = bool(step.get("allow_finger_map_contact"))
+            if want_finger_contact != getattr(self, '_finger_map_contact_allowed', False):
+                self._set_allowed_collisions(self._FINGER_MAP_PAIRS, want_finger_contact)
+                self._finger_map_contact_allowed = want_finger_contact
+                self.get_logger().info(
+                    f"  {step_name}: finger <-> map contact {'allowed' if want_finger_contact else 'checked'}")
             want_cup_contact = bool(step.get("allow_held_cup_map_contact"))
             if want_cup_contact != self._cup_map_contact_allowed:
                 self._set_allowed_collisions(self._CUP_MAP_PAIRS, want_cup_contact)
@@ -1708,6 +1800,8 @@ class GestureMotionExecutor(Node):
                         else None
                     ),
                 )
+                if refreshed_pose is not None:
+                    refreshed_pose = self._apply_surface_height_memory(sequence_cfg, refreshed_pose)
                 if (
                     refreshed_pose is not None
                     and detected_pose is not None
@@ -1952,6 +2046,7 @@ class GestureMotionExecutor(Node):
         suffix = '; grasp retention requires verification (no gripper contact sensor)' if self._holding_cup else ''
         self._publish_status(f"Sequence {sequence_name} motion completed{suffix}")
         self.get_logger().info(f"=== Sequence '{sequence_name}' completed ===")
+        self._store_surface_height_memory(sequence_cfg)
 
     def _abort_sequence(self, sequence_name: str, step_name: str, reason: str) -> None:
         self._save_sequence_trajectory_csv(sequence_name)
@@ -2655,9 +2750,11 @@ class GestureMotionExecutor(Node):
             if self._cloud_stamp_ns > requested_stamp:
                 # Allow MoveIt's subscriber to insert the corresponding cloud.
                 time.sleep(0.2)
+                self._reapply_map_allowances()
                 return True
             time.sleep(0.05)
         self.get_logger().error(f'{name}: no fresh target-masked cloud after map clear')
+        self._reapply_map_allowances()
         return False
 
     def _add_local_base_goal_constraints(self, constraints, command_cfg, name, pose_msg):
@@ -2783,6 +2880,16 @@ class GestureMotionExecutor(Node):
             raise RuntimeError('Could not add detected cup collision geometry')
         self._cup_collision_object = obj
 
+    def _reapply_map_allowances(self) -> None:
+        """Clearing the OctoMap deletes every '<octomap>' entry from MoveIt's ACM
+        (verified 2026-11-08: the finger allowance was gone by planning time and
+        every press plan hit the button face). Re-apply active allowances after a
+        clear and before planning; cheap when nothing is active."""
+        if getattr(self, '_finger_map_contact_allowed', False):
+            self._set_allowed_collisions(self._FINGER_MAP_PAIRS, True)
+        if self._cup_map_contact_allowed:
+            self._set_allowed_collisions(self._CUP_MAP_PAIRS, True)
+
     def _set_allowed_collisions(self, pairs, allowed: bool) -> None:
         """Set ACM entries for (a, b) name pairs, preserving every other entry."""
         get = GetPlanningScene.Request()
@@ -2828,6 +2935,11 @@ class GestureMotionExecutor(Node):
     # operator judged to be clear.
     _CUP_MAP_PAIRS = [('<octomap>', 'detected_cup'), ('<octomap>', 'hand_camera_link_1'),
                       ('<octomap>', 'palm_1'), ('<octomap>', 'wrist_1')]
+    # Button presses push the closed fingers into the appliance face: on flagged
+    # steps only the fingers may touch map voxels (2026-11-08: the face cells
+    # around the bottom button blocked every press plan). Palm, wrist, camera,
+    # arm, base and the table box stay checked.
+    _FINGER_MAP_PAIRS = [('<octomap>', 'FingerL_new_1'), ('<octomap>', 'FingerR_new_1')]
     _CUP_BOTTOM_SUBFRAME = 'bottom'
 
     def _attach_cup(self):
@@ -3120,17 +3232,29 @@ class GestureMotionExecutor(Node):
         error, forward = arm_plane_error(bx, by, heading, (p.x, p.y), arm.lateral_offset)
         ox = float(step.get('offset_x', 0.0))
         oz = float(step.get('offset_z', 0.0))
+        # Keep the detection's approach pitch (e.g. the 30 deg button press): the
+        # yaw comes from the base, but a level tool here turned the tilted
+        # standoff into a level align at button height and a horizontal press
+        # (2026-11-08). offset_x runs along the pitched approach axis, as in
+        # the standoff. Level detections (cup, tray) give pitch 0: unchanged.
+        pitch = 0.0
+        if step.get('orientation_from_detection'):
+            q = detected.pose.orientation
+            pitch = math.asin(max(-1.0, min(1.0, 2.0 * (q.w * q.y - q.z * q.x))))
         c, sn = math.cos(heading), math.sin(heading)
+        along, drop = ox * math.cos(pitch), -ox * math.sin(pitch)
         resolved = dict(step)
-        resolved['position'] = [p.x + sn * error + c * ox, p.y - c * error + sn * ox, p.z + oz]
-        resolved['orientation'] = self._yaw_orientation(heading)
+        resolved['position'] = [p.x + sn * error + c * along, p.y - c * error + sn * along, p.z + drop + oz]
+        cy, sy = math.cos(heading / 2), math.sin(heading / 2)
+        cp, sp = math.cos(pitch / 2), math.sin(pitch / 2)
+        resolved['orientation'] = [-sy * sp, cy * sp, sy * cp, cy * cp]
         resolved.pop('rpy_deg', None)
         resolved['frame_id'] = self.base_frame
-        height = p.z + oz - self._base_link_height
-        solutions = arm.solve_level(forward + ox, height)
+        height = p.z + drop + oz - self._base_link_height
+        solutions = arm.solve_level(forward + along, height, pitch=pitch)
         self.get_logger().info(
             f'  In-plane target at measured base ({bx:.3f}, {by:.3f}, {heading:.3f}): '
-            f'{forward + ox:.3f} m ahead, height {height:.3f} m, target was '
+            f'{forward + along:.3f} m ahead, height {height:.3f} m, pitch {math.degrees(pitch):.0f} deg, target was '
             f'{error * 1000:+.1f} mm off the arm plane; {len(solutions)} arm solution(s)')
         if not solutions:
             return None
@@ -3173,6 +3297,7 @@ class GestureMotionExecutor(Node):
         each candidate for collisions and limits before anything moves.
         Returns the planned pose on success, otherwise None.
         """
+        self._reapply_map_allowances()
         link = step.get('link_name', self.end_effector_link)
         arm = self._arm_model(link)
         if arm is None:
@@ -3403,6 +3528,7 @@ class GestureMotionExecutor(Node):
         return context
 
     def _plan_cartesian(self, name, pose, cfg, motion_request):
+        self._reapply_map_allowances()
         req = GetCartesianPath.Request()
         req.header = pose.header
         req.start_state = motion_request.start_state
@@ -3422,19 +3548,55 @@ class GestureMotionExecutor(Node):
         jt = result.solution.joint_trajectory
         if not jt.points:
             return None
-        # Cartesian service does not guarantee timing. Use conservative segment
-        # timing with zero-velocity endpoints; hardware interpolates positions.
-        elapsed = 0.0
-        previous = list(jt.points[0].positions)
-        for i, point in enumerate(jt.points):
-            delta = max(abs(a - b) for a, b in zip(previous, point.positions))
-            if i:
-                elapsed += max(0.1, 1.875 * delta / 0.35, math.sqrt(5.8 * delta / 0.25))
-            point.time_from_start = Duration(seconds=elapsed).to_msg()
+        self._time_cartesian_path(name, jt, cfg)
+        return self._execute_preplanned(name, result.solution, cfg)
+
+    def _time_cartesian_path(self, name, jt, cfg):
+        """Time a Cartesian path as one rest-to-rest quintic profile.
+
+        The Cartesian service returns untimed ~5 mm waypoints. Timing each one
+        as its own stop-and-go segment made 20 cm approaches take ~20 s. Here
+        progress s in [0, 1] follows the waypoints, weighted by each segment's
+        limiting joint, and s(t) = 10u^3 - 15u^4 + 6u^5 with u = t/T. Peak ds/dt
+        is 1.875/T and peak d2s/dt2 is 5.77/T^2, so T is chosen to keep every
+        joint within its (scaled) joint_limits.yaml velocity and acceleration.
+        """
+        vel_scale = float(cfg.get('velocity_scaling', CARTESIAN_DEFAULT_SCALING))
+        acc_scale = float(cfg.get('acceleration_scaling', CARTESIAN_DEFAULT_SCALING))
+        limits = [CARTESIAN_JOINT_LIMITS.get(j, (0.35, 0.25)) for j in jt.joint_names]
+        vmax = [v * vel_scale for v, _ in limits]
+        amax = [a * acc_scale for _, a in limits]
+        points = jt.points
+        weights = [0.0]
+        travel = [0.0] * len(jt.joint_names)
+        for prev, point in zip(points, points[1:]):
+            deltas = [abs(a - b) for a, b in zip(point.positions, prev.positions)]
+            weights.append(max(d / v for d, v in zip(deltas, vmax)))
+            travel = [t + d for t, d in zip(travel, deltas)]
+        total = sum(weights)
+        # Velocity bound: dq_j/ds <= vmax_j * total per segment, so T >= 1.875 * total.
+        # Acceleration bound from each joint's total travel (path is near-straight in joint space).
+        duration = max(0.5, 1.875 * total,
+                       max(math.sqrt(5.77 * d / a) for d, a in zip(travel, amax)))
+        def u_of_s(s):
+            lo, hi = 0.0, 1.0
+            for _ in range(40):
+                mid = 0.5 * (lo + hi)
+                if mid ** 3 * (10 - 15 * mid + 6 * mid ** 2) < s:
+                    lo = mid
+                else:
+                    hi = mid
+            return 0.5 * (lo + hi)
+        cumulative = 0.0
+        for weight, point in zip(weights, points):
+            cumulative += weight
+            s = cumulative / total if total > 0 else 1.0
+            point.time_from_start = Duration(seconds=duration * u_of_s(min(1.0, s))).to_msg()
             point.velocities = [0.0] * len(point.positions)
             point.accelerations = [0.0] * len(point.positions)
-            previous = list(point.positions)
-        return self._execute_preplanned(name, result.solution, cfg)
+        self.get_logger().info(
+            f'{name}: Cartesian path timed as one profile: {duration:.2f}s over {len(points)} waypoints '
+            f'(velocity_scaling={vel_scale}, acceleration_scaling={acc_scale})')
 
     def _prepare_mobile_standoff(self, name, pose, cfg, request, candidates):
         """Choose a base pose with a feasible fixed-base continuation, then move it."""
@@ -3596,6 +3758,7 @@ class GestureMotionExecutor(Node):
             return None
         if not self._clear_and_rebuild_octomap(name, command_cfg):
             return None
+        self._reapply_map_allowances()
 
         self._require_fresh_state()
         goal = MoveGroup.Goal()

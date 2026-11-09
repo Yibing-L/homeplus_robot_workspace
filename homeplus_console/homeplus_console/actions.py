@@ -404,7 +404,8 @@ class ActionService:
             if task not in TASK_COMMANDS:
                 return {"status": "rejected", "detail": f"unknown task {task}"}
             self.requested_task = task
-            self.io.set_task_id(task)
+            if self.io.set_task_id(task) is False:
+                return {"status": "rejected", "detail": "detector not reachable yet (just restarted?); try again in a few seconds"}
             return {"status": "confirmed", "detail": f"detector on task {task}"}
         if name == "flow_cancel":
             self.flow.status = "cancelled"

@@ -85,11 +85,11 @@ function ZBand({ p }: { p: Perception }) {
   const x = (z: number) => ((Math.min(max, Math.max(min, z)) - min) / (max - min)) * 150;
   return (
     <svg className="zband" viewBox="0 0 150 22" aria-label={`z band ${lo}–${hi} m`}>
-      <title>{`z band ${lo.toFixed(2)}–${hi.toFixed(2)} m; dots are the last detections, red when outside`}</title>
+      <title>{`z band ${lo.toFixed(2)}–${hi.toFixed(2)} m; dots are the last detections`}</title>
       <rect className="band" x={x(lo)} y={4} width={x(hi) - x(lo)} height={14} strokeWidth={0.8} />
       <line className="axis" x1={0} x2={150} y1={11} y2={11} />
       {w.samples.map((s, i) => (
-        <circle key={i} className={`s ${s.z < lo || s.z > hi ? "out" : ""}`} cx={x(s.z)} cy={11} r={2.6} opacity={Math.max(0.25, 1 - s.age / 20)} />
+        <circle key={i} className="s" cx={x(s.z)} cy={11} r={2.6} opacity={Math.max(0.25, 1 - s.age / 20)} />
       ))}
     </svg>
   );

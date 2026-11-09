@@ -15,9 +15,10 @@ tasks:
     name: press_square_button
     # Both buttons are silver; name the shape and place (2026-10-30).
     caption: the bottom silver button on the coffee machine
-    # Press along a fixed direction 45 deg below horizontal (operator, 2026-10-30).
+    # Press along a fixed direction 30 deg below horizontal: at 45 deg the hand passed
+    # through the machine body ~8 cm above the button once the live map showed it (2026-11-08).
     target_geometry: point
-    approach_pitch_down_deg: 45
+    approach_pitch_down_deg: 30
     command_name: press_square_button
     command_type: sequence
 
@@ -47,6 +48,11 @@ tasks:
     # (2026-10-29); naming the base kept 7/7 detections on the tray.
     caption: the round drip tray at the base of the coffee machine
     target_geometry: horizontal_surface
+    # Reject candidates more than surface_max_above_memory_m above the remembered
+    # tray height (~/.homeplus/surface_heights.json, written by the executor): the
+    # model alternated with a ledge ~80 px higher in the image (2026-11-08).
+    surface_height_memory: drip_tray
+    surface_max_above_memory_m: 0.04
     command_name: place_cup_on_drip_tray
     command_type: sequence
 
@@ -54,6 +60,11 @@ tasks:
   8:
     name: press_round_button
     caption: the top silver button on the coffee machine
+    # Pressed along a fixed line 60 deg below horizontal: straight down (90 deg) has
+    # no IK at this height (arm joint limits, 2026-11-08). Position from the level
+    # surface: 'point' depth read the top 9 cm high from the far view (background
+    # behind the top edge at a shallow angle).
     target_geometry: horizontal_surface
+    approach_pitch_down_deg: 60
     command_name: press_round_button
     command_type: sequence

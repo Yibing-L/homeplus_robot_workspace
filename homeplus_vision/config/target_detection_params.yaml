@@ -6,7 +6,9 @@ molmopoint:
     model_revision: "188130f961c8e0888a34e11121a1423c461a01ba"
     quantization: "4bit"
     device: "auto"
-    model_cache_dir: ".models/huggingface"
+    # Linux disk, not /mnt/c: reading the 33 GB weights over the WSL Windows mount
+    # took ~2.5 min per vision start (2026-11-08). Copy with rsync from .models/.
+    model_cache_dir: "~/.cache/homeplus_models/huggingface"
     # Runtime is network-independent after setup_molmopoint.sh downloads the
     # pinned snapshot.
     local_files_only: true

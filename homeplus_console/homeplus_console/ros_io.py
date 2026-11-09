@@ -245,7 +245,7 @@ class RosIO:
         sub(String, "/gesture_control/executor_status", self._on_status, RELIABLE)
         sub(Bool, "/gesture_control/executor_busy", lambda m: self._fallback.on_busy(m.data), RELIABLE)
         sub(String, "/molmopoint/diagnostics", self._on_diag, RELIABLE)
-        for task in (1, 2, 7):  # actions.TASK_COMMANDS
+        for task in (1, 2, 7, 8):  # every actions.TASK_COMMANDS id; task 8 (top button) was missing (2026-11-08)
             sub(PoseStamped, f"/molmopoint/task_{task}/pose",
                 lambda m, t=task: self.store.push_event(f"/molmopoint/task_{t}/pose",
                                                         {"x": m.pose.position.x, "y": m.pose.position.y, "z": m.pose.position.z},
@@ -635,11 +635,15 @@ class RosIO:
         return {"p": [t.translation.x, t.translation.y, t.translation.z],
                 "q": [t.rotation.x, t.rotation.y, t.rotation.z, t.rotation.w]}
 
-    def set_task_id(self, task_id: int) -> None:
-        if not self._setp.service_is_ready():
-            return
+    def set_task_id(self, task_id: int) -> bool:
+        # After a vision restart the new detector's parameter service can take a
+        # moment to be discovered; returning silently made the console report
+        # "confirmed" while the detector stayed on the old task (2026-11-08).
+        if not self._setp.service_is_ready() and not self._setp.wait_for_service(timeout_sec=2.0):
+            return False
         p = Parameter(name="task_id", value=ParameterValue(type=ParameterType.PARAMETER_INTEGER, integer_value=int(task_id)))
         self._setp.call_async(SetParameters.Request(parameters=[p]))
+        return True
 
     def zero(self) -> Optional[bool]:
         if not self._bridge_info.get("zero_supported"):

@@ -36,8 +36,10 @@ from rclpy.time import Time
 from sensor_msgs.msg import CameraInfo, Image, PointCloud2
 from std_msgs.msg import Bool, Header, String
 from std_srvs.srv import Empty
+from copy import deepcopy
+
 from tf2_ros import Buffer, TransformException, TransformListener
-from geometry_msgs.msg import Pose
+from geometry_msgs.msg import Pose, PoseStamped
 from moveit_msgs.msg import CollisionObject
 from shape_msgs.msg import SolidPrimitive
 
@@ -236,6 +238,10 @@ class ObstacleCloudNode(Node):
         self.table_assume_level = bool(self.get_parameter("table_assume_level").value)
         self.table_hold_ns = int(float(self.get_parameter("table_hold_sec").value) * 1e9)
         self.table_plane_last = None  # (plane, time_ns): reused when a frame misses
+        # The table is fixed but each view's fit wanders 0.65-0.73 m (hand-camera
+        # calibration): the box uses the median of recent level fits (2026-11-08).
+        self.table_heights = []
+        self.table_height_window = 15
         self.table_object_id = str(self.get_parameter("table_object_id").value)
         self.table_last = None  # (center, size, published_at_ns)
         self.collision_pub = self.create_publisher(CollisionObject, "/collision_object", 10)
@@ -252,6 +258,18 @@ class ObstacleCloudNode(Node):
         )
 
         self.create_subscription(String, "/molmopoint/diagnostics", self._on_detector_diag, 10)
+        # Buttons are pressed into the appliance face: clear a small sphere of the
+        # face around the detected button point, or the fingertip's approach
+        # collides with face voxels within one cell of the button (2026-11-08).
+        # The mask can cover the whole machine, so this is not the mask's box.
+        self.declare_parameter("button_task_ids", [2, 8])
+        self.declare_parameter("button_clear_radius_m", 0.07)
+        self.button_pose = None  # (task_id, PoseStamped, received_ns)
+        for task in self.get_parameter("button_task_ids").value:
+            self.create_subscription(
+                PoseStamped, f"/molmopoint/task_{int(task)}/pose",
+                lambda m, t=int(task): setattr(self, "button_pose",
+                                               (t, m, self.get_clock().now().nanoseconds)), 10)
         self.create_subscription(
             CameraInfo,
             self.camera_info_topic,
@@ -351,14 +369,64 @@ class ObstacleCloudNode(Node):
             self.tf_buffer.can_transform(frame, source, stamp)
             for frame in frames)
         if not ready:
-            if self.get_clock().now().nanoseconds - received_ns > 500_000_000:
+            age_ns = self.get_clock().now().nanoseconds - received_ns
+            if age_ns > 100_000_000:
+                settled = self._settled_restamp(msg, source, frames)
+                if settled is not None:
+                    self.pending_depth = None
+                    self._process_depth(settled)
+                    return
+            if age_ns > 500_000_000:
                 self.pending_depth = None
                 self.get_logger().warning(
-                    'Dropping depth frame: acquisition-time TF still missing after 0.5 s',
+                    'Dropping depth frame: acquisition-time TF still missing after 0.5 s '
+                    f'({self._tf_lag_detail(msg, source, frames)})',
                     throttle_duration_sec=5.0)
             return
         self.pending_depth = None
         self._process_depth(msg)
+
+    def _latest_tf_ns(self, frames, source):
+        """Oldest of the newest available transforms source->frame, or None."""
+        newest = []
+        for frame in frames:
+            if not frame or frame == source:
+                continue
+            try:
+                tf = self.tf_buffer.lookup_transform(frame, source, Time())
+            except TransformException:
+                return None
+            newest.append(Time.from_msg(tf.header.stamp).nanoseconds)
+        return min(newest) if newest else None
+
+    def _tf_lag_detail(self, msg, source, frames):
+        frame_ns = Time.from_msg(msg.header.stamp).nanoseconds
+        latest_ns = self._latest_tf_ns(frames, source)
+        if latest_ns is None:
+            return 'no transform available at all'
+        return (f'newest TF is {(frame_ns - latest_ns) / 1e6:+.0f} ms behind the frame; '
+                f'motion_active={self.motion_active}')
+
+    def _settled_restamp(self, msg, source, frames):
+        """While the arm is still, the camera pose is constant: a transform
+        measured after the arm settled equals the one at the frame's
+        acquisition time. Re-stamp the frame to that transform's time so every
+        downstream lookup (and MoveIt's sensor-origin lookup) uses it.
+        Returns None unless the frame and the transform both postdate settling."""
+        if self.motion_active or self.motion_finished_ns <= 0:
+            return None
+        frame_ns = Time.from_msg(msg.header.stamp).nanoseconds
+        latest_ns = self._latest_tf_ns(frames, source)
+        if (latest_ns is None or frame_ns <= self.motion_finished_ns
+                or latest_ns <= self.motion_finished_ns):
+            return None
+        restamped = deepcopy(msg)
+        restamped.header.stamp = Time(nanoseconds=latest_ns).to_msg()
+        self.get_logger().info(
+            'Settled arm: using post-settle TF for depth frame '
+            f'(frame {(frame_ns - latest_ns) / 1e6:+.0f} ms ahead of newest TF)',
+            throttle_duration_sec=10.0)
+        return restamped
 
     def _process_depth(self, msg: Image) -> None:
         if None in (self.fx, self.fy, self.cx, self.cy):
@@ -458,6 +526,9 @@ class ObstacleCloudNode(Node):
             obstacle_points = self._remove_target_box(
                 obstacle_points, object_points
             )
+            obstacle_points = self._clear_around_button(
+                obstacle_points, source_frame, msg.header.stamp
+            )
         else:
             obstacle_points = self._points_from_depth(
                 depth_sample, u_pixels, v_pixels, stable_valid
@@ -551,6 +622,7 @@ class ObstacleCloudNode(Node):
                            inliers=np.zeros(0, dtype=bool))
         self.table_plane_last = (plane, self.get_clock().now().nanoseconds)
         self.table_from_fit_task = True
+        self.table_heights = [float(plane.height)]
         self.table_last = None
         self._publish_table_box(tuple(saved["center"]), tuple(saved["size"]), self.get_clock().now().to_msg())
         self.get_logger().info(f"Restored the table from {self.table_store}: height {plane.height:.3f} m")
@@ -627,6 +699,8 @@ class ObstacleCloudNode(Node):
                                 level=self.table_assume_level)
         now_ns = self.get_clock().now().nanoseconds
         status = {"found": plane is not None}
+        if plane is not None and self.table_assume_level:
+            plane = self._smoothed_level_plane(plane, world)
         if plane is not None:
             self.table_plane_last = (plane, now_ns)
             self.table_from_fit_task = self.detector_task_id in self.table_fit_tasks
@@ -657,6 +731,18 @@ class ObstacleCloudNode(Node):
                       box_center=[round(v, 3) for v in center], box_size=[round(v, 3) for v in size])
         self.table_status_pub.publish(String(data=json.dumps(status)))
         return obstacle_points[~(band | base)]
+
+    def _smoothed_level_plane(self, plane, world):
+        """Replace one view's level-table height with the median of recent fits."""
+        self.table_heights = (self.table_heights + [float(plane.height)])[-self.table_height_window:]
+        height = float(np.median(self.table_heights))
+        if abs(height - plane.height) > 0.005:
+            self.get_logger().info(
+                f"Table fit {plane.height:.3f} m; using median {height:.3f} m of "
+                f"{len(self.table_heights)} fit(s)", throttle_duration_sec=10.0)
+        up = np.array([0.0, 0.0, 1.0])
+        return TablePlane(normal=up, offset=-height, height=height, tilt_deg=0.0,
+                          inliers=np.abs(world[:, 2].astype(np.float64) - height) <= self.table_cfg["inlier_tol_m"])
 
     def _target_base_column(self, world, obj, plane, camera_xy):
         """Mask of obstacle points inside the target's cylinder, from the table up.
@@ -807,6 +893,22 @@ class ObstacleCloudNode(Node):
                   & (local[:, 2] > -float(self.get_parameter("held_object_below_m").value))
                   & (local[:, 2] < float(self.get_parameter("held_object_above_m").value)))
         return points[~inside]
+
+    def _clear_around_button(self, obstacle_points, frame_id, stamp_msg):
+        radius = float(self.get_parameter("button_clear_radius_m").value)
+        bp = self.button_pose
+        if (radius <= 0.0 or bp is None or not len(obstacle_points)
+                or bp[0] != self.detector_task_id
+                or self.get_clock().now().nanoseconds - bp[2] > 15e9):
+            return obstacle_points
+        pose = bp[1]
+        tf = self._lookup_transform(frame_id, pose.header.frame_id, stamp_msg)
+        if tf is None:
+            return obstacle_points
+        p = pose.pose.position
+        center = self._transform_points(np.array([[p.x, p.y, p.z]], dtype=np.float32), tf)[0]
+        keep = np.linalg.norm(obstacle_points - center, axis=1) > radius
+        return obstacle_points[keep]
 
     def _remove_target_box(self, obstacle_points, object_points):
         if not len(obstacle_points) or not len(object_points):

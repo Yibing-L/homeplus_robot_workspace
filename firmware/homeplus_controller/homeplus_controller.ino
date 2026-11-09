@@ -64,7 +64,7 @@ unsigned long trajectoryStart = 0;
 unsigned long settledSince = 0;
 unsigned long lastStateMillis = 0;
 unsigned long lastHostMillis = 0;
-const unsigned long SETTLE_DWELL_MS = 500;
+const unsigned long SETTLE_DWELL_MS = 250;
 const unsigned long STATE_INTERVAL_MS = 50;
 float previousSettleX = 0, previousSettleY = 0, previousSettleTheta = 0;
 float previousSettleElbow = 0, previousSettleShoulder = 0;

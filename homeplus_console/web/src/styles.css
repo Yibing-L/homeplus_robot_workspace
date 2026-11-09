@@ -392,6 +392,8 @@ main {
 .band.ok::before { background: var(--ok); }
 .band.info::before { background: var(--info); }
 .band > div { padding: 16px 20px; background: var(--panel); min-width: 0; }
+/* task radios wrap in the narrow side column; scroll if it ever outgrows the band (2026-11-08) */
+.band > div:first-child { overflow-y: auto; max-height: 45vh; }
 /* the motion bay: anything that moves the robot lives here, apart from read-only controls */
 .band > div:last-child { background: var(--field); display: flex; flex-direction: column; justify-content: center; gap: 10px; }
 .band h3 { margin: 4px 0 6px; font-size: 21px; font-weight: 650; line-height: 1.2; letter-spacing: -0.01em; }

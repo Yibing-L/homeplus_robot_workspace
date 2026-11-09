@@ -518,7 +518,7 @@ function StartBand({ snap, arm, setArm }: BandProps) {
         <div className="meta">
           {lost ? "preflight unknown: console link lost" : ready ? "preflight passed" : `not ready · ${fails.length + decl.filter((d) => !d.ok).length} blockers`}
         </div>
-        <div style={{ display: "flex", gap: 6, marginTop: 12 }} role="radiogroup" aria-label="Task">
+        <div style={{ display: "flex", flexWrap: "wrap", gap: 6, marginTop: 12 }} role="radiogroup" aria-label="Task">
           {Object.entries(TASKS).map(([key, t]) => {
             const id = Number(key);
             const gate = a.start_task?.tasks?.[key];
