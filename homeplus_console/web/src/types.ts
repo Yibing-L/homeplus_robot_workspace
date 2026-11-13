@@ -374,4 +374,46 @@ export interface Snapshot {
   control: { holder: string | null; held: boolean; you: boolean };
   sim: Record<string, unknown> | null;
   scene?: SceneView;
+  teleop?: TeleopView;
+}
+
+export interface TeleopView {
+  mode: boolean;
+  phase: "off" | "ready" | "starting" | "active" | "ending" | "latched";
+  owner_label: string | null;
+  reason: string | null;
+  reason_wall: number | null;
+  session: string | null;
+  frame_age_ms: number | null;
+  frame_gap_p95_ms: number | null;
+  focused: boolean;
+  keys: string[];
+  fast: boolean;
+  base_vel: { vx: number; vy: number; wz_deg: number } | null;
+  tcp: { reach: number; height: number; pitch_deg: number } | null;
+  tcp_speed: number | null;
+  joint_vel_deg: Record<string, number> | null;
+  command: Record<string, number> | null;
+  blocked: string | null;
+  blocked_age: number | null;
+  contacts: [string, string, number][];
+  escape: boolean;
+  governed: string[];
+  limited: string[];
+  ik_short: boolean;
+  check_ms: number | null;
+  check_errors: number;
+  collision_mode: "full" | "no_octomap" | "self_only" | null;
+  limits: { base_mps: number[]; base_dps: number[]; tcp_mps: number[]; deadman_ms: number };
+  jog_capable: boolean | null;
+  recording: {
+    active: boolean;
+    episode: string | null;
+    instruction: string | null;
+    samples: number | null;
+    seconds: number | null;
+    dropped: number | null;
+    last_result: string | null;
+    root: string;
+  };
 }

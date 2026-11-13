@@ -40,14 +40,20 @@ from .log_filter import LogBuffer, parse_status_text
 from .scene import IDENTITY, compose
 from .signals import SignalStore
 from .supervisor import SystemdSupervisor
+from .teleop import Check
+
+JOG_ORDER = ("base_x", "base_y", "base_theta", "joint_grip_L", "joint_hand", "joint_wrist", "joint_elbow", "joint_shoulder")
+RAW_FEEDS = ("d405_color", "d455_color")   # kept undecoded for the teleop recorder
+FEED_BOOST = {"d405_color": 15.0}          # browser frame rate while teleop mode is on
+CHECK_TIMEOUT = 0.12
 
 try:  # optional: only needed for the degraded-mode plan preview and MoveIt readiness
     from moveit_msgs.action import MoveGroup
     from moveit_msgs.msg import DisplayTrajectory, PlanningSceneComponents
-    from moveit_msgs.srv import GetPlanningScene
+    from moveit_msgs.srv import GetPlanningScene, GetStateValidity
     from rclpy.action import ActionClient
 except ImportError:  # pragma: no cover
-    MoveGroup = DisplayTrajectory = ActionClient = PlanningSceneComponents = GetPlanningScene = None
+    MoveGroup = DisplayTrajectory = ActionClient = PlanningSceneComponents = GetPlanningScene = GetStateValidity = None
 
 try:
     from homeplus_interfaces.msg import GestureCommand
@@ -223,6 +229,8 @@ class RosIO:
         self._node: Optional[Node] = None
         self._graph: Dict[str, int] = {}
         self._external: Dict[str, List[str]] = {}
+        self._raw: Dict[str, Any] = {}
+        self._feed_boost = False
 
     @property
     def structured(self) -> bool:
@@ -240,6 +248,7 @@ class RosIO:
         sub(Bool, "/arduino/status", lambda m: self.store.update("/arduino/status", m.data, "/arduino/status"), LATCHED)
         sub(String, "/arduino/ack", lambda m: self.store.push_event("/arduino/ack", m.data, "/arduino/ack"), RELIABLE)
         sub(String, "/arduino/bridge_info", self._on_bridge_info, LATCHED)
+        sub(String, "/arduino/jog_status", self._on_jog_status, RELIABLE)
         sub(String, "/gesture_control/executor_state", self._on_executor_state, LATCHED)
         sub(String, "/gesture_control/plan_preview", self._on_plan_preview, LATCHED)
         sub(String, "/gesture_control/executor_status", self._on_status, RELIABLE)
@@ -260,6 +269,9 @@ class RosIO:
             sub(DisplayTrajectory, "/display_planned_path", self._on_display_trajectory)
         self._stop_pub = n.create_publisher(Bool, "/arduino/stop", RELIABLE)
         self._zero_pub = n.create_publisher(Bool, "/arduino/zero", RELIABLE)
+        self._jog_pub = n.create_publisher(String, "/arduino/jog", RELIABLE)
+        self._valid_cli = n.create_client(GetStateValidity, "/check_state_validity", callback_group=cb) \
+            if GetStateValidity else None
         self._approve_bool = n.create_publisher(Bool, "/gesture_control/approve_planned_path", RELIABLE)
         self._approve_scoped = n.create_publisher(String, "/gesture_control/approve_plan", RELIABLE)
         self._cmd_pub = n.create_publisher(GestureCommand, "/gesture_control/command", 10) if GestureCommand else None
@@ -344,9 +356,18 @@ class RosIO:
         except ValueError:
             pass
 
+    def _on_jog_status(self, m: String) -> None:
+        try:
+            self.store.push_event("/arduino/jog_status", json.loads(m.data), "/arduino/jog_status")
+        except ValueError:
+            pass
+
     def _on_image(self, fid: str, topic: str, m: Image) -> None:
         now = self.store.clock()
-        if now - self._last_frame_put.get(fid, -1) < 1.0 / FEEDS[fid][1]:
+        if fid in RAW_FEEDS:
+            self._raw[fid] = (now, m)
+        rate = FEED_BOOST.get(fid, FEEDS[fid][1]) if self._feed_boost else FEEDS[fid][1]
+        if now - self._last_frame_put.get(fid, -1) < 1.0 / rate:
             self.store.update(f"img/{fid}", {"seq": None}, topic)  # receipt still counts for rate and age
             return
         img = image_to_pil(m)
@@ -503,6 +524,53 @@ class RosIO:
             self._stop_pub.publish(Bool(data=True))
             time.sleep(0.02)
         return reached and self.store.get("/hardware/joint_states") is not None
+
+    # ------------------------------------------------------------------ teleop
+    def jog_point(self, session: str, q: List[float]) -> None:
+        self._jog_pub.publish(String(data=json.dumps({"op": "point", "session": session, "q": [float(v) for v in q]})))
+
+    def jog_end(self, session: str) -> None:
+        self._jog_pub.publish(String(data=json.dumps({"op": "end", "session": session})))
+
+    def jog_capable(self) -> Optional[bool]:
+        """True when the running bridge advertises the live-jog stream (bridge_info "jog")."""
+        if not self._bridge_info:
+            return None
+        return bool(self._bridge_info.get("jog"))
+
+    def set_feed_boost(self, on: bool) -> None:
+        self._feed_boost = bool(on)
+
+    def raw_frame(self, fid: str) -> Optional[Any]:
+        got = self._raw.get(fid)
+        if got is None:
+            return None
+        img = image_to_pil(got[1])
+        return None if img is None else (got[0], img)
+
+    def check_state(self, q: Dict[str, float]) -> Check:
+        """MoveIt /check_state_validity for the full robot (base joints + arm), keeping the scene's
+        attached objects (is_diff). Self-collision, world objects (table box, cup) and the OctoMap."""
+        t0 = time.monotonic()
+        if self._valid_cli is None:
+            return Check(False, error="moveit_msgs not importable")
+        if not self._valid_cli.service_is_ready():
+            return Check(False, error="/check_state_validity not available (move_group down?)")
+        req = GetStateValidity.Request()
+        req.robot_state.is_diff = True
+        req.robot_state.joint_state.name = list(JOG_ORDER)   # joint_grip_R mimics joint_grip_L in MoveIt
+        req.robot_state.joint_state.position = [float(q[n]) for n in JOG_ORDER]
+        req.group_name = ""   # whole robot: a chain group would leave out the fingers and wheels
+        done = threading.Event()
+        fut = self._valid_cli.call_async(req)
+        fut.add_done_callback(lambda _f: done.set())
+        if not done.wait(CHECK_TIMEOUT):
+            fut.cancel()
+            return Check(False, error=f"/check_state_validity timed out ({CHECK_TIMEOUT * 1000:.0f} ms)",
+                         ms=(time.monotonic() - t0) * 1000)
+        res = fut.result()
+        contacts = [(c.contact_body_1, c.contact_body_2, float(c.depth)) for c in res.contacts]
+        return Check(bool(res.valid), contacts=contacts, ms=(time.monotonic() - t0) * 1000)
 
     def call_cancel(self) -> Optional[bool]:
         if not self._cancel_cli.service_is_ready():

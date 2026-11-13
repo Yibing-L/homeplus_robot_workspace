@@ -1,6 +1,6 @@
 # homeplus_console
 
-One browser console for the HomePlus robot. It replaces the 5–7 terminal workflow in `HOMEPLUS_CHEATSHEET.md`. Design and plan: `../docs/OPERATOR_CONSOLE_PLAN.md`. Product notes: `PRODUCT.md`.
+One browser console for the HomePlus robot. Keyboard/mouse teleop and demo recording: `TELEOP.md`. It replaces the 5–7 terminal workflow in `HOMEPLUS_CHEATSHEET.md`. Design and plan: `../docs/OPERATOR_CONSOLE_PLAN.md`. Product notes: `PRODUCT.md`.
 
 The backend (Python) owns every subscription and derives the robot state. The browser only renders full snapshots, which arrive every 250 ms over `/ws`. Every value carries its age, and a stale value is shown as unknown.
 
