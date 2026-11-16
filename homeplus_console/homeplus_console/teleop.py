@@ -63,7 +63,7 @@ DEFAULTS: Dict[str, Any] = {
     "grip_max_deg": 80.0,
     # 2026-11-15: raised from 8/10 (choppy, slow); the firmware travel rate is 20/40 deg/s
     # (joint_limits.yaml), the governor below eases off if the motors fall behind.
-    "joint_max_dps": {"joint_shoulder": 14.0, "joint_elbow": 20.0, "joint_hand": 30.0, "joint_wrist": 60.0, "joint_grip_L": 90.0},
+    "joint_max_dps": {"joint_shoulder": 12.0, "joint_elbow": 20.0, "joint_hand": 30.0, "joint_wrist": 60.0, "joint_grip_L": 90.0},
     "joint_max_acc_dps2": {"joint_shoulder": 30.0, "joint_elbow": 40.0, "joint_hand": 120.0, "joint_wrist": 200.0, "joint_grip_L": 400.0},
     "limit_margin_deg": 2.0,
     # joint_limits.yaml (MoveIt) — the firmware rejects elbow > 140 deg
@@ -341,10 +341,15 @@ class Controller:
             arm_f = 1.0
             for n, (e, g) in lag.items():
                 step = q[n] - q0[n]
-                if abs(e) > g and step * e > 0:   # lagging and still pushing further the same way
+                if n.startswith("joint"):
+                    # Ease off from g/2, stopped at g (2026-11-15: a hard stop at g was choppy; easing
+                    # past g let the shoulder reach the firmware's 3 deg TRACKING_ERROR limit).
+                    if abs(e) > 0.5 * g and step * e > 0:
+                        arm_f = min(arm_f, clamp(2.0 - 2.0 * abs(e) / g, 0.0, 1.0))
+                        if abs(e) > g:
+                            out.governed.append(n)
+                elif abs(e) > g and step * e > 0:   # lagging and still pushing further the same way
                     out.governed.append(n)
-                    if n.startswith("joint"):     # ease off: full speed at g, stopped at 2g (2026-11-15:
-                        arm_f = min(arm_f, clamp(2.0 - abs(e) / g, 0.0, 1.0))   # the hard stop was choppy)
             if any(n.startswith("base") for n in out.governed):
                 for n in ("base_x", "base_y", "base_theta"):
                     q[n] = q0[n]
