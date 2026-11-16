@@ -127,7 +127,7 @@ def test_collision_probe_blocks_and_reports(chain):
 
 def test_octomap_contacts_ignored_only_in_no_octomap_mode(chain):
     hit = lambda q: Check(valid=q["base_x"] < 0.01, contacts=[] if q["base_x"] < 0.01 else [("palm_1", "<octomap>", 0.01)])  # noqa: E731
-    c = Controller(chain)
+    c = Controller(chain, {"collision_mode": "full"})
     c.anchor(home(), 0.0)
     assert run(c, Intent(fwd=1.0), check=hit, n=40).blocked
     c = Controller(chain, {"collision_mode": "no_octomap"})

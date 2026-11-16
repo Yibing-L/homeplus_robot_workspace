@@ -277,7 +277,7 @@ function Hud({ t }: { t: TeleopView }) {
       {row("grip / roll", t.command ? `${t.command.joint_grip_L?.toFixed(0)}° / ${t.command.joint_wrist?.toFixed(0)}°` : "—")}
       {row("limits", `base ${t.limits.base_mps.map((v) => v * 100).join("|")} cm/s · ${t.limits.base_dps.join("|")}°/s · tcp ${t.limits.tcp_mps.map((v) => v * 100).join("|")} cm/s`)}
       {row("input", `${t.frame_age_ms ?? "—"} ms ago · p95 gap ${t.frame_gap_p95_ms ?? "—"} ms · dead-man ${t.limits.deadman_ms} ms`, (t.frame_age_ms ?? 0) > 200 ? "warnline" : "")}
-      {row("collision", `${t.collision_mode === "full" ? "self + objects + OctoMap" : t.collision_mode === "no_octomap" ? "self + objects (OctoMap IGNORED)" : "SELF ONLY (table, cup, OctoMap IGNORED)"} · ${t.check_ms ?? "—"} ms`, t.collision_mode !== "full" || t.check_errors ? "badline" : "")}
+      {row("collision", `${t.collision_mode === "full" ? "self + objects + OctoMap" : t.collision_mode === "no_octomap" ? "self + objects (OctoMap IGNORED)" : "SELF ONLY (table, cup, OctoMap IGNORED)"} · ${t.check_ms ?? "—"} ms`, t.collision_mode === "self_only" || t.check_errors ? "badline" : "")}
       {t.blocked && row("blocked", `${t.blocked}`, "badline")}
       {t.escape && row("contact", "escaping an existing contact", "warnline")}
       {t.governed.length > 0 && row("tracking", `waiting for ${t.governed.join(", ")} to catch up`, "warnline")}
@@ -388,10 +388,10 @@ export function TeleopPanel({ snap }: { snap: Snapshot }) {
                   : ""}
         </span>
         {t.mode && (
-          <label className={`tcoll ${t.collision_mode !== "full" ? "badline" : ""}`}
+          <label className={`tcoll ${t.collision_mode === "self_only" ? "badline" : ""}`}
             title="What blocks motion. Full: self-collision, scene objects (table, cup) and OctoMap voxels. Use the others only when the scene is wrong, e.g. voxels or the cup box around the cup you are grasping.">
             collision
-            <select value={t.collision_mode ?? "full"} disabled={!a.teleop_collision?.allowed}
+            <select value={t.collision_mode ?? "no_octomap"} disabled={!a.teleop_collision?.allowed}
               onChange={(e) => act("teleop_collision", { mode: e.target.value })}>
               <option value="full">self + objects + OctoMap</option>
               <option value="no_octomap">self + objects (no OctoMap)</option>

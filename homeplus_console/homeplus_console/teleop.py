@@ -78,7 +78,9 @@ DEFAULTS: Dict[str, Any] = {
     "probe_sec": 0.5,
     # the probe also reaches at least this far ahead, so the robot stops short of contact, not at it
     "probe_min_base_m": 0.03, "probe_min_base_deg": 3.0, "probe_min_tcp_m": 0.015,
-    "collision_mode": "full",     # full | no_octomap | self_only
+    # full | no_octomap | self_only. Default no_octomap (user, 2026-11-15): stale/noisy voxels
+    # blocked teleop; the robot itself and the scene objects (table, cup) still block.
+    "collision_mode": "no_octomap",
     # closing the gripper on an object is the point: finger contacts don't block gripper-only motion
     "finger_links": ["FingerL_new_1", "FingerR_new_1"],
 }
