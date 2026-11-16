@@ -577,6 +577,7 @@ class GestureMotionExecutor(Node):
         required_samples: Optional[int] = None,
         stability_tolerance_m: Optional[float] = None,
         max_refresh_shift_m: Optional[float] = None,
+        refresh_shift_xy_only: bool = False,
     ) -> Optional[PoseStamped]:
         """Accept one fresh detection by default; multi-sample filtering is opt-in.
 
@@ -619,9 +620,12 @@ class GestureMotionExecutor(Node):
                 reference = reference_pose.pose.position
                 accepted_samples = []
                 for pose in samples:
+                    # xy-only: a person seen by two cameras at different heights
+                    # (legs from the low side camera, torso from the hand camera).
                     shift = math.dist(
-                        (pose.pose.position.x, pose.pose.position.y, pose.pose.position.z),
-                        (reference.x, reference.y, reference.z),
+                        (pose.pose.position.x, pose.pose.position.y,
+                         0.0 if refresh_shift_xy_only else pose.pose.position.z),
+                        (reference.x, reference.y, 0.0 if refresh_shift_xy_only else reference.z),
                     )
                     if shift <= max_refresh_shift:
                         accepted_samples.append(pose)
@@ -1159,7 +1163,7 @@ class GestureMotionExecutor(Node):
         if not isinstance(command_cfg, dict):
             return [f"{name}: command must be a mapping"]
 
-        allowed = set("endpoint_profile name type group_name joints value frame_id position orientation rpy_deg target steps task_id detection_topic detection_timeout_sec detection_min_stable_samples detection_stability_tolerance_m detection_max_refresh_shift_m max_replanning_attempts max_attempts settle_sec require_trajectory_approval planner_id allowed_planning_time num_planning_attempts link_name offset_x offset_y offset_z offset_frame orientation_from_detection gripper_value final_gripper_value position_tolerance_m position_tolerance_xy_m position_tolerance_z_m use_orientation_constraint orientation_tolerance_rad orientation_tolerance_x_rad orientation_tolerance_y_rad orientation_tolerance_z_rad safe_z_candidate_offsets_m base_goal_tcp_x_min_m base_goal_tcp_x_max_m base_goal_tcp_y_max_m max_base_goal_rotation_rad max_base_goal_translation_m max_base_goal_y_translation_m preserve_reference_z maintain_orientation_during_path post_delay_sec cartesian mobile_standoff lookahead_offsets velocity_scaling acceleration_scaling clear_octomap_before_plan octomap_clear_timeout_sec octomap_rebuild_wait_sec ik_candidate_attempts attach_cup joint_tolerance hardcoded_detection_pose hardcoded_detection_frame planning_service_timeout_sec phase_allowed_planning_time phase_num_planning_attempts phase_joint_tolerance continue_on_arduino_timeout base_placement heading_from_base max_arm_plane_error_m redo_from_step max_redos detach_cup held_cup_placement base_relative allow_held_cup_map_contact allow_finger_map_contact contact_ends_step surface_height_memory surface_height_prior_m surface_height_tolerance_m corridor_half_width_m min_forward_m max_forward_m min_points cup_bottom_radius_m face_margin_m overhang_margin_m required path_orientation_tolerance_rad face_min_above_tray_m face_max_above_tray_m cup_top_radius_m max_face_shift_m arm_first keep_arm converge_tol_m check_overhang measure_tray forward_only fault_retries fault_settle_timeout_sec start_state_recovery on_detection_timeout".split())
+        allowed = set("endpoint_profile name type group_name joints value frame_id position orientation rpy_deg target steps task_id detection_topic detection_timeout_sec detection_min_stable_samples detection_stability_tolerance_m detection_max_refresh_shift_m max_replanning_attempts max_attempts settle_sec require_trajectory_approval planner_id allowed_planning_time num_planning_attempts link_name offset_x offset_y offset_z offset_frame orientation_from_detection gripper_value final_gripper_value position_tolerance_m position_tolerance_xy_m position_tolerance_z_m use_orientation_constraint orientation_tolerance_rad orientation_tolerance_x_rad orientation_tolerance_y_rad orientation_tolerance_z_rad safe_z_candidate_offsets_m base_goal_tcp_x_min_m base_goal_tcp_x_max_m base_goal_tcp_y_max_m max_base_goal_rotation_rad max_base_goal_translation_m max_base_goal_y_translation_m preserve_reference_z maintain_orientation_during_path post_delay_sec cartesian mobile_standoff lookahead_offsets velocity_scaling acceleration_scaling clear_octomap_before_plan octomap_clear_timeout_sec octomap_rebuild_wait_sec ik_candidate_attempts attach_cup joint_tolerance hardcoded_detection_pose hardcoded_detection_frame planning_service_timeout_sec phase_allowed_planning_time phase_num_planning_attempts phase_joint_tolerance continue_on_arduino_timeout base_placement heading_from_base max_arm_plane_error_m redo_from_step max_redos detach_cup held_cup_placement base_relative allow_held_cup_map_contact allow_finger_map_contact contact_ends_step surface_height_memory surface_height_prior_m surface_height_tolerance_m corridor_half_width_m min_forward_m max_forward_m min_points cup_bottom_radius_m face_margin_m overhang_margin_m required path_orientation_tolerance_rad face_min_above_tray_m face_max_above_tray_m cup_top_radius_m max_face_shift_m arm_first keep_arm converge_tol_m check_overhang measure_tray forward_only fault_retries fault_settle_timeout_sec start_state_recovery on_detection_timeout detection_refresh_shift_xy_only scan_task_ids".split())
         # hand_cup_to_person: scan_rotate, base_approach and handoff_wait (handoff_logic.py)
         allowed |= SCAN_KEYS | APPROACH_KEYS | HANDOFF_KEYS
         if command_cfg.get('endpoint_profile', 'precise') not in ('precise', 'transit'):
@@ -1991,6 +1995,7 @@ class GestureMotionExecutor(Node):
                         if "detection_max_refresh_shift_m" in effective_step
                         else None
                     ),
+                    refresh_shift_xy_only=bool(effective_step.get("detection_refresh_shift_xy_only", False)),
                 )
                 if refreshed_pose is not None:
                     refreshed_pose = self._apply_surface_height_memory(sequence_cfg, refreshed_pose)
@@ -2445,7 +2450,11 @@ class GestureMotionExecutor(Node):
         """Look for a stable detection at the current heading, then turn the base
         in place step_deg at a time (collision-checked, from the measured state)
         and look again, up to max_deg. Returns (pose, None) or (None, reason)."""
-        if not topic:
+        # scan_task_ids (2026-11-15): look with each listed detector task (= camera) at every
+        # heading, in order, e.g. the front hand camera then the side D455; first hit wins.
+        task_ids = [int(t) for t in step.get('scan_task_ids') or []]
+        looks_per_heading = [(t, f'/molmopoint/task_{t}/pose') for t in task_ids] or [(None, topic)]
+        if not all(tp for _, tp in looks_per_heading):
             return None, 'no detection_topic configured'
         turns = scan_turns(setting(step, SCAN_DEFAULTS, 'step_deg'), setting(step, SCAN_DEFAULTS, 'max_deg'),
                            setting(step, SCAN_DEFAULTS, 'direction'))
@@ -2474,18 +2483,27 @@ class GestureMotionExecutor(Node):
                     f'({look + 1}/{looks})')
             self.get_logger().info(line)
             self._publish_status(line)
-            pose = self._refresh_detection(sequence_name, topic, timeout, **kwargs)
-            if pose is None:
-                continue
-            out_of_range = self._target_range_violation(step, pose)
-            if out_of_range:
-                rejected.append(out_of_range)
-                self.get_logger().warn(f'  {step_name}: ignoring detection: {out_of_range}')
-                continue
-            p = pose.pose.position
-            self._publish_status(f'[{sequence_name}] {step_name}: target found at ({p.x:.2f}, {p.y:.2f}, '
-                                 f'{p.z:.2f}) after turning {math.degrees(turned):+.0f} deg')
-            return pose, None
+            for task, look_topic in looks_per_heading:
+                if self._stop_was_requested():
+                    return None, 'operator STOP'
+                if task is not None:
+                    self._set_detector_task(task)
+                    self._ensure_detection_subscription(look_topic)
+                    with self._detection_lock:   # only samples from this look count
+                        self._detection_samples[look_topic] = []
+                pose = self._refresh_detection(sequence_name, look_topic, timeout, **kwargs)
+                if pose is None:
+                    continue
+                out_of_range = self._target_range_violation(step, pose)
+                if out_of_range:
+                    rejected.append(out_of_range)
+                    self.get_logger().warn(f'  {step_name}: ignoring detection: {out_of_range}')
+                    continue
+                p = pose.pose.position
+                self._publish_status(f'[{sequence_name}] {step_name}: target found at ({p.x:.2f}, {p.y:.2f}, '
+                                     f'{p.z:.2f}) by task {task if task is not None else "-"} after turning '
+                                     f'{math.degrees(turned):+.0f} deg')
+                return pose, None
         detail = f'; rejected: {"; ".join(rejected)}' if rejected else ''
         return None, (f'no stable detection on {topic} at {looks} heading(s) over '
                       f'{abs(math.degrees(turned)):.0f} deg{detail}')

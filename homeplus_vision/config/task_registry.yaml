@@ -108,3 +108,17 @@ tasks:
     caption: red cup
     command_name: pick_up_coffee_retract_first
     command_type: sequence
+
+  # The person, seen by the FRONT hand camera (D405). hand_cup_to_person scans with this
+  # and task 9 (side D455), then locks onto the person with it before the final approach
+  # (the side camera loses them once the base turns to face them). The held cup and
+  # gripper are excluded.
+  12:
+    name: locate_person_front
+    caption: the person
+    target_geometry: person
+    max_depth_m: 2.5
+    target_z_range_m: [0.1, 2.0]
+    reject_held_object: true
+    publish_task_pose: true
+

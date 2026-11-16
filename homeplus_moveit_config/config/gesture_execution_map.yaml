@@ -1132,8 +1132,11 @@ commands:
       # 1. Find the person: look at the current heading, then turn in place 30 deg at
       #    a time (base only, collision-checked, slow) up to a full turn. Task 9 uses
       #    the side D455 (task_registry.yaml): the held cup blocks much of the D405.
+      #    2026-11-15 (operator): look with BOTH cameras at every heading, front hand
+      #    camera first (task 12), then the side D455 (task 9); the first hit wins.
       - name: scan_for_person
         type: scan_rotate
+        scan_task_ids: [12, 9]
         step_deg: 30
         max_deg: 360
         direction: left
@@ -1149,10 +1152,35 @@ commands:
 
       # 2. Face the person and drive straight toward them until the held cup is 0.65 m
       #    from their measured front; arm and cup stay as they are (level). Slow.
+      #    Split (operator, 2026-11-15): the side camera loses the person once the base
+      #    turns to face them, and could lock onto someone else. So: face them and stop
+      #    ~1.2 m away, lock on with the FRONT camera (same person: within 0.6 m of the
+      #    scan's fix, horizontally), then finish the approach on that reading.
+      - name: approach_person_far
+        type: base_approach
+        standoff_m: 1.2
+        max_drive_m: 2.5
+        allow_finger_map_contact: true  # fingers around the held cup
+        velocity_scaling: 0.2
+        acceleration_scaling: 0.2
+        endpoint_profile: transit
+        require_trajectory_approval: true
+
+      - name: lock_person_front
+        type: detect
+        task_id: 12
+        detection_topic: /molmopoint/task_12/pose
+        detection_timeout_sec: 20.0
+        detection_min_stable_samples: 3
+        detection_stability_tolerance_m: 0.10
+        detection_max_refresh_shift_m: 0.6
+        detection_refresh_shift_xy_only: true
+        max_target_range_m: 2.2
+
       - name: approach_person
         type: base_approach
         standoff_m: 0.65
-        max_drive_m: 2.5
+        max_drive_m: 1.5
         allow_finger_map_contact: true  # fingers around the held cup
         velocity_scaling: 0.2
         acceleration_scaling: 0.2

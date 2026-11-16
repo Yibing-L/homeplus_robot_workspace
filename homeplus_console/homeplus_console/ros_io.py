@@ -257,7 +257,7 @@ class RosIO:
         sub(String, "/molmopoint/diagnostics", self._on_diag, RELIABLE)
         # every actions.TASK_COMMANDS id (task 8 was missing, 2026-11-08), plus 10: the hand that
         # hand_cup_to_person's find_hand step looks for
-        for task in (1, 2, 7, 8, 9, 10, 11):
+        for task in (1, 2, 7, 8, 9, 10, 11, 12):
             sub(PoseStamped, f"/molmopoint/task_{task}/pose",
                 lambda m, t=task: self.store.push_event(f"/molmopoint/task_{t}/pose",
                                                         {"x": m.pose.position.x, "y": m.pose.position.y, "z": m.pose.position.z},
