@@ -110,7 +110,9 @@ Both firmware and host enforce queue size, finite numbers, limits and timing.
 
 `STATE2 <id> <eight hardware positions>` reports state at 20 Hz. `DONE <id>`
 requires a 500 ms settled dwell; the host also verifies the feedback endpoint.
-`ERROR <id> <reason>` aborts the task. The bridge never converts timeout into
+`ERROR <id> <reason>` aborts the task, except for the executor-side recovery of
+TRACKING_ERROR/SETTLE_TIMEOUT described under "Fault recovery" below (a fresh
+plan, never a resend). The bridge never converts timeout into
 success or automatically retries a possibly executed command. `PING` supplies a
 heartbeat; loss for 1.5 seconds during motion stops the queue. `STOP` holds the
 measured/estimated state. Large intermediate tracking errors also stop motion.
@@ -119,6 +121,84 @@ The tighter encoder settling limits may expose existing arm control/calibration
 problems. Correct those from measured residuals rather than relaxing completion
 until inaccurate motion appears successful. Button contact force/travel feedback
 and grasp retention sensing remain unavailable.
+
+## Fault recovery (executor)
+
+The firmware limits are unchanged: the 3° arm tracking limit, SETTLE_TIMEOUT and
+STOP still halt the motion where it is (`stopAtCurrentState`). Recovery only
+decides what the sequence does next. It always replans from the measured joint
+state and never resends the old trajectory. Decision logic is in
+`homeplus_moveit_config/scripts/fault_recovery.py`. The tests are
+`tests/test_fault_recovery.py` (pure Python) and
+`tests/test_fault_recovery_executor.py` (stubbed executor, needs ROS sourced).
+
+Settings go on a step, or on the sequence for every step that does not set its
+own. Each is optional:
+
+| key | default | meaning |
+|---|---|---|
+| `fault_retries` | 2 | retries per step after TRACKING_ERROR/SETTLE_TIMEOUT (0–5; 0 disables) |
+| `fault_settle_timeout_sec` | 10 | how long to wait for the arm to be still and the bridge ready again |
+| `start_state_recovery` | true | clear the map and rebuild it once when only map voxels make the start invalid |
+| `on_detection_timeout` | `abort` | sequence only: `back_up` runs the `back_up` command once and waits for detection again |
+
+**Motion faults** apply to `pose` (including Cartesian and standoff phases) and
+`joint_state` steps inside sequences.
+- TRACKING_ERROR or SETTLE_TIMEOUT on a step without `contact_ends_step`: the
+  executor publishes `<step>: TRACKING_ERROR — recovering 1/2 at 50% speed`. It
+  waits for `/arduino/ready` to come back (the bridge sets ready only after its
+  own 0.7 s stillness check) and for 0.5 s of host-measured stillness. Then it
+  plans the same step again from the measured state, with velocity and
+  acceleration scaling halved on each retry (floor 0.1, never above the configured
+  value). Standoff base phases use the same factor.
+- The step keeps the same target. A base-relative `joint_state` goal (`back_up`)
+  is the absolute goal from the first attempt, so a retry does not add another
+  offset. A `joint_state` retry is skipped when the measured state already
+  matches the goal.
+- Retries go through approval like any other plan. A step that needs approval
+  asks again, and an auto-approved step continues by itself.
+- After a successful retry the executor publishes `<step>: recovered after N retry`.
+  When retries run out, the sequence aborts as before. The reason is the bridge's
+  error line followed by `(recovery: TRACKING_ERROR after 2 recovery attempt(s))`.
+- These are never retried: `contact_ends_step` steps (a stall there still counts
+  as contact), HOST_STOP, SERIAL, STALE_FEEDBACK, HOST_TIMEOUT, FIRMWARE_RESTART,
+  NOT_READY_OR_BUSY, RX_ACK_TIMEOUT, DONE without a settled endpoint, and a host
+  wait timeout. Recovery is also abandoned, and the sequence aborts, when the
+  bridge is not ready again or the arm is not still within
+  `fault_settle_timeout_sec`.
+- Operator STOP: the executor now serves `/gesture_control/cancel`
+  (`std_srvs/Trigger`), which the console already calls with every STOP. The
+  service publishes `/arduino/stop`, cancels a plan that is in flight or waiting
+  for approval, blocks any recovery retry, and aborts the sequence at the next
+  step (`ABORTED at <step>: operator STOP`). The service name is derived from
+  `command_topic`, so a dry-run executor gets `/gesture_dry_run/cancel`.
+- Gripper steps and single (non-sequence) commands are unchanged.
+
+**Start-state collision**: before planning a `pose` or `joint_state` goal, the
+measured start is checked as before. The executor may clear the map only when
+all of the following are true: every reported contact involves `<octomap>`,
+none involves `detected_table`, there is no self-collision, and no constraint is
+violated. It then publishes `<name>: start touches map voxels only (...) —
+clearing the map and replanning once`. It clears the map even when the step has
+`clear_octomap_before_plan: false`, waits for a fresh masked cloud, re-applies
+the active finger and held-cup ACM allowances, and checks the fresh measured
+state again. This happens at most once per step attempt. If the start is still
+invalid, the step aborts with `start state still in collision after a map clear
+and rebuild (<pairs>)`. Any other invalid start aborts with `start state invalid
+(<pairs>)` instead of the generic `planning/execution failed`.
+
+**Detection timeout** (opt-in, `on_detection_timeout: back_up` on the
+sequence): this covers only the sequence's first detection, before anything has
+moved. When it times out, the executor publishes `[<seq>] detection: no stable
+detection ... — backing up once and looking again`. It runs `back_up` once,
+planned from the measured state with that command's approval setting, and waits
+for detection once more. Close-up `detect` steps are not covered, because
+backing up would change the view those steps are tuned for.
+
+None of the new status lines match the console's step, approval, abort or
+failure patterns (`log_filter.parse_status_text`). The console still records
+the firmware fault as a sticky hardware fault for the operator to acknowledge,
+even when the retry succeeds.
 
 ## Offline validation
 
