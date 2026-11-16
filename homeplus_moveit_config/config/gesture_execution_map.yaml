@@ -246,6 +246,10 @@ commands:
         post_delay_sec: 1.0
 
       - name: retreat_from_button
+        # Backing out from contact: the hand starts against the face it just pressed,
+        # whose voxels block every plan otherwise (2026-11-15). Straight line back;
+        # base, arm and table box stay checked.
+        allow_held_cup_map_contact: true
         acceleration_scaling: 0.15  # shoulder TRACKING_ERROR at 0.3 lifting out of the press (2026-11-08)
         velocity_scaling: 0.15  # shoulder TRACKING_ERROR at 0.3 lifting out of the press (2026-11-08)
         # The closed fingers press into the appliance face; only they may touch map voxels.
@@ -378,6 +382,10 @@ commands:
         post_delay_sec: 1.0
 
       - name: retreat_up_from_round_button
+        # Backing out from contact: the hand starts against the face it just pressed,
+        # whose voxels block every plan otherwise (2026-11-15). Straight line back;
+        # base, arm and table box stay checked.
+        allow_held_cup_map_contact: true
         acceleration_scaling: 0.15  # shoulder TRACKING_ERROR at 0.3 lifting out of the press (2026-11-08)
         velocity_scaling: 0.15  # shoulder TRACKING_ERROR at 0.3 lifting out of the press (2026-11-08)
         # The closed fingers press into the appliance face; only they may touch map voxels.
