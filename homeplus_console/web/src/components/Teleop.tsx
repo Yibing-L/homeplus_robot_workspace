@@ -19,11 +19,20 @@ const AXES: Record<string, Axis> = {
   roll: { pos: ["KeyX"], neg: ["KeyZ"] },
   grip: { pos: ["KeyC"], neg: ["KeyO"] },
 };
-const HANDLED = new Set([...Object.values(AXES).flatMap((a) => [...a.pos, ...a.neg]), "KeyG", "Space", "ShiftLeft", "ShiftRight"]);
+// Single-joint mode (2026-11-15): J toggles; 1-4 pick the joint the mouse/wheel turns.
+const JOINTS: [string, string, string][] = [
+  ["Digit1", "joint_shoulder", "shoulder"], ["Digit2", "joint_elbow", "elbow"],
+  ["Digit3", "joint_hand", "wrist pitch"], ["Digit4", "joint_wrist", "wrist roll"],
+];
+const HANDLED = new Set([...Object.values(AXES).flatMap((a) => [...a.pos, ...a.neg]), "KeyG", "KeyJ", "Space", "ShiftLeft", "ShiftRight", ...JOINTS.map((j) => j[0])]);
 
 const SENS_KEY = "homeplus.teleop.sensitivity";
 let sens = 2.5;
-try { const v = Number(localStorage.getItem(SENS_KEY)); if (v >= 0.5 && v <= 6) sens = v; } catch { /* storage blocked */ }
+try { const v = Number(localStorage.getItem(SENS_KEY)); if (v >= 0.5 && v <= 10) sens = v; } catch { /* storage blocked */ }
+const SPEED_KEY = "homeplus.teleop.armSpeedCm";
+let armSpeedCm = 4;
+try { const v = Number(localStorage.getItem(SPEED_KEY)); if (v >= 2 && v <= 10) armSpeedCm = v; } catch { /* storage blocked */ }
+const armSpeed = () => armSpeedCm / 100;
 const sensitivity = () => sens;
 function setSensitivity(v: number) {
   sens = v;
@@ -32,13 +41,22 @@ function setSensitivity(v: number) {
 
 function SensitivitySlider() {
   const [v, setV] = useState(sens);
+  const [sp, setSp] = useState(armSpeedCm);
   return (
-    <label className="tsens" title="Mouse sensitivity for the arm (mouse up/down and wheel)">
-      arm sensitivity
-      <input type="range" min={0.5} max={6} step={0.25} value={v}
-        onChange={(e) => { const n = Number(e.target.value); setV(n); setSensitivity(n); }} />
-      <span className="mono">{v.toFixed(2)}×</span>
-    </label>
+    <>
+      <label className="tsens" title="How far the gripper target moves per mouse movement / wheel notch">
+        arm sensitivity
+        <input type="range" min={0.5} max={10} step={0.25} value={v}
+          onChange={(e) => { const n = Number(e.target.value); setV(n); setSensitivity(n); }} />
+        <span className="mono">{v.toFixed(2)}×</span>
+      </label>
+      <label className="tsens" title="Top gripper speed (Shift adds 50%). Higher speeds trip the firmware's 3° tracking limit more often.">
+        arm speed
+        <input type="range" min={2} max={10} step={0.5} value={sp}
+          onChange={(e) => { const n = Number(e.target.value); setSp(n); armSpeedCm = n; try { localStorage.setItem(SPEED_KEY, String(n)); } catch { /* blocked */ } }} />
+        <span className="mono">{sp.toFixed(1)} cm/s</span>
+      </label>
+    </>
   );
 }
 
@@ -51,7 +69,13 @@ function typing(t: EventTarget | null): boolean {
 function useTeleopInput(on: boolean) {
   const keys = useRef(new Set<string>());
   const [shown, setShown] = useState<string[]>([]);
-  const mouse = useRef({ dx: 0, dy: 0, wheel: 0, drag: false, toggles: 0 });
+  // drag = a button physically held, or (mouse grabbed) movement/scroll in the last 300 ms.
+  // 2026-11-15: pointer lock used to count as "held" forever, so a HOLD latch never cleared.
+  const mouse = useRef({ dx: 0, dy: 0, wheel: 0, drag: false, toggles: 0, last: 0 });
+  const [jointMode, setJointMode] = useState(false);
+  const [joint, setJoint] = useState(1);   // index into JOINTS (elbow)
+  const armJoint = useRef<string | null>(null);
+  armJoint.current = jointMode ? JOINTS[joint][1] : null;
   const seq = useRef(0);
   const area = useRef<HTMLDivElement | null>(null);
   const [grabbed, setGrabbed] = useState(false);
@@ -59,7 +83,7 @@ function useTeleopInput(on: boolean) {
   useEffect(() => {
     if (!on) {
       keys.current.clear();
-      mouse.current = { dx: 0, dy: 0, wheel: 0, drag: false, toggles: 0 };
+      mouse.current = { dx: 0, dy: 0, wheel: 0, drag: false, toggles: 0, last: 0 };
       setShown([]);
       return;
     }
@@ -72,6 +96,9 @@ function useTeleopInput(on: boolean) {
         return;
       }
       if (e.code === "KeyG" && !e.repeat) mouse.current.toggles += 1;
+      if (e.code === "KeyJ") { if (!e.repeat) setJointMode((v) => !v); return; }
+      const ji = JOINTS.findIndex((j) => j[0] === e.code);
+      if (ji >= 0) { setJoint(ji); setJointMode(true); return; }
       keys.current.add(e.code);
       sync();
     };
@@ -93,7 +120,7 @@ function useTeleopInput(on: boolean) {
       const m = mouse.current;
       const intent: Record<string, unknown> = Object.fromEntries(Object.entries(AXES).map(([n, a]) => [n, ax(a)]));
       intent.fast = k.has("ShiftLeft") || k.has("ShiftRight");
-      intent.drag = m.drag;
+      intent.drag = m.drag || performance.now() - m.last < 300;
       intent.keys = [...k].map((c) => c.replace(/^Key/, "").replace(/Left|Right/, ""));
       seq.current += 1;
       wsSend({
@@ -104,6 +131,8 @@ function useTeleopInput(on: boolean) {
         intent,
         mouse: { dx: m.dx, dy: m.dy, wheel: m.wheel },
         grip_toggle: m.toggles,
+        arm_speed: armSpeed(),
+        arm_joint: armJoint.current,
       });
       m.dx = m.dy = m.wheel = 0;
       m.toggles = 0;
@@ -135,22 +164,22 @@ function useTeleopInput(on: boolean) {
     };
     const pmove = (e: PointerEvent) => {
       if (!mouse.current.drag && !locked()) return;
+      if (e.movementX || e.movementY) mouse.current.last = performance.now();
       mouse.current.dx += e.movementX * sensitivity();
       mouse.current.dy += e.movementY * sensitivity();
     };
     const pup = () => {
-      mouse.current.drag = locked();
+      mouse.current.drag = false;
     };
     const lockChange = () => {
-      mouse.current.drag = locked();
+      mouse.current.drag = false;
       setGrabbed(locked());
     };
     document.addEventListener("pointerlockchange", lockChange);
     const wheel = (e: WheelEvent) => {
       e.preventDefault();
-      mouse.current.drag = true;
+      mouse.current.last = performance.now();
       mouse.current.wheel += Math.max(-3, Math.min(3, -e.deltaY / 100)) * sensitivity();
-      window.setTimeout(() => { if (!locked()) mouse.current.drag = false; }, 400);
     };
     const ctx = (e: MouseEvent) => e.preventDefault();
     el.addEventListener("pointerdown", pdown);
@@ -173,7 +202,7 @@ function useTeleopInput(on: boolean) {
     };
   }, [on]);
 
-  return { shown, area, dragging: () => mouse.current.drag, grabbed };
+  return { shown, area, dragging: () => mouse.current.drag, grabbed, jointMode, joint };
 }
 
 function LiveCamera({ feed }: { feed: string }) {
@@ -226,6 +255,7 @@ function KeyMap({ held, dragging }: { held: string[]; dragging: boolean }) {
         <Key code="ShiftLeft" label="Shift fast" held={held.map((k) => k.replace("Right", "Left"))} wide />
         <span className="tkey wide stopkey">Space STOP</span>
         <span className={`tkey wide ${dragging ? "on" : ""}`}>drag arm</span>
+        <Key code="KeyJ" label="J joint mode" held={held} wide />
       </div>
     </div>
   );
@@ -308,8 +338,17 @@ function Recorder({ t, allowed }: { t: TeleopView; allowed: Snapshot["allowed"] 
 
 export function TeleopPanel({ snap }: { snap: Snapshot }) {
   const t = snap.teleop;
+  const root = useRef<HTMLDivElement | null>(null);
+  const [big, setBig] = useState(() => { try { return localStorage.getItem("homeplus.teleop.big") === "1"; } catch { return false; } });
+  const toggleBig = () => { setBig((b) => { try { localStorage.setItem("homeplus.teleop.big", b ? "0" : "1"); } catch { /* blocked */ } return !b; }); };
+  const fullscreen = () => {
+    const el = root.current;
+    if (!el) return;
+    if (document.fullscreenElement) void document.exitFullscreen();
+    else void el.requestFullscreen?.();
+  };
   const on = !!t?.mode && snap.control.you;
-  const { shown, area, dragging, grabbed } = useTeleopInput(on);
+  const { shown, area, dragging, grabbed, jointMode, joint } = useTeleopInput(on);
   const [, force] = useState(0);
   useEffect(() => {
     if (!on) return;
@@ -321,8 +360,10 @@ export function TeleopPanel({ snap }: { snap: Snapshot }) {
   const [phase, cls] = PHASE[t.phase];
   const d405 = snap.feeds.find((f) => f.id === "d405_color");
   return (
-    <div className={`teleop ${t.mode ? "is-on" : ""}`}>
+    <div ref={root} className={`teleop ${t.mode ? "is-on" : ""} ${big ? "big" : ""}`}>
       <div className="tbar">
+        <button className="tog" onClick={toggleBig} title="Larger camera, smaller side panel">{big ? "Normal view" : "Large view"}</button>
+        <button className="tog" onClick={fullscreen} title="Fill the screen (Esc to leave)">⛶ Full screen</button>
         {t.mode ? (
           <button className="tog on" disabled={!a.teleop_off?.allowed} onClick={() => act("teleop_off")}>
             Teleop ON · turn off
@@ -367,9 +408,11 @@ export function TeleopPanel({ snap }: { snap: Snapshot }) {
           <span className="tag">D405 hand · {d405?.status ?? "—"}</span>
           {on && (
             <div className="tcam-help">
-              {grabbed
-                ? "mouse grabbed: move ↑↓ = arm up/down · wheel = forward/back · R/F tilt · Esc releases"
-                : "click to grab the mouse (or hold left button): ↑↓ = up/down · wheel = forward/back · R/F tilt"}
+              <b>{jointMode ? `JOINT MODE: ${JOINTS[joint][2]}` : "GRIPPER MODE"}</b>{" · "}
+              {jointMode
+                ? "mouse ↑↓ or wheel turns the joint · 1 shoulder 2 elbow 3 pitch 4 roll · J = gripper mode"
+                : "mouse ↑↓ = up/down · wheel = forward/back · R/F tilt · J = joint mode"}
+              {grabbed ? " · Esc releases the mouse" : " · click to grab the mouse"}
             </div>
           )}
         </div>

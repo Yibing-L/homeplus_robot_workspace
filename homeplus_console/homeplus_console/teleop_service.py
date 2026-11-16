@@ -151,6 +151,14 @@ class TeleopService:
             if all(math.isfinite(v) for v in (dx, dy, wh)) and self.focused:
                 self.mouse_acc = [max(-2000.0, min(2000.0, a + b)) for a, b in zip(self.mouse_acc, (dx, dy, wh))]
             self.grip_toggles += int(msg.get("grip_toggle", 0) or 0) if self.focused else 0
+            try:
+                speed = float(msg.get("arm_speed")) if msg.get("arm_speed") is not None else None
+            except (TypeError, ValueError):
+                speed = None
+            if self.ctrl is not None:
+                self.ctrl.set_joint_mode(msg.get("arm_joint") if isinstance(msg.get("arm_joint"), str) else None)
+                self.ctrl.arm_speed = (max(0.01, min(self.ctrl.cfg["tcp_mps_max"], speed))
+                                       if speed is not None and math.isfinite(speed) else None)
 
     # ------------------------------------------------------------------ helpers
     def _set_phase(self, phase: str, now: float, reason: Optional[str] = None) -> None:
@@ -340,6 +348,7 @@ class TeleopService:
                 "tcp": None if tcp is None else {"reach": round(tcp[0], 3), "height": round(tcp[1], 3),
                                                   "pitch_deg": round(math.degrees(tcp[2]), 1)},
                 "tcp_speed": None if not c else round(c.tcp_speed, 3),
+                "arm_joint": None if not c else c.joint_mode,
                 "joint_vel_deg": None if not c else {k: round(math.degrees(v), 1) for k, v in c.v_joint.items()},
                 "command": None if not (c and c.q) else {k: (round(v, 4) if k in ("base_x", "base_y") else round(math.degrees(v), 2))
                                                          for k, v in c.q.items()},

@@ -43,20 +43,28 @@ DEFAULTS: Dict[str, Any] = {
     "base_rot_dps": [10.0, 20.0],
     "base_rot_acc_dps2": 40.0,
     "tcp_mps": [0.03, 0.06],
+    "tcp_mps_max": 0.10,          # hard ceiling for the operator's arm-speed setting
     "tcp_acc": 0.15,
     "mouse_m_per_px": [0.00015, 0.0004],
     "pending_max_m": 0.05,        # mouse motion beyond this, not yet executed, is dropped
     "wheel_reach_m_per_notch": 0.01,  # wheel = gripper forward/back (before the UI sensitivity)
     "wheel_deg_per_notch": 3.0,
     "pending_max_deg": 10.0,
+    # single-joint mode (J toggles, 1-4 pick the joint): mouse up/down turns that joint
+    "joint_mode_deg_per_px": [0.04, 0.1],
+    "joint_mode_deg_per_notch": 2.0,
+    "joint_mode_pending_max_deg": 20.0,
+    "joint_mode_joints": ["joint_shoulder", "joint_elbow", "joint_hand", "joint_wrist"],
     "pitch_dps": [15.0, 25.0],
     "roll_dps": [30.0, 60.0],
     "grip_dps": [40.0, 80.0],
     "grip_open_deg": 0.0,
     "grip_close_deg": 75.0,       # G toggles between these; O/C ramp anywhere in [0, grip_max_deg]
     "grip_max_deg": 80.0,
-    "joint_max_dps": {"joint_shoulder": 8.0, "joint_elbow": 10.0, "joint_hand": 30.0, "joint_wrist": 60.0, "joint_grip_L": 90.0},
-    "joint_max_acc_dps2": {"joint_shoulder": 20.0, "joint_elbow": 25.0, "joint_hand": 120.0, "joint_wrist": 200.0, "joint_grip_L": 400.0},
+    # 2026-11-15: raised from 8/10 (choppy, slow); the firmware travel rate is 20/40 deg/s
+    # (joint_limits.yaml), the governor below eases off if the motors fall behind.
+    "joint_max_dps": {"joint_shoulder": 14.0, "joint_elbow": 20.0, "joint_hand": 30.0, "joint_wrist": 60.0, "joint_grip_L": 90.0},
+    "joint_max_acc_dps2": {"joint_shoulder": 30.0, "joint_elbow": 40.0, "joint_hand": 120.0, "joint_wrist": 200.0, "joint_grip_L": 400.0},
     "limit_margin_deg": 2.0,
     # joint_limits.yaml (MoveIt) — the firmware rejects elbow > 140 deg
     "limits_deg": {"joint_shoulder": [-30.0, 150.0], "joint_elbow": [-35.0, 140.0], "joint_hand": [-70.0, 80.0],
@@ -157,7 +165,15 @@ class Controller:
         self.bounds = {n: (D(lo) + m, D(hi) - m) for n, (lo, hi) in c["limits_deg"].items()}
         self.bounds["joint_grip_L"] = (0.0, D(min(c["grip_max_deg"], c["limits_deg"]["joint_grip_L"][1])))
         self.q: Optional[Dict[str, float]] = None
+        self.joint_mode: Optional[str] = None   # None = gripper (IK) mode; else the joint the mouse turns
+        self.arm_speed: Optional[float] = None  # operator's TCP speed setting (m/s), None = default
         self.reset_motion()
+
+    def set_joint_mode(self, joint: Optional[str]) -> None:
+        joint = joint if joint in self.cfg["joint_mode_joints"] else None
+        if joint != self.joint_mode:
+            self.joint_mode = joint
+            self.clear_pending()
 
     # ------------------------------------------------------------------ state
     def reset_motion(self) -> None:
@@ -165,6 +181,7 @@ class Controller:
         self.v_joint = {n: 0.0 for n in ARM}
         self.tcp_speed = 0.0
         self.pend = [0.0, 0.0, 0.0]             # reach (m), height (m), pitch (rad) not yet executed
+        self.pend_joint = 0.0                   # single-joint mode: angle (rad) not yet executed
         self.grip_goal: Optional[float] = None  # G toggles a goal; O/C cancel it
         self.history: Deque[Tuple[float, Dict[str, float]]] = deque(maxlen=200)
         self.last: Dict[str, Any] = {}
@@ -182,6 +199,12 @@ class Controller:
         the camera view). The arm is planar, so mouse x is unused; tilt is on R/F
         (2026-11-15: the old right=reach, wheel=tilt mapping was awkward). The UI scales
         dy and wheel by the operator's sensitivity before sending."""
+        if self.joint_mode:   # single joint: mouse up / wheel forward = joint angle up
+            c = self.cfg
+            lim = D(c["joint_mode_pending_max_deg"])
+            dj = D(-dy_px * c["joint_mode_deg_per_px"][1 if fast else 0] + c["joint_mode_deg_per_notch"] * wheel)
+            self.pend_joint = clamp(self.pend_joint + dj, -lim, lim)
+            return
         k = self.cfg["mouse_m_per_px"][1 if fast else 0]
         lim = self.cfg["pending_max_m"]
         self.pend[0] = clamp(self.pend[0] + float(self.cfg["wheel_reach_m_per_notch"]) * wheel, -lim, lim)
@@ -195,11 +218,12 @@ class Controller:
 
     def clear_pending(self) -> None:
         self.pend = [0.0, 0.0, 0.0]
+        self.pend_joint = 0.0
 
     def busy(self) -> bool:
         """Still moving or with motion queued (the session must not end yet)."""
         return (any(abs(v) > 1e-4 for v in self.v_body) or any(abs(v) > 1e-4 for v in self.v_joint.values())
-                or self.tcp_speed > 1e-4 or any(abs(p) > 1e-4 for p in self.pend) or self.grip_goal is not None)
+                or self.tcp_speed > 1e-4 or any(abs(p) > 1e-4 for p in self.pend) or abs(self.pend_joint) > 1e-4 or self.grip_goal is not None)
 
     def tcp(self, q: Optional[Dict[str, float]] = None) -> Optional[Tuple[float, float, float]]:
         q = q or self.q
@@ -238,9 +262,18 @@ class Controller:
         # -- 2. arm: pending Cartesian offset + pitch keys → IK
         if not it.drag:                 # button released: stop where we are (wheel pitch still completes)
             self.pend[0] = self.pend[1] = 0.0
+            self.pend_joint = 0.0
+        jm = self.joint_mode
+        if jm:                          # single-joint mode: no IK, the joint goes straight to its share
+            q[jm] += self.pend_joint    # (section 3 caps speed/accel; the rest stays pending)
+            self.pend = [0.0, 0.0, 0.0]
         self.pend[2] += D(c["pitch_dps"][fast]) * it.pitch * dt
         dist = math.hypot(self.pend[0], self.pend[1])
-        vcap = min(c["tcp_mps"][fast], math.sqrt(2 * c["tcp_acc"] * dist), self.tcp_speed + c["tcp_acc"] * dt)
+        # Operator's arm-speed setting (UI slider) replaces the default cap; Shift adds 50%;
+        # never above tcp_mps_max (2026-11-15).
+        op = self.arm_speed
+        cap = c["tcp_mps"][fast] if op is None else min(c["tcp_mps_max"], op * (1.5 if fast else 1.0))
+        vcap = min(cap, math.sqrt(2 * c["tcp_acc"] * dist), self.tcp_speed + c["tcp_acc"] * dt)
         self.tcp_speed = vcap if dist > 1e-5 else 0.0
         move = min(dist, vcap * dt)
         dxz = (self.pend[0] / dist * move, self.pend[1] / dist * move) if dist > 1e-9 else (0.0, 0.0)
@@ -256,7 +289,7 @@ class Controller:
             if abs(self.grip_goal - q["joint_grip_L"]) < 1e-4:
                 self.grip_goal = None
         ik_used = (0.0, 0.0, 0.0)
-        if move > 0 or abs(dp) > 0 or abs(it.roll) > 1e-6:
+        if not jm and (move > 0 or abs(dp) > 0 or abs(it.roll) > 1e-6):
             t0 = kin.task(self.chain.fk(q0))
             target = (t0[0] + dxz[0], t0[1] + dxz[1], t0[2] + dp)
             r = kin.solve(self.chain, q, target, bounds={n: self.bounds[n] for n in kin.ARM_IK_JOINTS})
@@ -305,20 +338,22 @@ class Controller:
                    "base_theta": (fw["base_theta"] - measured["base_theta"], D(gov["base_theta_deg"])),
                    "joint_elbow": (fw["joint_elbow"] - measured["joint_elbow"], D(gov["joint_elbow_deg"])),
                    "joint_shoulder": (fw["joint_shoulder"] - measured["joint_shoulder"], D(gov["joint_shoulder_deg"]))}
+            arm_f = 1.0
             for n, (e, g) in lag.items():
                 step = q[n] - q0[n]
                 if abs(e) > g and step * e > 0:   # lagging and still pushing further the same way
                     out.governed.append(n)
+                    if n.startswith("joint"):     # ease off: full speed at g, stopped at 2g (2026-11-15:
+                        arm_f = min(arm_f, clamp(2.0 - abs(e) / g, 0.0, 1.0))   # the hard stop was choppy)
             if any(n.startswith("base") for n in out.governed):
                 for n in ("base_x", "base_y", "base_theta"):
                     q[n] = q0[n]
                 self.v_body = [0.5 * v for v in self.v_body]
-            if any(n.startswith("joint") for n in out.governed):
+            if arm_f < 1.0:
                 for n in kin.ARM_IK_JOINTS:
-                    q[n] = q0[n]
-                    self.v_joint[n] = 0.0
-                self.tcp_speed = 0.0
-                ik_used = (0.0, 0.0, 0.0)
+                    q[n] = q0[n] + (q[n] - q0[n]) * arm_f
+                    self.v_joint[n] *= arm_f
+                self.tcp_speed *= arm_f
             # far from the command: the robot is not following (E-stop, power, stall, pushed)
             lost = c["lost"]
             if math.hypot(q0["base_x"] - measured["base_x"], q0["base_y"] - measured["base_y"]) > lost["base_xy"]:
@@ -385,6 +420,10 @@ class Controller:
                     out.contacts = blocking
                     ik_used = (0.0, 0.0, 0.0)
 
+        if jm and not out.blocked:      # single-joint mode: consume what that joint actually moved
+            self.pend_joint -= q[jm] - q0[jm]
+            if abs(self.pend_joint) < 1e-6:
+                self.pend_joint = 0.0
         # consume what was actually executed (speed caps may have shortened the IK step)
         if moving and not out.blocked and any(ik_used):
             t0, t1 = kin.task(self.chain.fk(q0)), kin.task(self.chain.fk(q))

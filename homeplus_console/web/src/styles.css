@@ -660,3 +660,8 @@ footer .logline .ERROR { color: var(--bad); }
 /* teleop arm sensitivity */
 .tsens { display: flex; align-items: center; gap: 8px; font-size: 13px; margin: 6px 0; }
 .tsens input { flex: 1; }
+
+/* teleop size: large view and full screen */
+.teleop.big .tmain { grid-template-columns: minmax(0, 1fr) minmax(220px, 22%); }
+.teleop:fullscreen { background: var(--field); }
+.teleop:fullscreen .tmain { grid-template-columns: minmax(0, 1fr) minmax(240px, 20%); }
