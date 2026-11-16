@@ -103,6 +103,7 @@ commands:
   gripper_close:
     type: gripper
     value: 75.0
+    attach_nominal_cup: true  # a manual close = holding the cup (gripper_open detaches it)
 
   press_square_button:
     type: sequence

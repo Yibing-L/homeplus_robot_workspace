@@ -295,6 +295,7 @@ class GestureMotionExecutor(Node):
         self.held_cup_radius_m = float(self.get_parameter("held_cup_radius_m").value)
         # Typical grasp: cup base 8.4 cm below grasp_tcp (most 2026-10/11 grasps).
         self.declare_parameter("held_cup_nominal_bottom_m", 0.084)
+        self.declare_parameter("nominal_cup_axis_forward_m", 0.043)  # = cup_axis_behind_grasp_point_m
         self.held_cup_nominal_bottom_m = float(self.get_parameter("held_cup_nominal_bottom_m").value)
         self.clear_octomap_before_pose_plan = bool(
             self.get_parameter("clear_octomap_before_pose_plan").value
@@ -1163,7 +1164,7 @@ class GestureMotionExecutor(Node):
         if not isinstance(command_cfg, dict):
             return [f"{name}: command must be a mapping"]
 
-        allowed = set("endpoint_profile name type group_name joints value frame_id position orientation rpy_deg target steps task_id detection_topic detection_timeout_sec detection_min_stable_samples detection_stability_tolerance_m detection_max_refresh_shift_m max_replanning_attempts max_attempts settle_sec require_trajectory_approval planner_id allowed_planning_time num_planning_attempts link_name offset_x offset_y offset_z offset_frame orientation_from_detection gripper_value final_gripper_value position_tolerance_m position_tolerance_xy_m position_tolerance_z_m use_orientation_constraint orientation_tolerance_rad orientation_tolerance_x_rad orientation_tolerance_y_rad orientation_tolerance_z_rad safe_z_candidate_offsets_m base_goal_tcp_x_min_m base_goal_tcp_x_max_m base_goal_tcp_y_max_m max_base_goal_rotation_rad max_base_goal_translation_m max_base_goal_y_translation_m preserve_reference_z maintain_orientation_during_path post_delay_sec cartesian mobile_standoff lookahead_offsets velocity_scaling acceleration_scaling clear_octomap_before_plan octomap_clear_timeout_sec octomap_rebuild_wait_sec ik_candidate_attempts attach_cup joint_tolerance hardcoded_detection_pose hardcoded_detection_frame planning_service_timeout_sec phase_allowed_planning_time phase_num_planning_attempts phase_joint_tolerance continue_on_arduino_timeout base_placement heading_from_base max_arm_plane_error_m redo_from_step max_redos detach_cup held_cup_placement base_relative allow_held_cup_map_contact allow_finger_map_contact contact_ends_step surface_height_memory surface_height_prior_m surface_height_tolerance_m corridor_half_width_m min_forward_m max_forward_m min_points cup_bottom_radius_m face_margin_m overhang_margin_m required path_orientation_tolerance_rad face_min_above_tray_m face_max_above_tray_m cup_top_radius_m max_face_shift_m arm_first keep_arm converge_tol_m check_overhang measure_tray forward_only fault_retries fault_settle_timeout_sec start_state_recovery on_detection_timeout detection_refresh_shift_xy_only scan_task_ids turn_deg_by_scan_task".split())
+        allowed = set("endpoint_profile name type group_name joints value frame_id position orientation rpy_deg target steps task_id detection_topic detection_timeout_sec detection_min_stable_samples detection_stability_tolerance_m detection_max_refresh_shift_m max_replanning_attempts max_attempts settle_sec require_trajectory_approval planner_id allowed_planning_time num_planning_attempts link_name offset_x offset_y offset_z offset_frame orientation_from_detection gripper_value final_gripper_value position_tolerance_m position_tolerance_xy_m position_tolerance_z_m use_orientation_constraint orientation_tolerance_rad orientation_tolerance_x_rad orientation_tolerance_y_rad orientation_tolerance_z_rad safe_z_candidate_offsets_m base_goal_tcp_x_min_m base_goal_tcp_x_max_m base_goal_tcp_y_max_m max_base_goal_rotation_rad max_base_goal_translation_m max_base_goal_y_translation_m preserve_reference_z maintain_orientation_during_path post_delay_sec cartesian mobile_standoff lookahead_offsets velocity_scaling acceleration_scaling clear_octomap_before_plan octomap_clear_timeout_sec octomap_rebuild_wait_sec ik_candidate_attempts attach_cup joint_tolerance hardcoded_detection_pose hardcoded_detection_frame planning_service_timeout_sec phase_allowed_planning_time phase_num_planning_attempts phase_joint_tolerance continue_on_arduino_timeout base_placement heading_from_base max_arm_plane_error_m redo_from_step max_redos detach_cup held_cup_placement base_relative allow_held_cup_map_contact allow_finger_map_contact contact_ends_step surface_height_memory surface_height_prior_m surface_height_tolerance_m corridor_half_width_m min_forward_m max_forward_m min_points cup_bottom_radius_m face_margin_m overhang_margin_m required path_orientation_tolerance_rad face_min_above_tray_m face_max_above_tray_m cup_top_radius_m max_face_shift_m arm_first keep_arm converge_tol_m check_overhang measure_tray forward_only fault_retries fault_settle_timeout_sec start_state_recovery on_detection_timeout detection_refresh_shift_xy_only scan_task_ids turn_deg_by_scan_task attach_nominal_cup".split())
         # hand_cup_to_person: scan_rotate, base_approach and handoff_wait (handoff_logic.py)
         allowed |= SCAN_KEYS | APPROACH_KEYS | HANDOFF_KEYS
         if command_cfg.get('endpoint_profile', 'precise') not in ('precise', 'transit'):
@@ -1684,6 +1685,14 @@ class GestureMotionExecutor(Node):
                     )
                 if grip_val <= 1.0 and self._holding_cup:
                     self._detach_cup()
+                elif command_cfg.get("attach_nominal_cup") and not self._holding_cup:
+                    # Operator closed the gripper on a cup by hand (2026-11-15): treat it as
+                    # held so place / hand-over can run, e.g. after a MoveIt restart lost
+                    # the attached cup. Mirror of gripper_open detaching it.
+                    try:
+                        self._attach_nominal_cup()
+                    except RuntimeError as exc:
+                        self.get_logger().error(f"{command_name}: could not attach the held cup: {exc}")
                 settle_sec = float(command_cfg.get("settle_sec", self.gripper_settle_sec))
                 if settle_sec > 0.0:
                     time.sleep(settle_sec)
@@ -3579,6 +3588,44 @@ class GestureMotionExecutor(Node):
     # arm, base and the table box stay checked.
     _FINGER_MAP_PAIRS = [('<octomap>', 'FingerL_new_1'), ('<octomap>', 'FingerR_new_1')]
     _CUP_BOTTOM_SUBFRAME = 'bottom'
+
+    def _attach_nominal_cup(self):
+        """Attach a standard held cup to grasp_tcp (no grasp-time measurement): the
+        envelope held_cup_height_m x held_cup_radius_m, its axis
+        nominal_cup_axis_forward_m ahead of the grasp point, bottom
+        held_cup_nominal_bottom_m below it (the same fallback placement uses)."""
+        h, r = self.held_cup_height_m, self.held_cup_radius_m
+        axis = float(self.get_parameter("nominal_cup_axis_forward_m").value)
+        bottom = -self.held_cup_nominal_bottom_m
+        obj = CollisionObject()
+        obj.id = 'detected_cup'
+        obj.header.frame_id = 'grasp_tcp'
+        obj.operation = CollisionObject.ADD
+        cyl = SolidPrimitive(type=SolidPrimitive.CYLINDER)
+        cyl.dimensions = [0.0, 0.0]
+        cyl.dimensions[SolidPrimitive.CYLINDER_HEIGHT] = h
+        cyl.dimensions[SolidPrimitive.CYLINDER_RADIUS] = r
+        obj.pose = Pose(orientation=Quaternion(w=1.0))
+        obj.pose.position.x, obj.pose.position.z = axis, bottom + h / 2.0
+        obj.primitives = [cyl]
+        obj.primitive_poses = [Pose(orientation=Quaternion(w=1.0))]
+        sub = Pose(orientation=Quaternion(w=1.0))   # bottom directly below the grasp point
+        sub.position.x, sub.position.z = -axis, -h / 2.0
+        obj.subframe_names = [self._CUP_BOTTOM_SUBFRAME]
+        obj.subframe_poses = [sub]
+        req = ApplyPlanningScene.Request()
+        req.scene.is_diff = True
+        req.scene.robot_state.is_diff = True
+        attached = AttachedCollisionObject()
+        attached.link_name = 'grasp_tcp'
+        attached.touch_links = ['FingerL_new_1', 'FingerR_new_1']
+        attached.object = obj
+        req.scene.robot_state.attached_collision_objects = [attached]
+        if not self._call_service(self.apply_scene_client, req).success:
+            raise RuntimeError('MoveIt refused the attached cup')
+        self._holding_cup = True
+        self._report_holding('attached at a manual gripper close (nominal cup)')
+        self._set_allowed_collisions(self._FINGER_OCTOMAP_PAIRS, True)
 
     def _attach_cup(self):
         if self._cup_collision_object is None:
