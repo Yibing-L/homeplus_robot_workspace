@@ -71,6 +71,15 @@ class Console:
                 self.actions.requested_task = 1
         elif (t := self.store.get("/molmopoint/task_id")) and t.fresh(now, 6.0) and t.value in TASK_COMMANDS:
             self.actions.requested_task = int(t.value)
+            return
+        # A restarted detector comes back on its default task: re-apply the requested
+        # one while the executor is idle (throttled; 2026-11-15).
+        t = self.store.get("/molmopoint/task_id")
+        idle = bool(ex and ex.fresh(now, 5.0) and (ex.value or {}).get("busy") is False)
+        if (t and t.fresh(now, 6.0) and t.value != self.actions.requested_task and idle
+                and now - getattr(self, "_task_resync_at", 0.0) > 5.0):
+            self._task_resync_at = now
+            self.io.set_task_id(self.actions.requested_task)
 
     def step(self) -> Dict[str, Any]:
         now, wall = self.store.clock(), time.time()
