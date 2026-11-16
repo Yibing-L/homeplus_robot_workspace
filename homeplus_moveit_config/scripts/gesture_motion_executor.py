@@ -810,6 +810,7 @@ class GestureMotionExecutor(Node):
         required_samples: Optional[int] = None,
         stability_tolerance_m: Optional[float] = None,
         max_refresh_shift_m: Optional[float] = None,
+        refresh_shift_xy_only: bool = False,
     ) -> Optional[PoseStamped]:
         """Force a fresh target pose by clearing the cached one and waiting again."""
         self._ensure_detection_subscription(detection_topic)
@@ -828,6 +829,7 @@ class GestureMotionExecutor(Node):
             required_samples=required_samples,
             stability_tolerance_m=stability_tolerance_m,
             max_refresh_shift_m=max_refresh_shift_m,
+            refresh_shift_xy_only=refresh_shift_xy_only,
         )
         if detected_pose is None:
             return None
