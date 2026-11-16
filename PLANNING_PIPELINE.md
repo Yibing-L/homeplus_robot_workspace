@@ -200,6 +200,83 @@ failure patterns (`log_filter.parse_status_text`). The console still records
 the firmware fault as a sticky hardware fault for the operator to acknowledge,
 even when the retry succeeds.
 
+## Hand the cup to a person (task 9, `hand_cup_to_person`)
+
+Runs only while the cup is attached (the sequence has `held_cup_placement`, like
+`place_cup_on_drip_tray`; the console offers task 9 only while holding). Pure
+logic is in `homeplus_moveit_config/scripts/handoff_logic.py`, tested by
+`tests/test_handoff_logic.py` (no ROS).
+
+Detector tasks (`homeplus_vision/config/task_registry.yaml`):
+
+| task | caption | camera | geometry |
+|---|---|---|---|
+| 9 | "the person" | side D455 (`camera: d455`) | `person`: median of the masked body's near-depth cluster (depth ≤ `max_depth_m` 4 m), level heading; height 0.1–2.0 m |
+| 10 | "the person's open hand, palm up" | hand D405 | `point`: depth at the model's point (palm surface); rejected inside the held-object volume around `grasp_tcp` (`reject_held_object`) and outside 0.5–1.5 m height |
+
+The detector now has an optional second RGB-D input (`secondary_*` parameters,
+default the D455 topics). It subscribes to it only when some task sets
+`camera: d455`, and the task's camera chooses the input for each cycle. The diagnostics
+carry `"camera": "d455"` for those cycles. Task 10 has no command of its own:
+`publish_task_pose: true` gives it `/molmopoint/task_10/pose`. If the D455 is not
+connected or its mount TF is wrong, change task 9 to the D405 (remove
+`camera: d455`, set `max_depth_m: 2.0`) and restart hp-vision.
+
+Steps (`gesture_execution_map.yaml`):
+
+| # | step | type | what it does |
+|---|---|---|---|
+| 1 | `scan_for_person` | `scan_rotate` | look at the current heading (3 agreeing samples within 10 cm, 10 s), then turn the base in place 30° at a time (left, up to 11 turns = 330°), collision-checked, 20 % speed, no approval; ends when a person 0.5–4 m from the base is stable; aborts after the last heading |
+| 2 | `approach_person` | `base_approach` | turn to face them and drive straight until the held cup is 0.65 m from their measured front (base_link 0.65 m + gripper reach); arm unchanged; ≤2.5 m; 20 %; **approval** |
+| 3 | `find_hand` | `detect` | switches the detector to task 10; 3 samples within 2 cm; within 1 m of the person reading and 1.1 m of the base |
+| 4 | `present_cup_above_hand` | `pose` (base placement) | cup bottom 10 cm above the palm reading; the base may shuffle ≤0.35 m at 20 % to put the hand in the arm plane; arm 20 %; fresh map; **approval** |
+| 5 | `lower_cup_into_hand` | `pose` Cartesian, `contact_ends_step` | aim the cup bottom 2 cm below the palm reading at 10 %; a stall counts as contact; held cup and fingers may touch map voxels; **approval** |
+| 6 | `wait_for_person_to_take_cup` | `handoff_wait` | hold still; ask the operator to open the gripper (see below) |
+| 7 | `release_cup_to_person` | `gripper` 0, `detach_cup` | opens only after step 6 approved it (the validator rejects a gripper opening before a `handoff_wait`) |
+| 8 | `withdraw_hand_from_cup` | `pose` Cartesian | open hand straight back 12 cm, 20 % |
+| 9 | `back_away_from_person` | `joint_state` base-relative | base 30 cm back, 20 % |
+| 10 | `retract_arm_after_handoff` | `joint_state` | arm upright, 30 %, once clear of the person |
+
+**Opening the gripper always asks** (`require_release_approval: true`). The
+console shows an approval for `wait_for_person_to_take_cup/open_gripper` with a
+zero-motion preview. The button reads "Hold to open the gripper (release the
+cup)" and Reject reads "Keep holding". While it waits, the executor measures
+evidence and shows it: contact at the guarded lower, and a pull, which means the
+shoulder or elbow encoder sits more than 1.5° from its settled value for 0.3 s
+(the firmware holds position at idle and raises no fault). The encoder settled
+value is the median of the first 0.5 s after the arm is still. With
+`require_release_approval: false`, contact (`release_on_contact`) or a pull
+opens the gripper without asking. No approval within `timeout_sec` (60 s),
+Reject, STOP, bridge not ready or stale joint feedback: the sequence aborts at
+step 6, still holding the cup (`... ; still holding the cup`). The operator can
+then open the gripper by hand with the console's **Open gripper** (it detaches
+the cup) or back away with **Back up**. A dry run skips the wait.
+
+New step types and keys (validated by `_command_config_errors`; using a key on the
+wrong step type is an error):
+
+| type | keys (defaults) |
+|---|---|
+| `scan_rotate` | `step_deg` (30, ≤90), `max_deg` (360), `direction` (left/right), `min_target_range_m`, `max_target_range_m`, `detection_*`, `task_id` + `detection_topic` (switch the detector), speed/approval keys |
+| `base_approach` | `standoff_m` (0.65, ≥0.3, held cup to person), `max_drive_m` (2.5), `min_drive_m` (0.05); `velocity_scaling`/`acceleration_scaling` must be ≤0.3 |
+| `handoff_wait` | `require_release_approval` (true), `operator_confirm` (true), `contact_from_step`, `release_on_contact` (true), `timeout_sec` (30; the map uses 60), `pull_threshold_deg` (1.5), `pull_min_duration_sec` (0.3), `pull_joints` (shoulder, elbow; encoder joints only), `settle_timeout_sec` (10), `baseline_sec` (0.5) |
+| `detect` | may now set `task_id` + `detection_topic` (together) and `min/max_target_range_m` |
+| `base_placement` | `max_base_move_m` (drop placements needing more base travel), `base_velocity_scaling` (slow base drive; otherwise standoff base phases run at full scaling as before) |
+
+The first detection before step 1 is skipped when a `detect`/`scan_rotate` step
+comes before any `target: detected` step. Existing sequences are unchanged by
+this. Base motions in `scan_rotate`/`base_approach` are base-only phases
+planned from the measured state with path bounds, sent like any other plan
+(approval, validation, endpoint check). TRACKING_ERROR/SETTLE_TIMEOUT recovery
+and STOP behave as in the fault-recovery section.
+
+Console: task 9 "Hand the cup to a person" (`TASK_COMMANDS`, `HOLDING_TASKS =
+{7, 9}`). Task 9 is also a search task (`state_machine.SEARCH_TASKS`), so the
+detection-window preflight and the TARGET_OK start gate do not apply. It may
+start whenever the detector is running (TARGET_OK, NO_TARGET, TARGET_UNSTABLE or
+DETECTOR_PAUSED). `--sim` has a stub of the sequence. In the stub, the hand-off
+wait is an approval.
+
 ## Offline validation
 
 ```

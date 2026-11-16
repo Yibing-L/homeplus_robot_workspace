@@ -18,7 +18,11 @@ export const TASKS: Record<number, { command: string; title: string; radio: stri
   2: { command: "press_square_button", title: "Press the bottom button", radio: "Task 2 · bottom button", start: "Start bottom button press" },
   7: { command: "place_cup_on_drip_tray", title: "Place the cup on the drip tray", radio: "Task 7 · place", start: "Place cup on drip tray" },
   8: { command: "press_round_button", title: "Press the top button (from above)", radio: "Task 8 · top button", start: "Start top button press" },
+  9: { command: "hand_cup_to_person", title: "Hand the cup to a person", radio: "Task 9 · hand over", start: "Hand cup to person" },
 };
+
+// actions.HOLDING_TASKS: tasks that need the cup in the gripper.
+export const HOLDING_TASKS = [7, 9];
 
 const ACTION: Record<ArmKind, string> = {
   start: "start_task",
@@ -64,6 +68,21 @@ export function ArmDetails({ snap, arm, setArm }: { snap: Snapshot; arm: Arm; se
           Moves without approval: retract the arm to the level carry pose with the cup, then the base drives to a standoff in
           front of the tray. After a close-up look the cup slides in over the tray, lowers until its bottom is 1 cm above the
           measured tray surface, the gripper opens, and the arm backs out and retracts.
+        </div>
+      </>
+    );
+  }
+  if (arm.kind === "start" && arm.args.task === 9) {
+    return (
+      <>
+        <h3>Start {TASKS[9].command}?</h3>
+        <div className="meta mono">detector: the person (task 9, side D455), then their open hand (task 10, hand camera)</div>
+        <div className="moves">
+          Moves without approval: the base turns in place in 30° steps (slow) until it sees a person. Approvals: the
+          drive toward them (stops with the cup 65 cm away), the move over their hand, and the guarded lower onto the
+          palm. Then it asks you to open the gripper (contact and a pull on the cup are shown as evidence); without
+          your approval it keeps the cup. If it stops holding the cup, "Open gripper" opens it by hand.
+          Ask the person to hold an open hand out, palm up, at about table height.
         </div>
       </>
     );

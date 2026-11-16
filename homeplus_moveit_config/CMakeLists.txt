@@ -28,6 +28,7 @@ install(
     scripts/arduino_reader.py
     scripts/planar_reach.py
     scripts/fault_recovery.py
+    scripts/handoff_logic.py
     scripts/replay_trajectory.py
   DESTINATION lib/${PROJECT_NAME}
 )

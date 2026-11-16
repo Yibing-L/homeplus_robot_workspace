@@ -68,13 +68,14 @@ class Console:
         """The next task follows from the gripper's load: place (7) while holding the cup, otherwise
         not 7. With the load unknown (no executor status since the console started), accept the
         detector's current task if it is a startable one, so the preflight compares like with like."""
-        from .actions import TASK_COMMANDS
+        from .actions import HOLDING_TASKS, TASK_COMMANDS
         ex = self.store.get("/gesture_control/executor_state")
         holding = (ex.value or {}).get("holding_cup") if ex else None
         if holding is True:
-            self.actions.requested_task = 7
+            if self.actions.requested_task not in HOLDING_TASKS:  # place (7) or hand over (9)
+                self.actions.requested_task = 7
         elif holding is False:
-            if self.actions.requested_task == 7:
+            if self.actions.requested_task in HOLDING_TASKS:
                 self.actions.requested_task = 1
         elif (t := self.store.get("/molmopoint/task_id")) and t.fresh(now, 6.0) and t.value in TASK_COMMANDS:
             self.actions.requested_task = int(t.value)

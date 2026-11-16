@@ -150,6 +150,15 @@ class MolmoPointNode(Node):
             'camera_info_topic', '/cameras/d405/color/camera_info'
         )
         self.declare_parameter('camera_frame', 'd405_color_optical_frame')
+        # Second RGB-D input, used only by tasks that set `camera: <secondary_camera_name>`
+        # in task_registry.yaml (hand_cup_to_person looks for the person with the
+        # side D455: the held cup fills much of the hand D405's view). Not
+        # subscribed when no task uses it.
+        self.declare_parameter('secondary_camera_name', 'd455')
+        self.declare_parameter('secondary_image_topic', '/cameras/d455/color/image_raw')
+        self.declare_parameter('secondary_depth_topic', '/cameras/d455/aligned_depth_to_color/image_raw')
+        self.declare_parameter('secondary_camera_info_topic', '/cameras/d455/color/camera_info')
+        self.declare_parameter('secondary_camera_frame', '')  # '' = the CameraInfo frame
         self.declare_parameter('inference_rate', 0.5)
         self.declare_parameter('world_frame', 'world')
         self.declare_parameter('tf_lookup_timeout_sec', 0.5)
@@ -371,6 +380,7 @@ class MolmoPointNode(Node):
             CameraInfo, self.camera_info_topic, self.camera_info_callback,
             qos_profile_sensor_data, callback_group=self._sensor_callback_group,
         )
+        self._secondary = None
         if self.pause_during_motion:
             self.create_subscription(
                 Bool, self.motion_status_topic, self.motion_status_callback,
@@ -383,10 +393,19 @@ class MolmoPointNode(Node):
             self.get_logger().warn(f"Invalid task_id {self.task_id}, defaulting to 1")
             self.task_id = 1
         self.task = self.tasks[self.task_id]
-        # One pose topic per task that drives a motion command.
+        secondary_name = str(self.get_parameter('secondary_camera_name').value).strip()
+        for task, cfg in self.tasks.items():
+            camera = cfg.get('camera')
+            if camera is not None and camera != secondary_name and camera != 'd405':
+                raise ValueError(f'Task {task}: camera {camera!r} is neither d405 nor '
+                                 f'secondary_camera_name {secondary_name!r}')
+        if any(cfg.get('camera') == secondary_name for cfg in self.tasks.values()):
+            self._secondary = self._subscribe_secondary_camera(secondary_name)
+        # One pose topic per task that drives a motion command, or that a sequence
+        # step looks for (publish_task_pose, e.g. the hand in hand_cup_to_person).
         self.task_pose_pubs = {task: self.create_publisher(PoseStamped,
             f'/molmopoint/task_{task}/pose', 10)
-            for task, cfg in self.tasks.items() if cfg.get('command_name')}
+            for task, cfg in self.tasks.items() if cfg.get('command_name') or cfg.get('publish_task_pose')}
         if not self.caption.strip():
             self.caption = self.task["caption"]
 
@@ -703,6 +722,44 @@ class MolmoPointNode(Node):
         self.sam2_model = SAM2ImagePredictor(sam2_model)
         self.enable_segmentation = True
 
+    def _subscribe_secondary_camera(self, name: str):
+        cam = type('CameraInput', (), {})()
+        cam.name = name
+        cam.image_topic = str(self.get_parameter('secondary_image_topic').value)
+        cam.depth_topic = str(self.get_parameter('secondary_depth_topic').value)
+        cam.camera_info_topic = str(self.get_parameter('secondary_camera_info_topic').value)
+        cam.camera_frame = str(self.get_parameter('secondary_camera_frame').value).strip()
+        cam.latest_color = None
+        cam.latest_color_header = None
+        cam.depth_frames = deque(maxlen=60)
+        cam.camera_info = None
+        cam.last_processed_stamp_ns = -1
+
+        def on_color(msg):
+            ahead_sec = (self._header_stamp_ns(msg.header) - self.get_clock().now().nanoseconds) / 1e9
+            if ahead_sec > 0.1:
+                self._future_frames_dropped += 1
+                return
+            color = self.bridge.imgmsg_to_cv2(msg, desired_encoding='bgr8')
+            with self._state_lock:
+                cam.latest_color, cam.latest_color_header = color, msg.header
+
+        def on_depth(msg):
+            with self._state_lock:
+                cam.depth_frames.append(msg)
+
+        def on_info(msg):
+            with self._state_lock:
+                cam.camera_info = msg
+
+        group = self._sensor_callback_group
+        self.create_subscription(Image, cam.image_topic, on_color, qos_profile_sensor_data, callback_group=group)
+        self.create_subscription(Image, cam.depth_topic, on_depth, qos_profile_sensor_data, callback_group=group)
+        self.create_subscription(CameraInfo, cam.camera_info_topic, on_info, qos_profile_sensor_data,
+                                 callback_group=group)
+        self.get_logger().info(f'Secondary camera {name}: {cam.image_topic} (used by tasks with camera: {name})')
+        return cam
+
     def image_callback(self, msg: Image):
         ahead_sec = (self._header_stamp_ns(msg.header) - self.get_clock().now().nanoseconds) / 1e9
         if ahead_sec > 0.1:
@@ -769,25 +826,37 @@ class MolmoPointNode(Node):
 
     def detect_loop(self):
         diag = self._new_cycle_diagnostics()
+        with self._config_lock:
+            task_camera = (getattr(self, 'tasks', {}).get(self.task_id) or {}).get('camera')
+        secondary = getattr(self, '_secondary', None)
+        use_secondary = secondary is not None and task_camera == secondary.name
         with self._state_lock:
-            color = self.latest_color
-            header = self.latest_color_header
-            depth = min(self._depth_frames, key=lambda d: abs(self._header_stamp_ns(d.header) -
+            if use_secondary:
+                color, header = secondary.latest_color, secondary.latest_color_header
+                depth_frames, camera_info = secondary.depth_frames, secondary.camera_info
+            else:
+                color, header = self.latest_color, self.latest_color_header
+                depth_frames, camera_info = self._depth_frames, self.camera_info
+            depth = min(depth_frames, key=lambda d: abs(self._header_stamp_ns(d.header) -
                         self._header_stamp_ns(header)), default=None) if header else None
-            camera_info = self.camera_info
             robot_moving = self._robot_moving
             motion_finished_stamp_ns = self._motion_finished_stamp_ns
         diag['robot_moving'] = bool(robot_moving)
+        image_topic = secondary.image_topic if use_secondary else self.image_topic
+        camera_info_topic = secondary.camera_info_topic if use_secondary else self.camera_info_topic
+        configured_frame = secondary.camera_frame if use_secondary else self.camera_frame
+        if use_secondary:
+            diag['camera'] = secondary.name
 
         if color is None or header is None or camera_info is None:
             if color is None or header is None:
                 self.get_logger().warn(
-                    f"Waiting for color image on {self.image_topic}",
+                    f"Waiting for color image on {image_topic}",
                     throttle_duration_sec=5.0,
                 )
             if camera_info is None:
                 self.get_logger().warn(
-                    f"Waiting for camera info on {self.camera_info_topic}",
+                    f"Waiting for camera info on {camera_info_topic}",
                     throttle_duration_sec=5.0,
                 )
             # Already logged above with its own throttle.
@@ -840,9 +909,14 @@ class MolmoPointNode(Node):
             self._report_cycle(diag, 'motion_gate', reason, message, level)
             return
         with self._state_lock:
-            already_processed = frame_stamp_ns <= self._last_processed_color_stamp_ns
-            if not already_processed:
-                self._last_processed_color_stamp_ns = frame_stamp_ns
+            if use_secondary:
+                already_processed = frame_stamp_ns <= secondary.last_processed_stamp_ns
+                if not already_processed:
+                    secondary.last_processed_stamp_ns = frame_stamp_ns
+            else:
+                already_processed = frame_stamp_ns <= self._last_processed_color_stamp_ns
+                if not already_processed:
+                    self._last_processed_color_stamp_ns = frame_stamp_ns
         if already_processed:
             message = (
                 'No new color frame since the last cycle '
@@ -868,14 +942,14 @@ class MolmoPointNode(Node):
         diag['task_id'] = task_id
         try:
             frame_tf = self.tf_buffer.lookup_transform(self.world_frame,
-                self.camera_frame or camera_info.header.frame_id, Time.from_msg(header.stamp),
+                configured_frame or camera_info.header.frame_id, Time.from_msg(header.stamp),
                 timeout=self._tf_timeout)
         except Exception as exc:
             diag['tf_ok'] = False
             self._report_cycle(
                 diag, 'tf', 'tf_lookup_failed',
                 f'No acquisition-time camera transform {self.world_frame} <- '
-                f'{self.camera_frame or camera_info.header.frame_id} '
+                f'{configured_frame or camera_info.header.frame_id} '
                 f"(frame age {diag['frame_age_sec']:.2f} s): {exc}", 'warn')
             return
         diag['tf_ok'] = True
@@ -977,7 +1051,8 @@ class MolmoPointNode(Node):
                 z = arr.astype(np.float64) * (0.001 if arr.dtype == np.uint16 else 1.0)
                 mask = cv2.resize(full_mask, (depth.width, depth.height), interpolation=cv2.INTER_NEAREST) > 0
                 mask = cv2.erode(mask.astype(np.uint8), np.ones((3, 3), np.uint8)) > 0
-                rows, cols = np.nonzero(mask & np.isfinite(z) & (z > 0.12) & (z < 2.0))
+                max_depth = float(self.tasks[task_id].get('max_depth_m', 2.0))
+                rows, cols = np.nonzero(mask & np.isfinite(z) & (z > 0.12) & (z < max_depth))
                 fx = camera_info.k[0] * depth.width / camera_info.width
                 fy = camera_info.k[4] * depth.height / camera_info.height
                 cx = camera_info.k[2] * depth.width / camera_info.width
@@ -1070,6 +1145,26 @@ class MolmoPointNode(Node):
                             depth_source = 'segmented_depth_with_center_offset'
                         except ValueError as exc:
                             geometry_diagnostics['reason'] = f'offset_surface_goal: {exc}'
+                elif (self.tasks[task_id].get('target_geometry') == 'person'
+                        and caption == self.tasks[task_id]['caption']):
+                    # A person to drive toward (hand_cup_to_person): the front of the
+                    # masked body (median of the near-depth cluster) within
+                    # max_depth_m, with a level camera-to-person heading.
+                    if len(points) < self.mask_depth_min_points:
+                        geometry_diagnostics['reason'] = (
+                            f'too few masked depth points within {max_depth:.1f} m: {len(points)}')
+                    else:
+                        near = float(np.quantile(points[:, 2], self.mask_depth_near_quantile))
+                        front = points[points[:, 2] <= near + max(self.mask_depth_cluster_margin_m, 0.10)]
+                        body = np.median(front, axis=0)
+                        point_3d = tuple(float(v) for v in body)
+                        horizontal = (rotation @ body + translation) - translation
+                        horizontal[2] = 0.0
+                        horizontal /= max(np.linalg.norm(horizontal), 1e-9)
+                        approach = horizontal
+                        target_diag['person_front_depth_m'] = round(near, 3)
+                        target_diag['person_points'] = int(len(front))
+                        depth_source = 'segmented_person_front'
                 elif (self.tasks[task_id].get('target_geometry') == 'point'
                         and caption == self.tasks[task_id]['caption']):
                     # A point to press along a fixed direction (2026-10-30): depth at
@@ -1100,6 +1195,12 @@ class MolmoPointNode(Node):
                                              horizontal[1] * math.cos(pitch), -math.sin(pitch)])
                         target_diag['point_depth_m'] = round(d_at, 4)
                         depth_source = 'model_point_depth'
+                        if self.tasks[task_id].get('reject_held_object'):
+                            # e.g. "the open hand" landing on the robot's own gripper
+                            held = self._inside_held_object(target_world, header.stamp)
+                            if held is not None:
+                                geometry_diagnostics['reason'] = held
+                                point_3d = None
                 elif task_id == 2 and caption == self.tasks[2]['caption']:
                     u = d['point'][0] * depth.width / self.target_w
                     v = d['point'][1] * depth.height / self.target_h
@@ -1262,7 +1363,7 @@ class MolmoPointNode(Node):
 
             if self.publish_poses and point_3d is not None:
                 X, Y, Z = point_3d
-                camera_frame = self.camera_frame or camera_info.header.frame_id
+                camera_frame = configured_frame or camera_info.header.frame_id
                 target_diag['point_camera'] = [float(X), float(Y), float(Z)]
                 target_diag['depth_source'] = depth_source
 
@@ -1285,6 +1386,14 @@ class MolmoPointNode(Node):
                 )
 
                 pose_world = self._transform_pose_to_world(pose_cam, frame_tf)
+                z_range = self.tasks[task_id].get('target_z_range_m')
+                if pose_world is not None and z_range and not (
+                        float(z_range[0]) <= pose_world.pose.position.z <= float(z_range[1])):
+                    target_diag['reason'] = (f'target height {pose_world.pose.position.z:.2f} m outside '
+                                             f'target_z_range_m {list(z_range)}')
+                    self.get_logger().info(f"Target {d['label']}: {target_diag['reason']}; not publishing")
+                    pose_world = None
+                    target_diag['z_rejected'] = True
                 if pose_world is not None:
                     if approach is not None:
                         length = np.linalg.norm(approach)
@@ -1317,7 +1426,7 @@ class MolmoPointNode(Node):
                         f"Target {d['label']} in {self.world_frame}: "
                         f"x={pw.x:.2f}m, y={pw.y:.2f}m, z={pw.z:.2f}m"
                     )
-                else:
+                elif not target_diag.get('z_rejected'):
                     target_diag['reason'] = 'world_transform_failed'
             elif self.publish_poses:
                 target_diag.setdefault('reason', 'missing mask/depth or rejected surface fit')

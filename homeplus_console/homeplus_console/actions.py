@@ -13,15 +13,20 @@ from pathlib import Path
 from typing import Any, Callable, Deque, Dict, List, Optional, Tuple
 
 from .robot_io import RobotIO
+from .state_machine import SEARCH_TASKS
 from .tracker import Tracker
 
 MOTION = {"approve", "start_task", "home", "gripper_open", "gripper_close", "back_up",
           "return_to_start", "undo_step", "undo_sequence", "resume", "teleop_on"}
 RECOVERY = ("return_to_start", "undo_step", "undo_sequence", "resume")
-TASK_COMMANDS = {1: "pick_up_coffee", 2: "press_square_button", 7: "place_cup_on_drip_tray", 8: "press_round_button"}
+TASK_COMMANDS = {1: "pick_up_coffee", 2: "press_square_button", 7: "place_cup_on_drip_tray", 8: "press_round_button",
+                 9: "hand_cup_to_person"}
 # Tasks that need the cup in the gripper; every other task refuses to start while holding it
 # (the executor enforces both from the planning scene, this only mirrors it in the UI).
-HOLDING_TASKS = {7}
+HOLDING_TASKS = {7, 9}
+# Perception states in which a search task (SEARCH_TASKS: it turns the base to find its own
+# target) may start: the detector is up and looking, even if the target is not in view yet.
+SEARCH_START_PERCEPTION = {"TARGET_OK", "NO_TARGET", "TARGET_UNSTABLE", "DETECTOR_PAUSED"}
 BRIDGE_UNIT = "hp-bridge"
 
 
@@ -185,14 +190,16 @@ class ActionService:
             "plan preview for this plan_id has not arrived")
         put("reject", ap is not None, "no plan awaiting approval")
         put("cancel", ex["fresh"] and bool(ex["busy"]), "no sequence running")
-        start_ok = robot == "IDLE_READY" and state["perception"]["state"] == "TARGET_OK" and not flow_busy
+        perception_ok = state["perception"]["state"] == "TARGET_OK" or (
+            self.requested_task in SEARCH_TASKS and state["perception"]["state"] in SEARCH_START_PERCEPTION)
+        start_ok = robot == "IDLE_READY" and perception_ok and not flow_busy
         start_reason = None
         if not start_ok:
             if robot == "IDLE_NOT_READY":
                 start_reason = state["robot"]["detail"]
             elif robot != "IDLE_READY":
                 start_reason = f"robot is {state['robot']['title'].lower()}"
-            elif state["perception"]["state"] != "TARGET_OK":
+            elif not perception_ok:
                 start_reason = f"perception: {state['perception']['title'].lower()}"
             else:
                 start_reason = "set-start flow in progress"

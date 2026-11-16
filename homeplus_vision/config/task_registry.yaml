@@ -71,3 +71,32 @@ tasks:
     approach_pitch_down_deg: 60
     command_name: press_round_button
     command_type: sequence
+
+  # Hand the held cup to a person (task 9; executor sequence hand_cup_to_person).
+  # The person is searched for by turning the base. `camera: d455` points this task at
+  # the side D455 (secondary_* topics in target_detection_params.yaml): with the cup
+  # in the gripper much of the hand D405's view is the cup. `target_geometry: person`
+  # = the front of the masked body (near-depth cluster median) with a level heading;
+  # depth up to max_depth_m (the D455 is good to several metres).
+  9:
+    name: hand_cup_to_person
+    caption: the person
+    camera: d455
+    target_geometry: person
+    max_depth_m: 4.0
+    target_z_range_m: [0.1, 2.0]
+    command_name: hand_cup_to_person
+    command_type: sequence
+
+  # The person's open hand, found close up by the hand camera once the robot faces
+  # them (step find_hand of hand_cup_to_person). Depth at the model's point (the
+  # palm surface), level heading. Points on or around the held cup / the gripper
+  # (held_object_frame volume) are rejected: "open hand" can land on the gripper.
+  10:
+    name: locate_person_hand
+    caption: the person's open hand, palm up
+    target_geometry: point
+    approach_pitch_down_deg: 0
+    reject_held_object: true
+    target_z_range_m: [0.5, 1.5]
+    publish_task_pose: true
