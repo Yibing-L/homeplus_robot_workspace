@@ -44,7 +44,8 @@ from rclpy.node import Node
 from rcl_interfaces.srv import SetParameters
 from rclpy.parameter import Parameter
 from rclpy.time import Time
-from sensor_msgs.msg import JointState
+from sensor_msgs.msg import JointState, PointCloud2
+from sensor_msgs_py import point_cloud2
 from rclpy.qos import QoSProfile, DurabilityPolicy
 from shape_msgs.msg import SolidPrimitive
 from std_msgs.msg import Bool, Float32, String, ColorRGBA
@@ -285,6 +286,9 @@ class GestureMotionExecutor(Node):
         )
         self.held_cup_height_m = float(self.get_parameter("held_cup_height_m").value)
         self.held_cup_radius_m = float(self.get_parameter("held_cup_radius_m").value)
+        # Typical grasp: cup base 8.4 cm below grasp_tcp (most 2026-10/11 grasps).
+        self.declare_parameter("held_cup_nominal_bottom_m", 0.084)
+        self.held_cup_nominal_bottom_m = float(self.get_parameter("held_cup_nominal_bottom_m").value)
         self.clear_octomap_before_pose_plan = bool(
             self.get_parameter("clear_octomap_before_pose_plan").value
         )
@@ -364,6 +368,11 @@ class GestureMotionExecutor(Node):
         self.cb_group = ReentrantCallbackGroup()
         self.tf_buffer = Buffer()
         self.tf_listener = TransformListener(self.tf_buffer, self)
+        # Latest hand-camera cloud (full, unfiltered), read by measure_ahead steps.
+        self._ahead_cloud: Optional[PointCloud2] = None
+        self.create_subscription(PointCloud2, '/vision/clouds/d405/full',
+                                 lambda m: setattr(self, '_ahead_cloud', m), 2,
+                                 callback_group=self.cb_group)
         self.octomap_clear_client = self.create_client(
             Empty,
             str(self.get_parameter("clear_octomap_service").value),
@@ -1132,7 +1141,7 @@ class GestureMotionExecutor(Node):
         if not isinstance(command_cfg, dict):
             return [f"{name}: command must be a mapping"]
 
-        allowed = set("endpoint_profile name type group_name joints value frame_id position orientation rpy_deg target steps task_id detection_topic detection_timeout_sec detection_min_stable_samples detection_stability_tolerance_m detection_max_refresh_shift_m max_replanning_attempts max_attempts settle_sec require_trajectory_approval planner_id allowed_planning_time num_planning_attempts link_name offset_x offset_y offset_z offset_frame orientation_from_detection gripper_value final_gripper_value position_tolerance_m position_tolerance_xy_m position_tolerance_z_m use_orientation_constraint orientation_tolerance_rad orientation_tolerance_x_rad orientation_tolerance_y_rad orientation_tolerance_z_rad safe_z_candidate_offsets_m base_goal_tcp_x_min_m base_goal_tcp_x_max_m base_goal_tcp_y_max_m max_base_goal_rotation_rad max_base_goal_translation_m max_base_goal_y_translation_m preserve_reference_z maintain_orientation_during_path post_delay_sec cartesian mobile_standoff lookahead_offsets velocity_scaling acceleration_scaling clear_octomap_before_plan octomap_clear_timeout_sec octomap_rebuild_wait_sec ik_candidate_attempts attach_cup joint_tolerance hardcoded_detection_pose hardcoded_detection_frame planning_service_timeout_sec phase_allowed_planning_time phase_num_planning_attempts phase_joint_tolerance continue_on_arduino_timeout base_placement heading_from_base max_arm_plane_error_m redo_from_step max_redos detach_cup held_cup_placement base_relative allow_held_cup_map_contact allow_finger_map_contact contact_ends_step surface_height_memory surface_height_prior_m surface_height_tolerance_m".split())
+        allowed = set("endpoint_profile name type group_name joints value frame_id position orientation rpy_deg target steps task_id detection_topic detection_timeout_sec detection_min_stable_samples detection_stability_tolerance_m detection_max_refresh_shift_m max_replanning_attempts max_attempts settle_sec require_trajectory_approval planner_id allowed_planning_time num_planning_attempts link_name offset_x offset_y offset_z offset_frame orientation_from_detection gripper_value final_gripper_value position_tolerance_m position_tolerance_xy_m position_tolerance_z_m use_orientation_constraint orientation_tolerance_rad orientation_tolerance_x_rad orientation_tolerance_y_rad orientation_tolerance_z_rad safe_z_candidate_offsets_m base_goal_tcp_x_min_m base_goal_tcp_x_max_m base_goal_tcp_y_max_m max_base_goal_rotation_rad max_base_goal_translation_m max_base_goal_y_translation_m preserve_reference_z maintain_orientation_during_path post_delay_sec cartesian mobile_standoff lookahead_offsets velocity_scaling acceleration_scaling clear_octomap_before_plan octomap_clear_timeout_sec octomap_rebuild_wait_sec ik_candidate_attempts attach_cup joint_tolerance hardcoded_detection_pose hardcoded_detection_frame planning_service_timeout_sec phase_allowed_planning_time phase_num_planning_attempts phase_joint_tolerance continue_on_arduino_timeout base_placement heading_from_base max_arm_plane_error_m redo_from_step max_redos detach_cup held_cup_placement base_relative allow_held_cup_map_contact allow_finger_map_contact contact_ends_step surface_height_memory surface_height_prior_m surface_height_tolerance_m corridor_half_width_m min_forward_m max_forward_m min_points cup_bottom_radius_m face_margin_m overhang_margin_m required path_orientation_tolerance_rad face_min_above_tray_m face_max_above_tray_m cup_top_radius_m max_face_shift_m arm_first keep_arm converge_tol_m check_overhang measure_tray forward_only".split())
         if command_cfg.get('endpoint_profile', 'precise') not in ('precise', 'transit'):
             errors.append(f'{name}: endpoint_profile must be precise or transit')
         if command_cfg.get('cartesian') and command_cfg.get('endpoint_profile') == 'transit':
@@ -1150,7 +1159,7 @@ class GestureMotionExecutor(Node):
             if key in command_cfg and not 0 < float(command_cfg[key]) <= 1:
                 errors.append(f'{name}: {key} must be in (0, 1]')
         action_type = str(command_cfg.get("type", "command"))
-        supported = {"pose", "joint_state", "gripper", "command", "sequence", "detect"}
+        supported = {"pose", "joint_state", "gripper", "command", "sequence", "detect", "measure_ahead"}
         if action_type not in supported:
             errors.append(f"{name}: unsupported type '{action_type}'")
 
@@ -1859,6 +1868,35 @@ class GestureMotionExecutor(Node):
                         i = [str(st.get("name", "")) for st in steps].index(target_step) - 1
                         continue
 
+            elif step_type == "measure_ahead":
+                # Close-range check from the standoff (2026-11-13): the tray target came
+                # from a ~1.3 m reading that ran high and deep, and the cup went into
+                # the dispenser. ~20 cm from the machine the D405 is accurate: measure
+                # the machine's face behind the tray, the tray surface and the overhang
+                # above it, then correct the target the slide-in uses.
+                if detected_pose is None:
+                    self._abort_sequence(sequence_name, step_name, "no target to correct")
+                    return
+                corrected = self._measure_ahead(sequence_name, step_name, step, sequence_cfg, detected_pose)
+                if corrected is None and step.get("required", False):
+                    self._abort_sequence(sequence_name, step_name, "close-range measurement failed")
+                    return
+                if corrected is not None:
+                    detected_pose = corrected
+                # Closed loop: slide again until the measured wall distance agrees
+                # (operator, 2026-11-13: the cup kept stopping short of the tray).
+                target_step = step.get("redo_from_step")
+                shift = abs(getattr(self, "_last_ahead_shift", 0.0))
+                if target_step and corrected is not None and shift > float(step.get("converge_tol_m", 0.01)):
+                    done = redos.get(step_name, 0)
+                    if done < int(step.get("max_redos", 3)):
+                        redos[step_name] = done + 1
+                        self.get_logger().info(
+                            f"  {step_name}: {shift * 1000:.0f} mm to go; sliding again ({done + 1})")
+                        i = [str(st.get("name", "")) for st in steps].index(target_step) - 1
+                        continue
+                    self.get_logger().warn(f"  {step_name}: still {shift * 1000:.0f} mm off after {done} slides")
+                continue
             elif step_type == "pose":
                 if not self.enable_moveit_planning or self.move_group_client is None:
                     self._abort_sequence(sequence_name, step_name, "MoveIt not enabled")
@@ -2885,7 +2923,10 @@ class GestureMotionExecutor(Node):
         (verified 2026-11-08: the finger allowance was gone by planning time and
         every press plan hit the button face). Re-apply active allowances after a
         clear and before planning; cheap when nothing is active."""
-        if getattr(self, '_finger_map_contact_allowed', False):
+        if getattr(self, '_finger_map_contact_allowed', False) or self._holding_cup:
+            # Holding: the fingers around the cup touch its unmasked voxels; the
+            # allowance set at closure was wiped by the lift/retreat clears and
+            # place_cup_on_drip_tray then hit them (2026-11-13).
             self._set_allowed_collisions(self._FINGER_MAP_PAIRS, True)
         if self._cup_map_contact_allowed:
             self._set_allowed_collisions(self._CUP_MAP_PAIRS, True)
@@ -3037,6 +3078,15 @@ class GestureMotionExecutor(Node):
             raise RuntimeError('The held cup has no measured bottom (detector published no cup extent at '
                                'grasp, or the cup was attached by an older executor): cannot place it')
         bx, by, bz = bottom
+        if not -0.12 <= bz <= -0.04:
+            # Grasp-time bottom measurements have read 0.2 cm below the TCP
+            # (2026-11-13), which aimed the palm into the table. A held cup's base
+            # is 4-12 cm below grasp_tcp; outside that, use the typical value and
+            # let the guarded descent find the tray by contact.
+            self.get_logger().warn(
+                f'[{sequence_name}] held cup bottom {bz:+.3f} m below grasp_tcp is implausible; '
+                f'using {-self.held_cup_nominal_bottom_m:+.3f} m')
+            bz = -self.held_cup_nominal_bottom_m
         axis = float(placement['cup_axis_behind_grasp_point_m'])
         clearance = float(placement['release_clearance_m'])
         self.get_logger().info(
@@ -3133,6 +3183,127 @@ class GestureMotionExecutor(Node):
                 f'[{contact.position.x:.3f}, {contact.position.y:.3f}, {contact.position.z:.3f}]')
         self._collision_debug = (display, MarkerArray(markers=markers))
         self._republish_collision_debug()
+
+    def _measure_ahead(self, sequence_name, step_name, step, sequence_cfg, target_pose):
+        """Correct a placement target from the hand camera's close-range view ahead.
+
+        In the base's heading frame (forward f, left l) from grasp_tcp, inside a
+        corridor around the target: the machine face is the nearest surface between
+        the tray and the gripper height; the overhang is the lowest surface above
+        the gripper; the tray is the level surface near the target height. Returns
+        the corrected target (cup-bottom point) or None if nothing was measured."""
+        timeout = float(step.get("detection_timeout_sec", 10.0))
+        t0 = self.get_clock().now().nanoseconds + int(0.3e9)
+        deadline = time.monotonic() + timeout
+        cloud = None
+        while time.monotonic() < deadline:
+            c = self._ahead_cloud
+            if c is not None and Time.from_msg(c.header.stamp).nanoseconds >= t0:
+                cloud = c
+                break
+            time.sleep(0.1)
+        if cloud is None:
+            self.get_logger().warn(f"  {step_name}: no fresh hand-camera cloud within {timeout:.0f} s")
+            return None
+        try:
+            tf = self.tf_buffer.lookup_transform("world", cloud.header.frame_id, cloud.header.stamp,
+                                                 timeout=Duration(seconds=1.0))
+            tcp_tf = self.tf_buffer.lookup_transform("world", "grasp_tcp", Time(),
+                                                     timeout=Duration(seconds=1.0))
+        except Exception as exc:
+            self.get_logger().warn(f"  {step_name}: TF unavailable ({exc})")
+            return None
+        q, t = tf.transform.rotation, tf.transform.translation
+        x, y, z, w = q.x, q.y, q.z, q.w
+        R = np.array([[1-2*(y*y+z*z), 2*(x*y-z*w), 2*(x*z+y*w)],
+                      [2*(x*y+z*w), 1-2*(x*x+z*z), 2*(y*z-x*w)],
+                      [2*(x*z-y*w), 2*(y*z+x*w), 1-2*(x*x+y*y)]])
+        pts = np.array([[p[0], p[1], p[2]] for p in point_cloud2.read_points(
+            cloud, field_names=("x", "y", "z"), skip_nans=True)], dtype=float)
+        if len(pts) == 0:
+            return None
+        W = pts @ R.T + np.array([t.x, t.y, t.z])
+        tcp = np.array([tcp_tf.transform.translation.x, tcp_tf.transform.translation.y,
+                        tcp_tf.transform.translation.z])
+        yaw = self._measured_base()[2]
+        f = np.array([math.cos(yaw), math.sin(yaw), 0.0])
+        l = np.array([-math.sin(yaw), math.cos(yaw), 0.0])
+        T = np.array([target_pose.pose.position.x, target_pose.pose.position.y, target_pose.pose.position.z])
+        fwd = (W - tcp) @ f
+        lat = (W - T) @ l
+        half_width = float(step.get("corridor_half_width_m", 0.04))
+        corridor = (np.abs(lat) <= half_width) & (fwd >= float(step.get("min_forward_m", 0.10))) \
+            & (fwd <= float(step.get("max_forward_m", 0.45)))
+        C, cf = W[corridor], fwd[corridor]
+        min_pts = int(step.get("min_points", 20))
+        notes, T_new = [], T.copy()
+        self._last_ahead_shift = 0.0
+        T_fwd = float((T - tcp) @ f)
+        # Tray: level surface near the target height and within the corridor.
+        tray = C[np.abs(C[:, 2] - T[2]) <= 0.04]
+        if step.get("measure_tray", True) and len(tray) >= min_pts:
+            hist, edges = np.histogram(tray[:, 2], bins=np.arange(T[2] - 0.04, T[2] + 0.0401, 0.005))
+            peak = int(np.argmax(hist))
+            band = tray[(tray[:, 2] >= edges[peak] - 0.005) & (tray[:, 2] <= edges[peak + 1] + 0.005)]
+            T_new[2] = float(np.median(band[:, 2]))
+            notes.append(f"tray surface {T_new[2]:.3f} m ({len(band)} pts; was {T[2]:.3f})")
+        else:
+            notes.append(f"tray surface not visible ({len(tray)} pts); keeping {T[2]:.3f}")
+        # Face: nearest surface ahead between the tray and the gripper height.
+        # Above the tray's lip (a lip read as the face pulled the cup off the tray,
+        # 2026-11-13) and below where a held cup's top would reach.
+        face_sel = (C[:, 2] >= T_new[2] + float(step.get("face_min_above_tray_m", 0.04))) \
+            & (C[:, 2] <= T_new[2] + float(step.get("face_max_above_tray_m", 0.08)))
+        if np.count_nonzero(face_sel) >= min_pts:
+            face_fwd = float(np.percentile(cf[face_sel], 5))
+            goal = face_fwd - float(step.get("cup_bottom_radius_m", 0.03)) - float(step.get("face_margin_m", 0.01))
+            notes.append(f"machine face {face_fwd:.3f} m ahead of the gripper; target was {T_fwd:.3f} m ahead")
+            # Seat the cup just in front of the wall behind the tray, forward or back
+            # (2026-11-13: stopping 4.5 cm short dropped the cup off the tray's front),
+            # within max_face_shift_m of the detection.
+            shift = goal - T_fwd
+            max_shift = float(step.get("max_face_shift_m", 0.08))
+            if shift < 0 and step.get("forward_only", False):
+                # With a cup in hand the nearest surface seen is the brew head's
+                # front edge, in front of the real wall: never pull back on it
+                # (2026-11-13: it stopped the cup 3 cm short).
+                notes.append(f"nearest surface is {-shift:.3f} m short of the target; not pulling back")
+            elif abs(shift) <= max_shift:
+                T_new = T_new + shift * f
+                self._last_ahead_shift = shift
+                notes.append(f"moved the target {shift:+.3f} m to {goal:.3f} m ahead")
+            else:
+                notes.append(f"face correction {shift:+.3f} m exceeds {max_shift:.2f} m; target unchanged")
+        else:
+            notes.append(f"machine face not visible ({int(np.count_nonzero(face_sel))} pts)")
+        # Overhang: lowest surface inside the cup's footprint above the tray (the
+        # dispenser / brew head). The whole corridor caught the machine face at
+        # gripper height and dropped the target 10 cm into the table (2026-11-13).
+        T_new_fwd = float((T_new - tcp) @ f)
+        radius = float(step.get("cup_top_radius_m", 0.0475))
+        foot = (np.abs(cf - T_new_fwd) <= radius) & (np.abs((C - T_new) @ l) <= radius) \
+            & (C[:, 2] > T_new[2] + 0.03)
+        over = C[foot]
+        if step.get("check_overhang", True) and len(over) >= min_pts:
+            overhang = float(np.percentile(over[:, 2], 5))
+            placement = sequence_cfg.get("held_cup_placement") or {}
+            clearance = float(placement.get("release_clearance_m", 0.0))
+            cap = overhang - self.held_cup_height_m - float(step.get("overhang_margin_m", 0.01)) - clearance
+            notes.append(f"overhang {overhang:.3f} m")
+            surface = T_new[2]
+            if cap < surface - 0.005:
+                # Never below the measured support: the cup cannot fit under it here;
+                # report it and leave the height (guarded descent stops on contact).
+                notes.append(f"cup ({self.held_cup_height_m:.3f} m) may not fit under it; height unchanged")
+            elif T_new[2] > cap:
+                notes.append(f"lowered the target {T_new[2] - cap:.3f} m so the cup fits under it")
+                T_new[2] = cap
+        corrected = deepcopy(target_pose)
+        corrected.pose.position.x, corrected.pose.position.y, corrected.pose.position.z = map(float, T_new)
+        msg = f"  {step_name}: " + "; ".join(notes) + f" -> target ({T_new[0]:.3f}, {T_new[1]:.3f}, {T_new[2]:.3f})"
+        self.get_logger().info(msg)
+        self._publish_status(f"[{sequence_name}] {step_name}: " + "; ".join(notes))
+        return corrected
 
     def _fk_pose(self, joints, link, frame=None):
         req = GetPositionFK.Request()
@@ -3601,6 +3772,8 @@ class GestureMotionExecutor(Node):
     def _prepare_mobile_standoff(self, name, pose, cfg, request, candidates):
         """Choose a base pose with a feasible fixed-base continuation, then move it."""
         arm_group = 'press_arm' if cfg.get('link_name') == 'press_tcp' else 'arm'
+        if cfg.get('keep_arm'):
+            return self._standoff_keep_arm(name, pose, cfg, arm_group)
         selected = None
         rejections = {}
         diagnosed = False
@@ -3646,7 +3819,23 @@ class GestureMotionExecutor(Node):
                 here = dict(zip(self.latest_joint_state.name, self.latest_joint_state.position))
                 turn = {'base_x': here['base_x'], 'base_y': here['base_y'], 'base_theta': goal['base_theta']}
                 phases = [(f'{name}/base_turn', turn), (f'{name}/base_drive', goal)]
-            trajectory = self._plan_joint_phase(phases[0][0], 'base', self.latest_joint_state, phases[0][1], {})
+            arm_first_traj = None
+            base_start = self.latest_joint_state
+            if cfg.get('arm_first'):
+                # Lower the arm into the standoff pose here, away from the appliance,
+                # then drive the base with the arm still (2026-11-13: the arm move
+                # after the base drive arced down beside the coffee machine). Arm
+                # joints are base-relative, so the pose is the same either way.
+                arm_goal = {n: q[n] for n in ARM_JOINT_NAMES if n in q}
+                arm_first_traj = self._plan_joint_phase(
+                    f'{name}/arm_first', arm_group, self.latest_joint_state, arm_goal,
+                    {'velocity_scaling': float(cfg.get('velocity_scaling', 0.5)),
+                     'acceleration_scaling': float(cfg.get('acceleration_scaling', 0.5))})
+                if arm_first_traj is None:
+                    rejected('arm-first lowering blocked at the current base pose')
+                    continue
+                base_start = self._joint_state_with_updates(arm_goal)
+            trajectory = self._plan_joint_phase(phases[0][0], 'base', base_start, phases[0][1], {})
             if trajectory is not None and len(phases) > 1:
                 after_turn = self._joint_state_with_updates(phases[0][1])
                 if self._plan_joint_phase(phases[1][0], 'base', after_turn, phases[1][1], {}) is None:
@@ -3660,6 +3849,18 @@ class GestureMotionExecutor(Node):
             self.get_logger().error(f'{name}: no base candidate supports the collision-checked fixed-base approach; rejections={rejections}; no motion sent')
             return None
         base_cfg = {k: v for k, v in cfg.items() if k not in ('_goal_constraints', '_path_constraints')}
+        if arm_first_traj is not None:
+            label = f'{name}/arm_first'
+            context = self._execute_preplanned(label, arm_first_traj, {**base_cfg, 'group_name': arm_group})
+            if not context.success or not self._wait_for_arduino_done(60.0, label):
+                self.stop_pub.publish(Bool(data=True))
+                raise RuntimeError(f'{name}: arm-first lowering failed')
+            # The base path was checked with the arm in this pose; replan it from
+            # the measured state the arm actually reached.
+            selected = self._plan_joint_phase(phases[0][0], 'base', self.latest_joint_state, phases[0][1], {})
+            if selected is None:
+                self.stop_pub.publish(Bool(data=True))
+                raise RuntimeError(f'{phases[0][0]}: no base path after the arm-first lowering')
         for index, (label, target) in enumerate(phases):
             if index:
                 # Later phases start from the measured state the previous one reached.
@@ -3697,6 +3898,45 @@ class GestureMotionExecutor(Node):
             arm_cfg = resolved
             pose = self._build_pose_message(resolved)
         return self._plan_pose(name + '/arm', pose, arm_cfg)
+
+    def _standoff_keep_arm(self, name, pose, cfg, arm_group):
+        """Drive only the base so the gripper, held as it is, lands at the standoff
+        x/y facing the target; the arm keeps its current joints (operator,
+        2026-11-13: re-solving the arm at the standoff raised the cup and bent the
+        elbow). Height is left to the next steps (straight slide, guarded lower)."""
+        link = cfg.get('link_name', self.end_effector_link)
+        try:
+            tcp_tf = self.tf_buffer.lookup_transform('world', link, Time(), timeout=Duration(seconds=1.0))
+        except Exception as exc:
+            raise RuntimeError(f'{name}: no TF for {link}: {exc}')
+        bx, by, byaw = self._measured_base()
+        t = tcp_tf.transform.translation
+        dx, dy = t.x - bx, t.y - by
+        c0, s0 = math.cos(byaw), math.sin(byaw)
+        tcp_fwd, tcp_lat = c0 * dx + s0 * dy, -s0 * dx + c0 * dy
+        q = pose.pose.orientation
+        heading = math.atan2(2 * (q.w * q.z + q.x * q.y), 1 - 2 * (q.y * q.y + q.z * q.z))
+        c, sn = math.cos(heading), math.sin(heading)
+        goal = {'base_x': pose.pose.position.x - (c * tcp_fwd - sn * tcp_lat),
+                'base_y': pose.pose.position.y - (sn * tcp_fwd + c * tcp_lat),
+                'base_theta': bx * 0 + byaw + math.atan2(math.sin(heading - byaw), math.cos(heading - byaw))}
+        self.get_logger().info(
+            f'{name}: keeping the arm (gripper {tcp_fwd:.3f} m ahead, {tcp_lat:+.3f} m left of the base, '
+            f'height {t.z:.3f} m); base goal ({goal["base_x"]:.3f}, {goal["base_y"]:.3f}, '
+            f'{goal["base_theta"]:.3f})')
+        label = f'{name}/base'
+        trajectory = self._plan_joint_phase(label, 'base', self.latest_joint_state, goal, {})
+        if trajectory is None:
+            self.get_logger().error(f'{name}: no collision-free base path with the arm held as it is; no motion sent')
+            return None
+        base_cfg = {k: v for k, v in cfg.items() if k not in ('_goal_constraints', '_path_constraints')}
+        if '_placement_state' in cfg:
+            cfg['_placement_state']['base_moved'] = True
+        context = self._execute_preplanned(label, trajectory, {**base_cfg, 'group_name': 'base'})
+        if not context.success or not self._wait_for_arduino_done(90.0, label):
+            self.stop_pub.publish(Bool(data=True))
+            raise RuntimeError(f'{name}: base positioning failed')
+        return context
 
     def _diagnose_cartesian_failure(self, name, path, failed):
         """Read-only probes and scene capture. Never return a trajectory to execute."""
@@ -3832,9 +4072,15 @@ class GestureMotionExecutor(Node):
             if bool(command_cfg.get("maintain_orientation_during_path", False)):
                 path_constraints = Constraints()
                 path_constraints.name = f"{name}_maintain_orientation"
-                path_constraints.orientation_constraints.append(
-                    deepcopy(orientation_constraint)
-                )
+                path_oc = deepcopy(orientation_constraint)
+                path_tol = command_cfg.get("path_orientation_tolerance_rad")
+                if path_tol is not None:
+                    # Looser along the way than at the goal: keep the hand roughly
+                    # level without starving the planner (2026-11-13).
+                    path_oc.absolute_x_axis_tolerance = float(path_tol)
+                    path_oc.absolute_y_axis_tolerance = float(path_tol)
+                    path_oc.absolute_z_axis_tolerance = max(float(path_tol), orient_tol_z)
+                path_constraints.orientation_constraints.append(path_oc)
                 goal.request.path_constraints = path_constraints
                 self.get_logger().info(
                     f"  Maintaining orientation throughout path for {name} "

@@ -109,7 +109,10 @@ commands:
     task_id: 2
     detection_topic: /molmopoint/task_2/pose
     detection_timeout_sec: 30.0
-    detection_min_stable_samples: 1
+    # 3 agreeing samples: single readings drifted toward the top button and the
+    # press hit it (2026-11-13).
+    detection_min_stable_samples: 3
+    detection_stability_tolerance_m: 0.02
     max_replanning_attempts: 5
     steps:
       # At 70 degrees the gripper is mostly closed, leaving one forward contact
@@ -181,7 +184,10 @@ commands:
         detection_timeout_sec: 30.0
         # The press goal is only +/-1 cm, so two samples allowed to disagree
         # by nearly 9 cm are not a meaningful stable estimate for this task.
-        detection_min_stable_samples: 1
+        detection_min_stable_samples: 3
+        # The close-up reads 4-5 cm below the far view (camera bias; it is the better
+        # one); the top button is 15+ cm above, so >8 cm means it switched buttons.
+        detection_max_refresh_shift_m: 0.08
         detection_stability_tolerance_m: 0.02
         preserve_reference_z: false
 
@@ -658,6 +664,11 @@ commands:
       # No carry retract (2026-10-30): straight from the post-pickup pose to the
       # tray standoff in one collision-checked base+arm motion (the approval).
       - name: move_to_tray_standoff
+        # Keep the arm as pickup left it (cup low and level) and only drive the
+        # base until the cup is in front of the tray; the slide and the guarded
+        # lower set the height (operator, 2026-11-13).
+        keep_arm: true
+        allow_finger_map_contact: true  # fingers around the held cup
         clear_octomap_before_plan: false  # place keeps the map
         allow_held_cup_map_contact: true
         # Base+arm transit with the arm out (no retract first): 50% keeps the
@@ -706,7 +717,11 @@ commands:
       # hides the tray from the hand camera (2026-10-29), so the sequence uses
       # the detection taken at its start, from a pose that can see past the cup.
 
+      # measure_tray_ahead removed (2026-11-13): with the cup in hand the camera
+      # cannot see the tray up close (0 points), only the brew head and pod lid.
+
       - name: move_over_tray
+        allow_finger_map_contact: true  # fingers around the held cup
         allow_held_cup_map_contact: true
         velocity_scaling: 0.3
         acceleration_scaling: 0.3
@@ -723,10 +738,15 @@ commands:
         # 2026-10-30: the hand camera (~5 cm above grasp_tcp) met the brew head's
         # front edge; set down 1.5 cm in front of the tray centre (the 6 cm cup base
         # stays on the 9 cm platform) and slide at release height.
-        offset_x: -0.01  # operator: placed too far forward at -0.025 (15:22)
+        offset_x: 0.0  # to the detected tray centre (stopped short at -0.01, 2026-11-13)
         # Slide in just above the release height: the 12 cm cup clears the brew
         # head over the tray with ~1 cm, not with an extra 3 cm (2026-10-30).
-        offset_z: 0.0
+        # Slide in at the release height (as on 2026-10-30, when it placed): 2 cm
+        # higher put the hand camera into the brew head (2026-11-13). The guarded
+        # lower below finishes by contact.
+        # 2 cm below the release height (operator, 2026-11-13): approach low; the
+        # cup touching the tray is fine, the guarded lower stops on contact.
+        offset_z: -0.05  # 5 cm low: the tray reads 5-6 cm high from here (2026-11-13)
         gripper_value: 75.0
         rpy_deg: [0.0, 0.0, 0.0]
         position_tolerance_m: 0.02
@@ -739,11 +759,34 @@ commands:
         allowed_planning_time: 5.0
         num_planning_attempts: 3
 
+      # Closed loop on the black wall behind the tray (operator, 2026-11-13): after
+      # the slide, measure the wall just under the brew head over the cup's rim
+      # (9-12.5 cm above the tray) and slide again until the cup's axis sits
+      # rim radius + 1 cm in front of it.
+      - name: slide_to_wall
+        type: measure_ahead
+        detection_timeout_sec: 15.0  # the cloud waits for ~2 s of settled frames
+        measure_tray: false
+        check_overhang: false
+        corridor_half_width_m: 0.04
+        min_forward_m: 0.08
+        max_forward_m: 0.45
+        face_min_above_tray_m: 0.09
+        face_max_above_tray_m: 0.125
+        cup_bottom_radius_m: 0.0475
+        face_margin_m: 0.01
+        max_face_shift_m: 0.10
+        converge_tol_m: 0.01
+        forward_only: true
+        redo_from_step: move_over_tray
+        max_redos: 3
+
       # Straight down to the release height (offset_z 0, see above).
       - name: lower_cup_onto_tray
+        allow_finger_map_contact: true  # fingers around the held cup
         allow_held_cup_map_contact: true
-        velocity_scaling: 0.3
-        acceleration_scaling: 0.3
+        velocity_scaling: 0.2
+        acceleration_scaling: 0.2
         type: pose
         clear_octomap_before_plan: false
         cartesian: true
@@ -754,8 +797,14 @@ commands:
         target: detected
         orientation_from_detection: true
         offset_frame: target
-        offset_x: -0.01
-        offset_z: 0.0
+        offset_x: 0.0  # to the detected tray centre (stopped short at -0.01, 2026-11-13)
+        # Aim up to 6 cm below the computed release height and stop on contact: the
+        # grip height on the cup is uncertain by several cm (2026-11-13).
+        offset_z: -0.10  # guarded: stops on contact
+        contact_ends_step: true
+        # Deepest first; shallower if the goal itself collides (forearm in the
+        # table voxels at -10 cm, 2026-11-13). Contact stops the descent anyway.
+        safe_z_candidate_offsets_m: [0.0, 0.03, 0.05, 0.07]
         gripper_value: 75.0
         rpy_deg: [0.0, 0.0, 0.0]
         position_tolerance_m: 0.02
@@ -763,7 +812,7 @@ commands:
         use_orientation_constraint: true
         orientation_tolerance_rad: 0.05
         maintain_orientation_during_path: true
-        max_replanning_attempts: 3
+        max_replanning_attempts: 4  # one per safe_z candidate
         planner_id: RRTConnectkConfigDefault
         allowed_planning_time: 5.0
         num_planning_attempts: 3
@@ -780,6 +829,10 @@ commands:
 
       # Straight back first: the machine's spout is above the cup.
       - name: retreat_from_cup
+        # 30%: full speed tripped the shoulder's 3 deg tracking limit (2026-11-13).
+        velocity_scaling: 0.3
+        acceleration_scaling: 0.3
+        allow_finger_map_contact: true  # fingers around the held cup
         allow_held_cup_map_contact: true  # backing out from under the brew head
         type: pose
         clear_octomap_before_plan: false

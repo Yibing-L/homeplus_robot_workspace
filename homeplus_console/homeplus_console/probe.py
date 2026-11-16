@@ -60,9 +60,26 @@ def processes_matching(patterns: List[str]) -> List[Dict[str, str]]:
         if pid == me:
             continue
         cmd = _cmdline(pid)
-        if cmd and any(r.search(cmd) for r in regs):
+        if cmd and any(r.search(cmd) for r in regs) and _same_ros_domain(pid):
             out.append({"pid": pid, "cmd": cmd[:160]})
     return out
+
+
+def _ros_domain(environ: bytes) -> str:
+    for item in environ.split(b"\0"):
+        if item.startswith(b"ROS_DOMAIN_ID="):
+            return item.split(b"=", 1)[1].decode(errors="replace").strip() or "0"
+    return "0"
+
+
+def _same_ros_domain(pid: str) -> bool:
+    """A process on another ROS_DOMAIN_ID (e.g. a test bridge on a fake serial pty)
+    cannot reach this robot's topics, so it is not a duplicate (2026-11-13)."""
+    try:
+        theirs = _ros_domain(Path(f"/proc/{pid}/environ").read_bytes())
+    except OSError:
+        return True  # unreadable: keep the conservative answer
+    return theirs == (os.environ.get("ROS_DOMAIN_ID", "0").strip() or "0")
 
 
 def cgroup_unit(pid: str) -> Optional[str]:

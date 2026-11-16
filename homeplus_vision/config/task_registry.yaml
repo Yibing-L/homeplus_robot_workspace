@@ -52,7 +52,10 @@ tasks:
     # tray height (~/.homeplus/surface_heights.json, written by the executor): the
     # model alternated with a ledge ~80 px higher in the image (2026-11-08).
     surface_height_memory: drip_tray
-    surface_max_above_memory_m: 0.04
+    # 8 cm: from some arm poses the tray reads 4-5 cm high (hand-camera bias) and
+    # 4 cm rejected every good detection; the executor and measure_tray_ahead fix
+    # the height (2026-11-13).
+    surface_max_above_memory_m: 0.08
     command_name: place_cup_on_drip_tray
     command_type: sequence
 
