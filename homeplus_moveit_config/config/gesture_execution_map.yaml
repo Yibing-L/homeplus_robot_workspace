@@ -423,6 +423,21 @@ commands:
           joint_wrist: 0.0
           joint_hand: 0.0
 
+      # Back away from the machine so the next run (pickup) starts clear of it
+      # (operator, 2026-11-15). Relative to the measured base; collision-checked.
+      - name: back_away_after_round_button
+        type: joint_state
+        group_name: base
+        base_relative: true
+        endpoint_profile: transit
+        velocity_scaling: 0.3
+        acceleration_scaling: 0.3
+        require_trajectory_approval: false
+        joints:
+          base_x: -0.30
+          base_y: 0.0
+          base_theta: 0.0
+
   pick_up_coffee:
     type: sequence
     task_id: 1
