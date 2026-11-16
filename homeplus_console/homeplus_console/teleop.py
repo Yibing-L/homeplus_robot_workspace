@@ -74,6 +74,7 @@ DEFAULTS: Dict[str, Any] = {
     # Hard leash (2026-11-15): the command never runs more than this ahead of the measured
     # shoulder/elbow, so teleop cannot reach the firmware's 3 deg TRACKING_ERROR limit.
     "leash_deg": {"joint_shoulder": 2.2, "joint_elbow": 2.2},
+    "settle_snap": {"arm_deg": 1.5, "base_xy_m": 0.01, "base_theta_deg": 1.0, "step_deg": 0.4, "step_m": 0.004},
     "lost": {"base_xy": 0.10, "base_theta_deg": 6.0, "arm_deg": 6.0},
     "probe_sec": 0.5,
     # the probe also reaches at least this far ahead, so the robot stops short of contact, not at it

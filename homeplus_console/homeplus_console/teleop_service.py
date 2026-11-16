@@ -296,8 +296,25 @@ class TeleopService:
                 if out.lost:
                     self._latch(out.lost, now)
                 else:
+                    idle = not it.any() and not self.ctrl.busy()
+                    if idle and measured is not None:
+                        # Ease the command onto where the robot already is, for axes within the snap
+                        # band, before the session ends (2026-11-15: the firmware never closed a 0.7 deg
+                        # elbow gap → SETTLE_TIMEOUT). Rate-limited so the bridge's per-point velocity
+                        # check passes. A larger gap is a real stall, left for the firmware to report.
+                        snap = self.cfg["settle_snap"]
+                        for n in ORDER:
+                            if n in ("base_x", "base_y"):
+                                tol, stp = snap["base_xy_m"], snap["step_m"]
+                            else:
+                                tol = math.radians(snap["base_theta_deg"] if n == "base_theta" else snap["arm_deg"])
+                                stp = math.radians(snap["step_deg"])
+                            gap = measured[n] - self.ctrl.q[n]
+                            if abs(gap) <= tol:
+                                self.ctrl.q[n] += max(-stp, min(stp, gap))
+                        out.q = dict(self.ctrl.q)
                     self.io.jog_point(self.session, [out.q[n] for n in ORDER])
-                    if not it.any() and not self.ctrl.busy():
+                    if idle:
                         self.idle_since = self.idle_since or now
                         if now - self.idle_since >= self.cfg["idle_end_sec"]:
                             self._ending_session = self.session
