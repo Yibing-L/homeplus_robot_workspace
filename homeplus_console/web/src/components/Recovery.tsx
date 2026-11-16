@@ -18,6 +18,7 @@ export const TASKS: Record<number, { command: string; title: string; radio: stri
   2: { command: "press_square_button", title: "Press the bottom button", radio: "Task 2 · bottom button", start: "Start bottom button press" },
   7: { command: "place_cup_on_drip_tray", title: "Place the cup on the drip tray", radio: "Task 7 · place", start: "Place cup on drip tray" },
   8: { command: "press_round_button", title: "Press the top button (from above)", radio: "Task 8 · top button", start: "Start top button press" },
+  11: { command: "pick_up_coffee_retract_first", title: "Pick up the cup (pull back, then lift)", radio: "Task 11 · pickup, pull back first", start: "Start pickup (pull back first)" },
   9: { command: "hand_cup_to_person", title: "Hand the cup to a person", radio: "Task 9 · hand over", start: "Hand cup to person" },
 };
 

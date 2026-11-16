@@ -648,6 +648,221 @@ commands:
         allowed_planning_time: 10.0
         num_planning_attempts: 5
 
+  # Same as pick_up_coffee up to the grasp, then pull the cup in BEFORE lifting
+  # (operator, 2026-11-15): lifting with the arm stretched out is the shoulder's
+  # heaviest load and kept tripping TRACKING_ERROR. Back 15 cm with 2 cm clearance
+  # (no dragging on the table), then up 8 cm close to the body. pick_up_coffee is
+  # unchanged. Detector task 11 = same red cup prompt as task 1.
+  pick_up_coffee_retract_first:
+    type: sequence
+    task_id: 11
+    detection_topic: /molmopoint/task_11/pose
+    detection_timeout_sec: 30.0
+    # Plan only from a consistent view: three samples whose pairwise spread is
+    # within 2 cm (the lateral budget, see refine_target). Outliers delay
+    # acceptance; they are never averaged in.
+    detection_min_stable_samples: 3
+    detection_stability_tolerance_m: 0.02
+    max_replanning_attempts: 5
+    steps:
+      - name: open_gripper
+        type: gripper
+        value: 0.0
+
+      # First plan to a standoff pose. This gives MoveIt room to avoid the
+      # scene instead of forcing one long motion directly into the object.
+      - name: move_to_pregrasp
+        # Rebuild the map from the current view before planning: stale voxels where
+        # the cup stood on an earlier attempt blocked the approach (2026-11-08). This
+        # was off because the clear never got a fresh cloud; that was the obstacle
+        # node's TF bug, fixed 2026-11-08. A failed wait retries on the kept map.
+        clear_octomap_before_plan: true
+        endpoint_profile: transit
+        type: pose
+        mobile_standoff: true
+        # Place the base from geometry instead of searching base_arm IK: the
+        # arm only moves in one vertical plane beside base_link, so the base
+        # heading points that plane at the cup and the reach is the centre of
+        # the interval from which the arm alone, level, covers this pre-grasp
+        # and the later fixed-base steps (grasp, lift, retreat). The pose's
+        # heading comes from this placement, not from the camera ray.
+        base_placement:
+          # Cup is round: other approach headings are fallbacks if the direct
+          # one collides.
+          heading_offsets_deg: [0.0, 20.0, -20.0]
+          # Base settles within 5 mm (transit profile) but far vs close-up
+          # detections differ by several cm: keep 3 cm of reach either way.
+          min_reach_margin_m: 0.03
+          joint_limit_margin_rad: 0.05
+          # Shortest reach with that margin: pre-grasp TCP ~0.66 m ahead at
+          # cup height ~0.78 m (centre would be ~0.76 m), so the arm lifts the
+          # cup less extended. refine_target re-places the base if the
+          # close-up cup is then out of arm-only reach.
+          reach_preference: near
+          # One combined base motion, as before. turn_then_drive exists but is
+          # unused until wheel slip has been measured on hardware.
+          base_motion: combined
+        # Check the approach in the pre-grasp scene. Lift/retreat are checked
+        # after closure with the cup attached, not as a static world obstacle.
+        lookahead_offsets: [[0.19, 0.0, 0.0]]
+        require_trajectory_approval: false
+        frame_id: world
+        group_name: base_arm
+        target: detected
+        orientation_from_detection: true
+        offset_frame: target
+        offset_x: -0.20
+        offset_z: 0.0
+        gripper_value: 0.0
+        rpy_deg: [0.0, 0.0, 0.0]
+        position_tolerance_m: 0.03
+        position_tolerance_xy_m: 0.01
+        position_tolerance_z_m: 0.005
+        use_orientation_constraint: true
+        orientation_tolerance_rad: 0.05
+        planner_id: RRTConnectkConfigDefault
+        allowed_planning_time: 5.0
+        num_planning_attempts: 3
+
+      - name: refine_target
+        type: detect
+        # The hand-mounted view can be temporarily occluded immediately after
+        # motion. Wait for a stable cluster instead of accepting the first
+        # low-confidence pose from a different object/background surface.
+        # MolmoPoint runs asynchronously at the configured inference rate
+        # (0.5 Hz), so three samples take about 6 s of the 30 s budget.
+        detection_timeout_sec: 30.0
+        detection_min_stable_samples: 3
+        # Take Z from the close view: at ~1 m the mask misses the cup's lower
+        # part and the distant height reads several cm off (0.811 vs 0.755 on
+        # 2026-10-18, grasping at the rim). Close up the D405 is in range.
+        preserve_reference_z: false
+        # Steps 5-6 keep the base locked and cannot move the gripper sideways.
+        # Closing the finger meshes on an 8 cm cup held fixed, both fingers
+        # still touch it on opposite sides of its centre before 75 deg for
+        # offsets up to 25 mm (tests/test_base_placement.py); 20 mm leaves
+        # 5 mm for detection noise. Further off, or if the remaining arm-only
+        # waypoints are out of reach from here, back off and re-place the
+        # base from this close-up detection instead.
+        max_arm_plane_error_m: 0.02
+        redo_from_step: move_to_pregrasp  # no retract (operator, 2026-10-30)
+        max_redos: 1
+
+      - name: align_refined_grasp
+        type: pose
+        group_name: arm
+        # Gripper heading = measured base heading (the arm cannot yaw); the
+        # refined target is taken in the arm plane (checked by refine_target).
+        heading_from_base: true
+        link_name: grasp_tcp
+        frame_id: world
+        target: detected
+        orientation_from_detection: true
+        offset_frame: target
+        offset_x: -0.20
+        gripper_value: 0.0
+        position_tolerance_m: 0.005
+        orientation_tolerance_rad: 0.04
+        use_orientation_constraint: true
+        require_trajectory_approval: false
+        clear_octomap_before_plan: true
+        max_replanning_attempts: 2
+
+      - name: move_to_grasp
+        type: pose
+        clear_octomap_before_plan: false
+        cartesian: true
+        # Full joint_limits.yaml speed, matching the smooth OMPL move_to_pregrasp (2026-11-08).
+        velocity_scaling: 1.0
+        acceleration_scaling: 1.0
+        require_trajectory_approval: false
+        frame_id: world
+        group_name: arm
+        heading_from_base: true
+        target: detected
+        orientation_from_detection: true
+        offset_frame: target
+        offset_x: -0.01
+        offset_z: 0.0
+        gripper_value: 0.0
+        rpy_deg: [0.0, 0.0, 0.0]
+        position_tolerance_m: 0.02
+        position_tolerance_z_m: 0.005
+        use_orientation_constraint: true
+        orientation_tolerance_rad: 0.05
+        maintain_orientation_during_path: true
+        safe_z_candidate_offsets_m: [0.0]
+        max_replanning_attempts: 3
+        planner_id: RRTConnectkConfigDefault
+        allowed_planning_time: 5.0
+        num_planning_attempts: 3
+        post_delay_sec: 0.5
+
+      - name: close_gripper_at_target
+        type: gripper
+        attach_cup: true
+        value: 75.0
+        # Retry only if no DONE acknowledgement arrives. A successful close is
+        # not repeated unnecessarily.
+        max_attempts: 2
+        settle_sec: 1.0
+
+      - name: retreat_low_with_object
+        type: pose
+        # Rebuild the map with the cup attached: MoveIt's sensor filter drops points
+        # inside attached objects, but voxels mapped before the grasp (the cup's own
+        # unmasked surface) stay and collide with the held cup (2026-10-29).
+        clear_octomap_before_plan: true
+        cartesian: true
+        velocity_scaling: 0.3  # carries the cup; 0.5 tripped shoulder TRACKING_ERROR (2026-11-08)
+        acceleration_scaling: 0.3  # carries the cup; 0.5 tripped shoulder TRACKING_ERROR (2026-11-08)
+        require_trajectory_approval: false
+        frame_id: world
+        group_name: arm
+        target: previous_pose
+        orientation_from_detection: true
+        offset_frame: target
+        offset_x: -0.15
+        offset_z: 0.02
+        gripper_value: 75.0
+        rpy_deg: [0.0, 0.0, 0.0]
+        position_tolerance_m: 0.03
+        position_tolerance_z_m: 0.005
+        use_orientation_constraint: true
+        orientation_tolerance_rad: 0.05
+        maintain_orientation_during_path: true
+        planner_id: RRTConnectkConfigDefault
+        allowed_planning_time: 10.0
+        num_planning_attempts: 5
+
+      - name: lift_after_retreat
+        type: pose
+        # Rebuild the map with the cup attached: MoveIt's sensor filter drops points
+        # inside attached objects, but voxels mapped before the grasp (the cup's own
+        # unmasked surface) stay and collide with the held cup (2026-10-29).
+        clear_octomap_before_plan: true
+        cartesian: true
+        velocity_scaling: 0.3  # carries the cup; 0.5 tripped shoulder TRACKING_ERROR (2026-11-08)
+        acceleration_scaling: 0.3  # carries the cup; 0.5 tripped shoulder TRACKING_ERROR (2026-11-08)
+        require_trajectory_approval: false
+        frame_id: world
+        group_name: arm
+        target: previous_pose
+        orientation_from_detection: true
+        offset_frame: target
+        offset_x: 0.0
+        offset_z: 0.08
+        gripper_value: 75.0
+        rpy_deg: [0.0, 0.0, 0.0]
+        position_tolerance_m: 0.02
+        position_tolerance_z_m: 0.005
+        use_orientation_constraint: true
+        orientation_tolerance_rad: 0.05
+        maintain_orientation_during_path: true
+        planner_id: RRTConnectkConfigDefault
+        allowed_planning_time: 10.0
+        num_planning_attempts: 5
+
   # Put the cup held after pick_up_coffee on a coffee machine's drip tray
   # (detector task 7: the centroid of the visible tray surface, at its
   # measured height). Refused unless detected_cup is attached.

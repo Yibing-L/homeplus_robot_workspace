@@ -100,3 +100,11 @@ tasks:
     reject_held_object: true
     target_z_range_m: [0.5, 1.5]
     publish_task_pose: true
+
+  # Pickup variant: pull the cup back before lifting (executor sequence
+  # pick_up_coffee_retract_first). Same target as task 1.
+  11:
+    name: pick_up_red_cup_retract_first
+    caption: red cup
+    command_name: pick_up_coffee_retract_first
+    command_type: sequence

@@ -79,7 +79,7 @@ FEEDS = {  # feed id → (topic, max publish-to-browser rate)
 # gesture_behavior_map.yaml / gesture_execution_map.yaml
 COMMAND_TYPES = {"home": ("joint_state", 0), "pick_up_coffee": ("sequence", -1), "press_square_button": ("sequence", -1),
                  "place_cup_on_drip_tray": ("sequence", -1), "press_round_button": ("sequence", -1),
-                 "hand_cup_to_person": ("sequence", -1),
+                 "hand_cup_to_person": ("sequence", -1), "pick_up_coffee_retract_first": ("sequence", -1),
                  "gripper_open": ("gripper", -1), "gripper_close": ("gripper", -1), "back_up": ("joint_state", 0)}
 DEPTH_RANGE = (0.15, 1.50)
 PRIMITIVES = {1: "box", 2: "sphere", 3: "cylinder", 4: "cone"}  # shape_msgs/SolidPrimitive types
@@ -257,7 +257,7 @@ class RosIO:
         sub(String, "/molmopoint/diagnostics", self._on_diag, RELIABLE)
         # every actions.TASK_COMMANDS id (task 8 was missing, 2026-11-08), plus 10: the hand that
         # hand_cup_to_person's find_hand step looks for
-        for task in (1, 2, 7, 8, 9, 10):
+        for task in (1, 2, 7, 8, 9, 10, 11):
             sub(PoseStamped, f"/molmopoint/task_{task}/pose",
                 lambda m, t=task: self.store.push_event(f"/molmopoint/task_{t}/pose",
                                                         {"x": m.pose.position.x, "y": m.pose.position.y, "z": m.pose.position.z},
