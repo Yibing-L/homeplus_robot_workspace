@@ -71,6 +71,9 @@ DEFAULTS: Dict[str, Any] = {
                    "joint_wrist": [-90.0, 90.0], "joint_grip_L": [0.0, 90.0]},
     "lookahead_sec": 0.35,        # bridge lookahead (0.30) + packet latency: how far the firmware target lags us
     "governor": {"base_x": 0.035, "base_y": 0.035, "base_theta_deg": 1.2, "joint_elbow_deg": 1.8, "joint_shoulder_deg": 1.8},
+    # Hard leash (2026-11-15): the command never runs more than this ahead of the measured
+    # shoulder/elbow, so teleop cannot reach the firmware's 3 deg TRACKING_ERROR limit.
+    "leash_deg": {"joint_shoulder": 2.2, "joint_elbow": 2.2},
     "lost": {"base_xy": 0.10, "base_theta_deg": 6.0, "arm_deg": 6.0},
     "probe_sec": 0.5,
     # the probe also reaches at least this far ahead, so the robot stops short of contact, not at it
@@ -354,6 +357,17 @@ class Controller:
                 for n in ("base_x", "base_y", "base_theta"):
                     q[n] = q0[n]
                 self.v_body = [0.5 * v for v in self.v_body]
+            for n, lim in c["leash_deg"].items():
+                step = q[n] - q0[n]
+                if abs(step) < 1e-9:
+                    continue
+                ahead0 = (q0[n] - measured[n]) * (1 if step > 0 else -1)   # how far ahead already, in the step's direction
+                room = D(lim) - ahead0
+                f = clamp(room / abs(step), 0.0, 1.0)
+                if f < 1.0:
+                    arm_f = min(arm_f, f)
+                    if n not in out.governed:
+                        out.governed.append(n)
             if arm_f < 1.0:
                 for n in kin.ARM_IK_JOINTS:
                     q[n] = q0[n] + (q[n] - q0[n]) * arm_f
