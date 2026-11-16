@@ -1160,7 +1160,7 @@ commands:
       - name: face_person
         type: base_approach
         standoff_m: 10.0
-        max_drive_m: 0.0
+        max_drive_m: 0.01  # must be > 0; the drive is 0 anyway (person closer than 10 m)
         allow_finger_map_contact: true  # fingers around the held cup
         velocity_scaling: 0.2
         acceleration_scaling: 0.2
