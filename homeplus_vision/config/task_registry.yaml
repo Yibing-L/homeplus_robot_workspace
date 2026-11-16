@@ -117,7 +117,7 @@ tasks:
     name: locate_person_front
     caption: the person
     target_geometry: person
-    max_depth_m: 2.5
+    max_depth_m: 4.0
     target_z_range_m: [0.1, 2.0]
     reject_held_object: true
     publish_task_pose: true

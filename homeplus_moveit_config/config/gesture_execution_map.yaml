@@ -1153,13 +1153,14 @@ commands:
       # 2. Face the person and drive straight toward them until the held cup is 0.65 m
       #    from their measured front; arm and cup stay as they are (level). Slow.
       #    Split (operator, 2026-11-15): the side camera loses the person once the base
-      #    turns to face them, and could lock onto someone else. So: face them and stop
-      #    ~1.2 m away, lock on with the FRONT camera (same person: within 0.6 m of the
-      #    scan's fix, horizontally), then finish the approach on that reading.
-      - name: approach_person_far
+      #    turns to face them, and could lock onto someone else. So: turn in place to
+      #    face them head-on (no driving: standoff beyond any scan range, so the drive is
+      #    0), lock on with the FRONT camera (same person: within 0.6 m of the scan's fix,
+      #    horizontally), then drive in on that reading only.
+      - name: face_person
         type: base_approach
-        standoff_m: 1.2
-        max_drive_m: 2.5
+        standoff_m: 10.0
+        max_drive_m: 0.0
         allow_finger_map_contact: true  # fingers around the held cup
         velocity_scaling: 0.2
         acceleration_scaling: 0.2
@@ -1175,12 +1176,12 @@ commands:
         detection_stability_tolerance_m: 0.10
         detection_max_refresh_shift_m: 0.6
         detection_refresh_shift_xy_only: true
-        max_target_range_m: 2.2
+        max_target_range_m: 4.0
 
       - name: approach_person
         type: base_approach
         standoff_m: 0.65
-        max_drive_m: 1.5
+        max_drive_m: 3.5
         allow_finger_map_contact: true  # fingers around the held cup
         velocity_scaling: 0.2
         acceleration_scaling: 0.2
