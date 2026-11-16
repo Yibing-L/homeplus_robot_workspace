@@ -3,6 +3,7 @@
 import math
 import json
 import os
+import posixpath
 import random
 from collections import deque
 from concurrent.futures import Future
@@ -50,11 +51,13 @@ from rclpy.qos import QoSProfile, DurabilityPolicy
 from shape_msgs.msg import SolidPrimitive
 from std_msgs.msg import Bool, Float32, String, ColorRGBA
 from visualization_msgs.msg import Marker, MarkerArray
-from std_srvs.srv import Empty
+from std_srvs.srv import Empty, Trigger
 from trajectory_msgs.msg import JointTrajectoryPoint
 from tf2_ros import Buffer, TransformListener
 
 from planar_reach import PlanarArm, arm_plane_error, fixed_link_height, plan_base_placements, wrap
+from fault_recovery import (MotionFault, fault_code, fault_retry_decision, recovery_config_errors,
+                            recovery_setting, scaled_step, start_state_recoverable)
 
 # Joint order that the Arduino expects for trajectory waypoints
 TRAJECTORY_JOINT_ORDER = [
@@ -451,6 +454,17 @@ class GestureMotionExecutor(Node):
         self._detection_lock = threading.Lock()
         self._detection_after_ns = 0
         self._detection_subs: Dict[str, object] = {}  # topic -> subscription
+
+        # Operator STOP from the console (/gesture_control/cancel, std_srvs/Trigger):
+        # a fault recovery never retries after it, and the sequence stops at the
+        # next step. Named next to command_topic so a dry-run executor gets its own.
+        self._stop_requested = threading.Event()
+        self._start_recovery_used = False
+        self._plan_failure_reason: Optional[str] = None
+        command_topic = str(self.get_parameter("command_topic").value)
+        self.cancel_service = self.create_service(
+            Trigger, posixpath.join(posixpath.dirname(command_topic), 'cancel'), self._cancel_callback,
+            callback_group=self.cb_group)
 
         # Arduino execution tracking — wait for "DONE" ack
         self._arduino_done_event = threading.Event()
@@ -1141,7 +1155,7 @@ class GestureMotionExecutor(Node):
         if not isinstance(command_cfg, dict):
             return [f"{name}: command must be a mapping"]
 
-        allowed = set("endpoint_profile name type group_name joints value frame_id position orientation rpy_deg target steps task_id detection_topic detection_timeout_sec detection_min_stable_samples detection_stability_tolerance_m detection_max_refresh_shift_m max_replanning_attempts max_attempts settle_sec require_trajectory_approval planner_id allowed_planning_time num_planning_attempts link_name offset_x offset_y offset_z offset_frame orientation_from_detection gripper_value final_gripper_value position_tolerance_m position_tolerance_xy_m position_tolerance_z_m use_orientation_constraint orientation_tolerance_rad orientation_tolerance_x_rad orientation_tolerance_y_rad orientation_tolerance_z_rad safe_z_candidate_offsets_m base_goal_tcp_x_min_m base_goal_tcp_x_max_m base_goal_tcp_y_max_m max_base_goal_rotation_rad max_base_goal_translation_m max_base_goal_y_translation_m preserve_reference_z maintain_orientation_during_path post_delay_sec cartesian mobile_standoff lookahead_offsets velocity_scaling acceleration_scaling clear_octomap_before_plan octomap_clear_timeout_sec octomap_rebuild_wait_sec ik_candidate_attempts attach_cup joint_tolerance hardcoded_detection_pose hardcoded_detection_frame planning_service_timeout_sec phase_allowed_planning_time phase_num_planning_attempts phase_joint_tolerance continue_on_arduino_timeout base_placement heading_from_base max_arm_plane_error_m redo_from_step max_redos detach_cup held_cup_placement base_relative allow_held_cup_map_contact allow_finger_map_contact contact_ends_step surface_height_memory surface_height_prior_m surface_height_tolerance_m corridor_half_width_m min_forward_m max_forward_m min_points cup_bottom_radius_m face_margin_m overhang_margin_m required path_orientation_tolerance_rad face_min_above_tray_m face_max_above_tray_m cup_top_radius_m max_face_shift_m arm_first keep_arm converge_tol_m check_overhang measure_tray forward_only".split())
+        allowed = set("endpoint_profile name type group_name joints value frame_id position orientation rpy_deg target steps task_id detection_topic detection_timeout_sec detection_min_stable_samples detection_stability_tolerance_m detection_max_refresh_shift_m max_replanning_attempts max_attempts settle_sec require_trajectory_approval planner_id allowed_planning_time num_planning_attempts link_name offset_x offset_y offset_z offset_frame orientation_from_detection gripper_value final_gripper_value position_tolerance_m position_tolerance_xy_m position_tolerance_z_m use_orientation_constraint orientation_tolerance_rad orientation_tolerance_x_rad orientation_tolerance_y_rad orientation_tolerance_z_rad safe_z_candidate_offsets_m base_goal_tcp_x_min_m base_goal_tcp_x_max_m base_goal_tcp_y_max_m max_base_goal_rotation_rad max_base_goal_translation_m max_base_goal_y_translation_m preserve_reference_z maintain_orientation_during_path post_delay_sec cartesian mobile_standoff lookahead_offsets velocity_scaling acceleration_scaling clear_octomap_before_plan octomap_clear_timeout_sec octomap_rebuild_wait_sec ik_candidate_attempts attach_cup joint_tolerance hardcoded_detection_pose hardcoded_detection_frame planning_service_timeout_sec phase_allowed_planning_time phase_num_planning_attempts phase_joint_tolerance continue_on_arduino_timeout base_placement heading_from_base max_arm_plane_error_m redo_from_step max_redos detach_cup held_cup_placement base_relative allow_held_cup_map_contact allow_finger_map_contact contact_ends_step surface_height_memory surface_height_prior_m surface_height_tolerance_m corridor_half_width_m min_forward_m max_forward_m min_points cup_bottom_radius_m face_margin_m overhang_margin_m required path_orientation_tolerance_rad face_min_above_tray_m face_max_above_tray_m cup_top_radius_m max_face_shift_m arm_first keep_arm converge_tol_m check_overhang measure_tray forward_only fault_retries fault_settle_timeout_sec start_state_recovery on_detection_timeout".split())
         if command_cfg.get('endpoint_profile', 'precise') not in ('precise', 'transit'):
             errors.append(f'{name}: endpoint_profile must be precise or transit')
         if command_cfg.get('cartesian') and command_cfg.get('endpoint_profile') == 'transit':
@@ -1236,6 +1250,7 @@ class GestureMotionExecutor(Node):
                               f'nonnegative and release_clearance_m >= -0.02')
         if command_cfg.get('detach_cup') and (action_type != 'gripper' or float(command_cfg.get('value', 90.0)) > 1.0):
             errors.append(f'{name}: detach_cup requires a gripper step that opens (value <= 1)')
+        errors.extend(recovery_config_errors(name, command_cfg, action_type == 'sequence'))
         if 'max_redos' in command_cfg:
             value = command_cfg['max_redos']
             if not isinstance(value, int) or isinstance(value, bool) or value < 0:
@@ -1328,6 +1343,113 @@ class GestureMotionExecutor(Node):
     def _ready_callback(self, msg):
         self._hardware_ready = msg.data
 
+    def _cancel_callback(self, request, response):
+        """Operator STOP (the console calls this with every STOP): stop the arm,
+        drop any plan in flight, end the sequence at the next step, and never
+        let fault recovery retry."""
+        self._stop_requested.set()
+        self.stop_pub.publish(Bool(data=True))
+        active = self._active_plan
+        if active is not None:
+            self._cancel_plan(active, 'operator STOP')
+        response.success = True
+        response.message = 'stop requested' if self._is_busy() else 'executor idle; arm stopped'
+        self.get_logger().warn(f'Operator STOP received ({response.message})')
+        return response
+
+    def _stop_was_requested(self) -> bool:
+        event = getattr(self, '_stop_requested', None)
+        return event is not None and event.is_set()
+
+    def _measured_still(self, since: float, window: float = 0.5) -> bool:
+        """Measured joints still over the last `window` s, all samples after `since`.
+        Same per-joint tolerances as the endpoint check (_measured_goal_reached)."""
+        if self.latest_joint_state is None or time.monotonic() - self._last_state_received > 0.3:
+            return False
+        now = time.monotonic()
+        recent = [js for t, js in list(self._joint_history) if t >= max(since, now - window)]
+        stamps = [t for t, _ in list(self._joint_history) if t >= max(since, now - window)]
+        if len(recent) < 3 or stamps[-1] - stamps[0] < 0.7 * window:
+            return False
+        for name in TRAJECTORY_JOINT_ORDER:
+            values = [dict(zip(js.name, js.position))[name] for js in recent]
+            tolerance = 0.003 if name in ('base_x', 'base_y') else math.radians(0.6)
+            if name in ('joint_grip_L', 'joint_hand', 'joint_wrist'):
+                tolerance = math.radians(3.0)
+            if max(values) - min(values) > tolerance:
+                return False
+        return True
+
+    def _wait_for_fault_stillness(self, step_name: str, timeout_sec: float) -> Optional[str]:
+        """After a firmware fault the arm holds where it stopped and the bridge
+        reports not-ready until its own stillness check passes. Wait for the
+        bridge's ready AND host-side measured stillness after the fault.
+        Returns None when ready, else why not."""
+        fault_t = time.monotonic()
+        deadline = fault_t + float(timeout_sec)
+        time.sleep(0.3)  # let the bridge's not-ready (sent right after the ERROR) arrive
+        while time.monotonic() < deadline:
+            if self._stop_was_requested():
+                return 'operator STOP during recovery'
+            if self._hardware_ready and self._measured_still(fault_t + 0.3):
+                return None
+            time.sleep(0.05)
+        if not self._hardware_ready:
+            return f'bridge still not ready {timeout_sec:.0f}s after the fault'
+        return f'arm not measured still {timeout_sec:.0f}s after the fault'
+
+    def _plan_abort_reason(self) -> str:
+        if self._stop_was_requested():
+            return "operator STOP"
+        return getattr(self, '_plan_failure_reason', None) or "planning/execution failed"
+
+    def _begin_plan_attempt(self) -> None:
+        self._start_recovery_used = False
+        self._plan_failure_reason = None
+
+    def _await_step_trajectory(self, sequence_name: str, step_name: str) -> Optional[str]:
+        """Wait for the sent trajectory. None when done (or acks are disabled),
+        else the failure (the bridge's 'ERROR <id> <CODE> ...' line when it sent one)."""
+        if not self.wait_for_trajectory_ack:
+            self.get_logger().info("  Continuing without trajectory DONE acknowledgement")
+            self._force_apply_pending_joint_state("trajectory acknowledgement disabled")
+            return None
+        self.get_logger().info("  Waiting for Arduino to finish trajectory...")
+        if self._wait_for_arduino_done(timeout_sec=60.0, label=f"{sequence_name}/{step_name} trajectory"):
+            return None
+        error = self._arduino_error_message or "trajectory acknowledgement/endpoint verification failed"
+        self._force_apply_pending_joint_state(error)
+        return error
+
+    def _try_fault_recovery(self, sequence_name: str, step_name: str, step: Dict,
+                            sequence_cfg: Dict, error: str, retries_done: int,
+                            default_scaling: float):
+        """Decide whether a failed motion is retried. Returns (step copy with
+        reduced scaling, None) to retry, or (None, abort reason)."""
+        code = fault_code(error)
+        if step.get('contact_ends_step'):
+            return None, error  # guarded press/lower: a retry would push again
+        limit = int(recovery_setting(step, sequence_cfg, 'fault_retries'))
+        retry, why = fault_retry_decision(code, retries_done, limit, self._stop_was_requested())
+        if not retry:
+            # Same abort reason as before recovery existed, plus what recovery did.
+            if retries_done:
+                return None, f'{error} (recovery: {why})'
+            if code in ('TRACKING_ERROR', 'SETTLE_TIMEOUT') or self._stop_was_requested():
+                return None, f'{error} ({why})'
+            return None, error
+        attempt = retries_done + 1
+        retry_step, percent = scaled_step(step, attempt, default_scaling)
+        line = f"{step_name}: {code} — recovering {attempt}/{limit} at {percent}% speed"
+        self.get_logger().warn(f"  {line} (waiting for the arm to settle, then replanning from the measured state)")
+        self._publish_status(line)
+        not_ready = self._wait_for_fault_stillness(
+            step_name, float(recovery_setting(step, sequence_cfg, 'fault_settle_timeout_sec')))
+        if not_ready is not None:
+            return None, f'{code}; recovery abandoned: {not_ready}'
+        self._require_fresh_state()
+        return retry_step, None
+
     def _cloud_ready_callback(self, msg):
         try:
             data = json.loads(msg.data)
@@ -1412,6 +1534,8 @@ class GestureMotionExecutor(Node):
         thread.start()
 
     def _run_command(self, command_name: str, command_cfg: Dict, fallback_type: str) -> None:
+        self._stop_requested.clear()
+        self._begin_plan_attempt()
         try:
             self._require_fresh_state()
             if not self._hardware_ready:
@@ -1587,10 +1711,7 @@ class GestureMotionExecutor(Node):
             )
         elif needs_detection:
             timeout = float(sequence_cfg.get("detection_timeout_sec", 5.0))
-            detected_pose = self._refresh_detection(
-                sequence_name,
-                detection_topic,
-                timeout,
+            detection_kwargs = dict(
                 required_samples=int(
                     sequence_cfg.get(
                         "detection_min_stable_samples",
@@ -1599,6 +1720,18 @@ class GestureMotionExecutor(Node):
                 ),
                 stability_tolerance_m=sequence_cfg.get("detection_stability_tolerance_m"),
             )
+            detected_pose = self._refresh_detection(
+                sequence_name, detection_topic, timeout, **detection_kwargs)
+            if detected_pose is None and recovery_setting({}, sequence_cfg, 'on_detection_timeout') == 'back_up':
+                # Detection recovery (opt-in): back away once with the operator's
+                # back_up command (approval as configured there) and look again.
+                line = (f"[{sequence_name}] detection: no stable detection on {detection_topic} "
+                        f"within {timeout:.0f}s — backing up once and looking again")
+                self.get_logger().warn(line)
+                self._publish_status(line)
+                if self._back_up_for_detection(sequence_name):
+                    detected_pose = self._refresh_detection(
+                        sequence_name, detection_topic, timeout, **detection_kwargs)
             if detected_pose is not None:
                 detected_pose = self._apply_surface_height_memory(sequence_cfg, detected_pose)
             if detected_pose is None:
@@ -1623,6 +1756,15 @@ class GestureMotionExecutor(Node):
             step = steps[i]
             step_name = step.get("name", f"step_{i}")
             step_type = step.get("type", "command")
+            if self._stop_was_requested():
+                self._abort_sequence(sequence_name, step_name, "operator STOP")
+                return
+            # Sequence-level recovery settings apply to every step that does not set its own.
+            inherited = {k: sequence_cfg[k] for k in ('fault_retries', 'fault_settle_timeout_sec',
+                                                      'start_state_recovery')
+                         if k in sequence_cfg and k not in step}
+            if inherited:
+                step = {**step, **inherited}
             # Last approach under an appliance (e.g. the brew head over the drip tray):
             # the operator-confirmed gap is below what the map resolves, so the held
             # cup alone may touch map voxels on flagged steps; robot links, the table
@@ -1902,129 +2044,86 @@ class GestureMotionExecutor(Node):
                     self._abort_sequence(sequence_name, step_name, "MoveIt not enabled")
                     return
 
-                pose_msg = self._build_pose_message(effective_step)
-                if effective_step.get("base_placement"):
-                    candidate_pose = self._plan_with_base_placement(
-                        step_name, effective_step, detected_pose, steps, i)
-                    planning_succeeded = candidate_pose is not None
-                else:
-                    candidate_z_offsets = [
-                        float(value)
-                        for value in effective_step.get(
-                            "safe_z_candidate_offsets_m", [0.0]
-                        )
-                    ]
-                    if not candidate_z_offsets:
-                        candidate_z_offsets = [0.0]
+                # Fault recovery: a TRACKING_ERROR/SETTLE_TIMEOUT replans this same
+                # step from the measured state at reduced speed (fault_recovery.py).
+                default_scaling = CARTESIAN_DEFAULT_SCALING if effective_step.get("cartesian") else 1.0
+                attempt_step = effective_step
+                fault_retries_done = 0
+                while True:
+                    self._begin_plan_attempt()
+                    try:
+                        candidate_pose = self._plan_sequence_pose(
+                            step_name, attempt_step, sequence_cfg, steps, i, detected_pose)
+                    except MotionFault as fault:
+                        # A phase inside the step (standoff arm-first or base drive) failed.
+                        retry_step, _reason = self._try_fault_recovery(
+                            sequence_name, step_name, effective_step, sequence_cfg,
+                            str(fault.error or ""), fault_retries_done, default_scaling)
+                        if retry_step is None:
+                            raise
+                        fault_retries_done += 1
+                        attempt_step = retry_step
+                        continue
+                    if candidate_pose is None:
+                        self._abort_sequence(sequence_name, step_name,
+                                             self._plan_abort_reason())
+                        return
 
-                    max_replanning_attempts = max(
-                        1,
-                        int(
-                            effective_step.get(
-                                "max_replanning_attempts",
-                                sequence_cfg.get("max_replanning_attempts", 1),
-                            )
-                        ),
-                    )
-                    planning_succeeded = False
-                    for planning_attempt in range(1, max_replanning_attempts + 1):
-                        candidate_index = min(
-                            planning_attempt - 1, len(candidate_z_offsets) - 1
-                        )
-                        candidate_z_offset = candidate_z_offsets[candidate_index]
-                        candidate_pose = deepcopy(pose_msg)
-                        candidate_pose.pose.position.z += candidate_z_offset
-                        self.target_pose_pub.publish(candidate_pose)
-                        if max_replanning_attempts > 1:
-                            self.get_logger().info(
-                                f"  Planning {step_name}: outer attempt "
-                                f"{planning_attempt}/{max_replanning_attempts}, "
-                                f"safe candidate z={candidate_pose.pose.position.z:.3f} m "
-                                f"(offset +{candidate_z_offset:.3f} m)"
-                            )
-                        attempt_step = effective_step
-                        if planning_attempt > 1:
-                            # The first attempt already cleared the map and waited
-                            # for a fresh cloud. Rebuilding the same scene on every
-                            # stochastic OMPL retry adds latency and can reinsert
-                            # the same target-edge noise that just caused failure.
-                            attempt_step = dict(effective_step)
-                            attempt_step["clear_octomap_before_plan"] = False
-                            self.get_logger().info(
-                                f"  Reusing prepared OctoMap for {step_name} retry"
-                            )
-                        context = self._plan_pose(
-                            step_name, candidate_pose, attempt_step
-                        )
-                        if context is not None and self._wait_for_plan(context, attempt_step):
-                            planning_succeeded = True
-                            break
-
-                        retryable = context is None or context.retryable_failure
-                        if not retryable or planning_attempt >= max_replanning_attempts:
-                            break
-                        self.get_logger().warn(
-                            f"  Replanning {step_name} after MoveIt failure "
-                            f"({planning_attempt}/{max_replanning_attempts})"
-                        )
-                        time.sleep(0.2)
-
-                if not planning_succeeded:
-                    self._abort_sequence(sequence_name, step_name, "planning/execution failed")
-                    return
-
-                if (
-                    step.get("target") == "detected"
-                    and detected_pose is not None
-                ):
-                    selected_step = dict(effective_step)
-                    selected_step["position"] = [
-                        candidate_pose.pose.position.x,
-                        candidate_pose.pose.position.y,
-                        candidate_pose.pose.position.z,
-                    ]
-                    selected_step["_unclamped_position_z_m"] = float(
-                        effective_step.get(
-                            "_unclamped_position_z_m",
-                            effective_step["position"][2],
-                        )
-                    )
-                    self._append_target_audit(
-                        sequence_name=sequence_name,
-                        step_name=f"{step_name}_selected_candidate",
-                        detection_topic=str(detection_topic or ""),
-                        detected_pose=detected_pose,
-                        resolved_step=selected_step,
-                    )
-
-                if self.wait_for_trajectory_ack:
-                    self.get_logger().info("  Waiting for Arduino to finish trajectory...")
-                    if not self._wait_for_arduino_done(
-                        timeout_sec=60.0,
-                        label=f"{sequence_name}/{step_name} trajectory",
+                    if (
+                        step.get("target") == "detected"
+                        and detected_pose is not None
                     ):
-                        self._force_apply_pending_joint_state(self._arduino_error_message or "trajectory acknowledgement/endpoint verification failed")
-                        error = str(self._arduino_error_message or "")
-                        if effective_step.get("contact_ends_step") and (
-                                "TRACKING_ERROR" in error or "SETTLE_TIMEOUT" in error):
-                            # Guarded press: the arm stalling against the target is the
-                            # contact we wanted; keep the measured state and go on to the
-                            # retreat (no force sensor; 2026-10-30 press tripped 3.04 deg).
-                            self.get_logger().info(f"  {step_name}: contact detected ({error}); treating as reached")
-                            self._publish_status(f"[{sequence_name}] {step_name}: contact detected")
-                        elif not bool(effective_step.get(
-                            "continue_on_arduino_timeout",
-                            self.continue_on_arduino_timeout,
-                        )):
-                            self._abort_sequence(sequence_name, step_name, self._arduino_error_message or "trajectory acknowledgement/endpoint verification failed")
-                            return
-                        else:
-                            self.get_logger().warn(f"  Continuing after trajectory timeout for {step_name}")
-                else:
-                    self.get_logger().info("  Continuing without trajectory DONE acknowledgement")
-                    self._force_apply_pending_joint_state(
-                        "trajectory acknowledgement disabled"
-                    )
+                        selected_step = dict(effective_step)
+                        selected_step["position"] = [
+                            candidate_pose.pose.position.x,
+                            candidate_pose.pose.position.y,
+                            candidate_pose.pose.position.z,
+                        ]
+                        selected_step["_unclamped_position_z_m"] = float(
+                            effective_step.get(
+                                "_unclamped_position_z_m",
+                                effective_step["position"][2],
+                            )
+                        )
+                        self._append_target_audit(
+                            sequence_name=sequence_name,
+                            step_name=f"{step_name}_selected_candidate",
+                            detection_topic=str(detection_topic or ""),
+                            detected_pose=detected_pose,
+                            resolved_step=selected_step,
+                        )
+
+                    error = self._await_step_trajectory(sequence_name, step_name)
+                    if error is None:
+                        if fault_retries_done:
+                            self._publish_status(
+                                f"{step_name}: recovered after {fault_retries_done} retr"
+                                f"{'y' if fault_retries_done == 1 else 'ies'}")
+                        break
+                    if effective_step.get("contact_ends_step") and (
+                            "TRACKING_ERROR" in error or "SETTLE_TIMEOUT" in error):
+                        # Guarded press: the arm stalling against the target is the
+                        # contact we wanted; keep the measured state and go on to the
+                        # retreat (no force sensor; 2026-10-30 press tripped 3.04 deg).
+                        # Never retried: a retry would press again.
+                        self.get_logger().info(f"  {step_name}: contact detected ({error}); treating as reached")
+                        self._publish_status(f"[{sequence_name}] {step_name}: contact detected")
+                        break
+                    retry_step, reason = self._try_fault_recovery(
+                        sequence_name, step_name, effective_step, sequence_cfg,
+                        error, fault_retries_done, default_scaling)
+                    if retry_step is not None:
+                        fault_retries_done += 1
+                        attempt_step = retry_step
+                        continue
+                    if not bool(effective_step.get(
+                        "continue_on_arduino_timeout",
+                        self.continue_on_arduino_timeout,
+                    )):
+                        self._abort_sequence(sequence_name, step_name, reason)
+                        return
+                    self.get_logger().warn(f"  Continuing after trajectory timeout for {step_name}")
+                    break
 
                 last_successful_pose = self._fk_pose(self.latest_joint_state,
                     effective_step.get('link_name', self.end_effector_link), candidate_pose.header.frame_id)
@@ -2044,36 +2143,49 @@ class GestureMotionExecutor(Node):
                     self._abort_sequence(sequence_name, step_name, "MoveIt not enabled")
                     return
 
+                # Built once: a base-relative goal stays the same absolute goal on a
+                # fault retry instead of moving another full offset.
                 joint_msg = self._build_joint_state_message(effective_step)
                 if self._joint_goal_already_reached(joint_msg):
                     self.get_logger().info(f'{step_name}: already at joint goal with settled feedback; no motion sent')
                     continue
-                self.joint_target_pub.publish(joint_msg)
+                attempt_step = effective_step
+                fault_retries_done = 0
+                while True:
+                    self._begin_plan_attempt()
+                    if fault_retries_done and self._joint_goal_already_reached(joint_msg):
+                        self.get_logger().info(f'{step_name}: measured state already at the joint goal after the fault')
+                        break
+                    self.joint_target_pub.publish(joint_msg)
 
-                context = self._plan_joint_state(step_name, joint_msg, effective_step)
-                if context is None or not self._wait_for_plan(context, effective_step):
-                    self._abort_sequence(sequence_name, step_name, "planning/execution failed")
-                    return
+                    context = self._plan_joint_state(step_name, joint_msg, attempt_step)
+                    if context is None or not self._wait_for_plan(context, attempt_step):
+                        self._abort_sequence(sequence_name, step_name,
+                                             self._plan_abort_reason())
+                        return
 
-                if self.wait_for_trajectory_ack:
-                    self.get_logger().info("  Waiting for Arduino to finish trajectory...")
-                    if not self._wait_for_arduino_done(
-                        timeout_sec=60.0,
-                        label=f"{sequence_name}/{step_name} trajectory",
-                    ):
-                        self._force_apply_pending_joint_state(self._arduino_error_message or "trajectory acknowledgement/endpoint verification failed")
-                        if not bool(effective_step.get(
-                            "continue_on_arduino_timeout",
-                            self.continue_on_arduino_timeout,
-                        )):
-                            self._abort_sequence(sequence_name, step_name, self._arduino_error_message or "trajectory acknowledgement/endpoint verification failed")
-                            return
-                        self.get_logger().warn(f"  Continuing after trajectory timeout for {step_name}")
-                else:
-                    self.get_logger().info("  Continuing without trajectory DONE acknowledgement")
-                    self._force_apply_pending_joint_state(
-                        "trajectory acknowledgement disabled"
-                    )
+                    error = self._await_step_trajectory(sequence_name, step_name)
+                    if error is None:
+                        if fault_retries_done:
+                            self._publish_status(
+                                f"{step_name}: recovered after {fault_retries_done} retr"
+                                f"{'y' if fault_retries_done == 1 else 'ies'}")
+                        break
+                    retry_step, reason = self._try_fault_recovery(
+                        sequence_name, step_name, effective_step, sequence_cfg,
+                        error, fault_retries_done, 1.0)
+                    if retry_step is not None:
+                        fault_retries_done += 1
+                        attempt_step = retry_step
+                        continue
+                    if not bool(effective_step.get(
+                        "continue_on_arduino_timeout",
+                        self.continue_on_arduino_timeout,
+                    )):
+                        self._abort_sequence(sequence_name, step_name, reason)
+                        return
+                    self.get_logger().warn(f"  Continuing after trajectory timeout for {step_name}")
+                    break
             else:
                 self._abort_sequence(
                     sequence_name, step_name, f"unknown step type '{step_type}'"
@@ -2085,6 +2197,107 @@ class GestureMotionExecutor(Node):
         self._publish_status(f"Sequence {sequence_name} motion completed{suffix}")
         self.get_logger().info(f"=== Sequence '{sequence_name}' completed ===")
         self._store_surface_height_memory(sequence_cfg)
+
+    def _plan_sequence_pose(self, step_name: str, effective_step: Dict, sequence_cfg: Dict,
+                            steps: List[Dict], index: int,
+                            detected_pose: Optional[PoseStamped]) -> Optional[PoseStamped]:
+        """Plan (and, once approved, send) one pose step from the measured state.
+        Returns the planned target pose, or None when planning/execution failed."""
+        pose_msg = self._build_pose_message(effective_step)
+        if effective_step.get("base_placement"):
+            return self._plan_with_base_placement(
+                step_name, effective_step, detected_pose, steps, index)
+        candidate_z_offsets = [
+            float(value)
+            for value in effective_step.get(
+                "safe_z_candidate_offsets_m", [0.0]
+            )
+        ]
+        if not candidate_z_offsets:
+            candidate_z_offsets = [0.0]
+
+        max_replanning_attempts = max(
+            1,
+            int(
+                effective_step.get(
+                    "max_replanning_attempts",
+                    sequence_cfg.get("max_replanning_attempts", 1),
+                )
+            ),
+        )
+        for planning_attempt in range(1, max_replanning_attempts + 1):
+            candidate_index = min(
+                planning_attempt - 1, len(candidate_z_offsets) - 1
+            )
+            candidate_z_offset = candidate_z_offsets[candidate_index]
+            candidate_pose = deepcopy(pose_msg)
+            candidate_pose.pose.position.z += candidate_z_offset
+            self.target_pose_pub.publish(candidate_pose)
+            if max_replanning_attempts > 1:
+                self.get_logger().info(
+                    f"  Planning {step_name}: outer attempt "
+                    f"{planning_attempt}/{max_replanning_attempts}, "
+                    f"safe candidate z={candidate_pose.pose.position.z:.3f} m "
+                    f"(offset +{candidate_z_offset:.3f} m)"
+                )
+            attempt_step = effective_step
+            if planning_attempt > 1:
+                # The first attempt already cleared the map and waited
+                # for a fresh cloud. Rebuilding the same scene on every
+                # stochastic OMPL retry adds latency and can reinsert
+                # the same target-edge noise that just caused failure.
+                attempt_step = dict(effective_step)
+                attempt_step["clear_octomap_before_plan"] = False
+                self.get_logger().info(
+                    f"  Reusing prepared OctoMap for {step_name} retry"
+                )
+            context = self._plan_pose(
+                step_name, candidate_pose, attempt_step
+            )
+            if context is not None and self._wait_for_plan(context, attempt_step):
+                return candidate_pose
+
+            retryable = context is None or context.retryable_failure
+            if not retryable or planning_attempt >= max_replanning_attempts:
+                break
+            self.get_logger().warn(
+                f"  Replanning {step_name} after MoveIt failure "
+                f"({planning_attempt}/{max_replanning_attempts})"
+            )
+            time.sleep(0.2)
+        return None
+
+    def _back_up_for_detection(self, sequence_name: str) -> bool:
+        """Run the map's back_up command once (planned from the measured state,
+        approval as configured on back_up). True when it reached its goal."""
+        cfg = self.commands.get('back_up')
+        if not isinstance(cfg, dict) or cfg.get('type') != 'joint_state':
+            self.get_logger().error(f'[{sequence_name}] detection recovery: no joint_state back_up command')
+            return False
+        if self._stop_was_requested() or not self.enable_moveit_planning or self.move_group_client is None:
+            return False
+        joint_msg = self._build_joint_state_message(cfg)
+        self.joint_target_pub.publish(joint_msg)
+        cup_contact = bool(cfg.get('allow_held_cup_map_contact')) and self._holding_cup \
+            and not self._cup_map_contact_allowed
+        if cup_contact:
+            self._set_allowed_collisions(self._CUP_MAP_PAIRS, True)
+            self._cup_map_contact_allowed = True
+        try:
+            self._begin_plan_attempt()
+            context = self._plan_joint_state(f'{sequence_name}/back_up', joint_msg, cfg)
+            if context is None or not self._wait_for_plan(context, cfg):
+                self.get_logger().error(f'[{sequence_name}] detection recovery: back_up planning failed')
+                return False
+            error = self._await_step_trajectory(sequence_name, 'back_up')
+            if error is not None:
+                self.get_logger().error(f'[{sequence_name}] detection recovery: back_up failed: {error}')
+                return False
+            return True
+        finally:
+            if cup_contact:
+                self._set_allowed_collisions(self._CUP_MAP_PAIRS, False)
+                self._cup_map_contact_allowed = False
 
     def _abort_sequence(self, sequence_name: str, step_name: str, reason: str) -> None:
         self._save_sequence_trajectory_csv(sequence_name)
@@ -2736,14 +2949,14 @@ class GestureMotionExecutor(Node):
             zip(joint_trajectory.joint_names, joint_trajectory.points[-1].positions)
         )
 
-    def _clear_and_rebuild_octomap(self, name: str, command_cfg: Dict) -> bool:
+    def _clear_and_rebuild_octomap(self, name: str, command_cfg: Dict, force: bool = False) -> bool:
         enabled = bool(
             command_cfg.get(
                 "clear_octomap_before_plan",
                 self.clear_octomap_before_pose_plan,
             )
         )
-        if not enabled or not self.clear_octomap_before_pose_plan:
+        if not force and (not enabled or not self.clear_octomap_before_pose_plan):
             return True
 
         timeout_sec = float(
@@ -3125,12 +3338,56 @@ class GestureMotionExecutor(Node):
         if constraints is not None:
             req.constraints = constraints
         response = self._call_service(self.validity_client, req)
+        # Kept for start-state recovery (_check_start_state): which bodies touch,
+        # and whether any constraint (rather than a collision) failed.
+        self._last_invalid_state = None if response.valid else (
+            sorted({(c.contact_body_1, c.contact_body_2) for c in response.contacts}),
+            all(r.result for r in response.constraint_result))
         if not response.valid and log:
             contacts = sorted({f'{c.contact_body_1}/{c.contact_body_2}' for c in response.contacts})
             self.get_logger().error(f'Invalid state for {group}: contacts={contacts}, '
                                    f'constraint results={response.constraint_result}')
             self._publish_collision_debug(req.robot_state, response.contacts)
         return response.valid
+
+    def _check_start_state(self, name: str, joints: JointState, group: str,
+                           constraints, command_cfg: Dict) -> Optional[JointState]:
+        """Validate the measured start state. When it is invalid only because the
+        robot (or held cup) touches OctoMap voxels, clear the map once, wait for
+        the rebuild, re-apply the active ACM allowances and check the fresh
+        measured state again. Returns the state to plan from, or None."""
+        self._last_invalid_state = None
+        self._plan_failure_reason = None
+        if self._state_valid(joints, group, constraints, log=True):
+            return joints
+        invalid = getattr(self, '_last_invalid_state', None)
+        pairs = [] if invalid is None else invalid[0]
+        described = ', '.join(f'{a}/{b}' for a, b in pairs) or 'a constraint'
+        if (invalid is None or not start_state_recoverable(*invalid)
+                or not bool(command_cfg.get('start_state_recovery', True))):
+            self._plan_failure_reason = f'start state invalid ({described})'
+            return None
+        if getattr(self, '_start_recovery_used', False):
+            self._plan_failure_reason = (
+                f'start state still in collision with the map after a clear and rebuild ({described})')
+            return None
+        self._start_recovery_used = True
+        line = f'{name}: start touches map voxels only ({described}) — clearing the map and replanning once'
+        self.get_logger().warn(f'  {line}')
+        self._publish_status(line)
+        if not self._clear_and_rebuild_octomap(name, command_cfg, force=True):
+            self._plan_failure_reason = 'start state in map collision; map clear/rebuild failed'
+            return None
+        self._require_fresh_state()
+        fresh = deepcopy(self.latest_joint_state)
+        if self._state_valid(fresh, group, constraints, log=True):
+            self.get_logger().info(f'  {name}: start state valid after the map rebuild')
+            return fresh
+        invalid = getattr(self, '_last_invalid_state', None)
+        described = ', '.join(f'{a}/{b}' for a, b in (invalid[0] if invalid else [])) or 'a constraint'
+        self._plan_failure_reason = (
+            f'start state still in collision after a map clear and rebuild ({described})')
+        return None
 
     def _republish_collision_debug(self):
         snapshot = getattr(self, '_collision_debug', None)
@@ -3777,6 +4034,7 @@ class GestureMotionExecutor(Node):
         selected = None
         rejections = {}
         diagnosed = False
+        base_phase_cfg = self._fault_phase_cfg(cfg)
         def rejected(reason):
             rejections[reason] = rejections.get(reason, 0) + 1
         for candidate in candidates:
@@ -3835,10 +4093,10 @@ class GestureMotionExecutor(Node):
                     rejected('arm-first lowering blocked at the current base pose')
                     continue
                 base_start = self._joint_state_with_updates(arm_goal)
-            trajectory = self._plan_joint_phase(phases[0][0], 'base', base_start, phases[0][1], {})
+            trajectory = self._plan_joint_phase(phases[0][0], 'base', base_start, phases[0][1], base_phase_cfg)
             if trajectory is not None and len(phases) > 1:
                 after_turn = self._joint_state_with_updates(phases[0][1])
-                if self._plan_joint_phase(phases[1][0], 'base', after_turn, phases[1][1], {}) is None:
+                if self._plan_joint_phase(phases[1][0], 'base', after_turn, phases[1][1], base_phase_cfg) is None:
                     trajectory = None
             if trajectory is None:
                 rejected('base path planning failed')
@@ -3852,28 +4110,35 @@ class GestureMotionExecutor(Node):
         if arm_first_traj is not None:
             label = f'{name}/arm_first'
             context = self._execute_preplanned(label, arm_first_traj, {**base_cfg, 'group_name': arm_group})
-            if not context.success or not self._wait_for_arduino_done(60.0, label):
+            if not context.success:
                 self.stop_pub.publish(Bool(data=True))
                 raise RuntimeError(f'{name}: arm-first lowering failed')
+            if not self._wait_for_arduino_done(60.0, label):
+                self.stop_pub.publish(Bool(data=True))
+                raise MotionFault(f'{name}: arm-first lowering failed', self._arduino_error_message)
             # The base path was checked with the arm in this pose; replan it from
             # the measured state the arm actually reached.
-            selected = self._plan_joint_phase(phases[0][0], 'base', self.latest_joint_state, phases[0][1], {})
+            selected = self._plan_joint_phase(phases[0][0], 'base', self.latest_joint_state, phases[0][1],
+                                              base_phase_cfg)
             if selected is None:
                 self.stop_pub.publish(Bool(data=True))
                 raise RuntimeError(f'{phases[0][0]}: no base path after the arm-first lowering')
         for index, (label, target) in enumerate(phases):
             if index:
                 # Later phases start from the measured state the previous one reached.
-                selected = self._plan_joint_phase(label, 'base', self.latest_joint_state, target, {})
+                selected = self._plan_joint_phase(label, 'base', self.latest_joint_state, target, base_phase_cfg)
                 if selected is None:
                     self.stop_pub.publish(Bool(data=True))
                     raise RuntimeError(f'{label}: no base path from the measured state')
             if '_placement_state' in cfg:
                 cfg['_placement_state']['base_moved'] = True
             context = self._execute_preplanned(label, selected, {**base_cfg, 'group_name': 'base'})
-            if not context.success or not self._wait_for_arduino_done(90.0, label):
+            if not context.success:
                 self.stop_pub.publish(Bool(data=True))
                 raise RuntimeError(f'{name}: base positioning failed')
+            if not self._wait_for_arduino_done(90.0, label):
+                self.stop_pub.publish(Bool(data=True))
+                raise MotionFault(f'{name}: base positioning failed', self._arduino_error_message)
         measured = dict(zip(self.latest_joint_state.name, self.latest_joint_state.position))
         dx, dy = measured['base_x'] - goal['base_x'], measured['base_y'] - goal['base_y']
         c, sn = math.cos(goal['base_theta']), math.sin(goal['base_theta'])
@@ -3898,6 +4163,15 @@ class GestureMotionExecutor(Node):
             arm_cfg = resolved
             pose = self._build_pose_message(resolved)
         return self._plan_pose(name + '/arm', pose, arm_cfg)
+
+    @staticmethod
+    def _fault_phase_cfg(cfg):
+        """Base phases inside a standoff plan at full scaling; on a fault retry
+        they take the retry's reduction too (see fault_recovery.scaled_step)."""
+        scale = cfg.get('_fault_scale')
+        if scale is None:
+            return {}
+        return {'velocity_scaling': float(scale), 'acceleration_scaling': float(scale)}
 
     def _standoff_keep_arm(self, name, pose, cfg, arm_group):
         """Drive only the base so the gripper, held as it is, lands at the standoff
@@ -3925,7 +4199,7 @@ class GestureMotionExecutor(Node):
             f'height {t.z:.3f} m); base goal ({goal["base_x"]:.3f}, {goal["base_y"]:.3f}, '
             f'{goal["base_theta"]:.3f})')
         label = f'{name}/base'
-        trajectory = self._plan_joint_phase(label, 'base', self.latest_joint_state, goal, {})
+        trajectory = self._plan_joint_phase(label, 'base', self.latest_joint_state, goal, self._fault_phase_cfg(cfg))
         if trajectory is None:
             self.get_logger().error(f'{name}: no collision-free base path with the arm held as it is; no motion sent')
             return None
@@ -3933,9 +4207,12 @@ class GestureMotionExecutor(Node):
         if '_placement_state' in cfg:
             cfg['_placement_state']['base_moved'] = True
         context = self._execute_preplanned(label, trajectory, {**base_cfg, 'group_name': 'base'})
-        if not context.success or not self._wait_for_arduino_done(90.0, label):
+        if not context.success:
             self.stop_pub.publish(Bool(data=True))
             raise RuntimeError(f'{name}: base positioning failed')
+        if not self._wait_for_arduino_done(90.0, label):
+            self.stop_pub.publish(Bool(data=True))
+            raise MotionFault(f'{name}: base positioning failed', self._arduino_error_message)
         return context
 
     def _diagnose_cartesian_failure(self, name, path, failed):
@@ -4096,9 +4373,11 @@ class GestureMotionExecutor(Node):
         command_cfg['_path_constraints'] = deepcopy(goal.request.path_constraints)
         command_cfg['_goal_constraints'] = deepcopy(constraints)
         self._require_fresh_state()
-        if not self._state_valid(goal.request.start_state.joint_state, goal.request.group_name,
-                                 goal.request.path_constraints, log=True):
+        start = self._check_start_state(name, goal.request.start_state.joint_state, goal.request.group_name,
+                                        goal.request.path_constraints, command_cfg)
+        if start is None:
             return None
+        goal.request.start_state.joint_state = start
         if '_placement_candidates' in command_cfg:
             candidates = self._validated_placements(pose_msg, command_cfg, constraints)
         else:
@@ -4167,9 +4446,12 @@ class GestureMotionExecutor(Node):
             constraints.joint_constraints.append(joint_constraint)
 
         goal.request.goal_constraints = [constraints]
-        if not self._state_valid(self.latest_joint_state, goal.request.group_name, log=True):
+        start = self._check_start_state(name, self.latest_joint_state, goal.request.group_name,
+                                        None, command_cfg)
+        if start is None:
             return None
-        target = deepcopy(self.latest_joint_state)
+        goal.request.start_state.joint_state = deepcopy(start)
+        target = deepcopy(start)
         update = dict(zip(joint_msg.name, joint_msg.position))
         target.position = [update.get(n, p) for n, p in zip(target.name, target.position)]
         if not self._state_valid(target, goal.request.group_name, log=True):
