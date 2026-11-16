@@ -150,6 +150,10 @@ export function Header({ snap }: { snap: Snapshot | null }) {
           ) : (
             <TakeControl holder={ctrl.held ? ctrl.holder : null} />
           )}
+          {snap.teleop?.mode && (
+            <Chip k="Teleop" v={`${snap.teleop.phase} · ${snap.teleop.owner_label ?? ""}`} cls="bad"
+              title="Keyboard/mouse teleop is on: automatic tasks are disabled until it is turned off" />
+          )}
           {snap.mode === "sim" && <Chip k="Sim" v="" cls="sim" title="Signal-level simulation: no robot connected" />}
           {snap.degraded && <Chip k="Degraded" v="status text" cls="warn" title={snap.degraded} />}
         </div>

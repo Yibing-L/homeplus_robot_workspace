@@ -36,3 +36,9 @@ stop_idle_confirm_sec: 3.0
 start_confirm_sec: 2.0
 origin_recent_sec: 600.0
 
+# Teleop (TELEOP.md): any key of DEFAULTS in homeplus_console/teleop.py, e.g.
+# teleop:
+#   base_lin_mps: [0.05, 0.12]
+#   joint_max_dps: {joint_shoulder: 8.0, joint_elbow: 10.0}
+#   deadman_sec: 0.30
+teleop_record_fps: 10.0

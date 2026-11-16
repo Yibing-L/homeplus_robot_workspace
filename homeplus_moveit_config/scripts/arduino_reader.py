@@ -32,10 +32,53 @@ LIMITS = [(-10, 10), (-10, 10), (-math.inf, math.inf), (0, math.pi / 2),
           (math.radians(-35), math.radians(140)), (math.radians(-30), math.radians(150))]
 
 
+# Live jog (console teleop): one open-ended STR stream per jog session, one point per packet.
+# The firmware interpolates toward each point and stops on BUFFER_UNDERRUN if points stop
+# arriving, so the lookahead is also the firmware-side dead-man time. No firmware change.
+JOG_LOOKAHEAD_MS = 300        # each point is due this far after "now" on the firmware clock
+JOG_INPUT_TIMEOUT_S = 0.15    # no setpoint for this long: finish the stream (hold the last point)
+JOG_MAX_POINT_MS = 110000     # firmware rejects point times > 120 s; end the session before that
+JOG_UNDERRUN_PAD_MS = 20      # extra lookahead added whenever the firmware buffer nearly drained
+# Defence in depth against a console bug: velocity between consecutive streamed points,
+# hardware units per second (cm, cm, deg, deg...), about twice the console's own limits.
+JOG_MAX_RATE = [25.0, 25.0, 40.0, 180.0, 80.0, 120.0, 30.0, 25.0]
+# A session must start from where the robot is: first point vs measured (hardware units).
+JOG_START_TOLERANCE = [2.0, 2.0, 1.5, 10.0, 10.0, 10.0, 3.0, 3.0]
+
+
 def from_hardware(values):
     if len(values) != 8 or not all(math.isfinite(v) for v in values):
         raise ValueError("invalid hardware state")
     return [values[0] / 100, values[1] / 100] + [math.radians(v) for v in values[2:]]
+
+
+def to_hardware(si):
+    """SI joint values in JOINT_NAMES order (m, rad) -> firmware units (cm, deg)."""
+    return [si[0] * 100, si[1] * 100] + [math.degrees(v) for v in si[2:8]]
+
+
+def jog_point_text(hw, t_ms):
+    return ' '.join(f'{v:.2f}' for v in hw) + f' 0 0 {int(t_ms)}'
+
+
+def validate_jog_setpoint(si):
+    """8 finite SI values inside the bridge's joint limits, or ValueError."""
+    q = [float(v) for v in si]
+    if len(q) != 8 or not all(math.isfinite(v) for v in q):
+        raise ValueError('need 8 finite joint values')
+    for v, (lo, hi), name in zip(q, LIMITS, JOINT_NAMES):
+        if not lo - 1e-5 <= v <= hi + 1e-5:
+            raise ValueError(f'{name} outside joint limits')
+    return q
+
+
+def jog_rate_violation(prev_hw, hw, dt_s):
+    """Name of the first joint whose streamed velocity exceeds JOG_MAX_RATE, else None."""
+    dt_s = max(dt_s, 1e-3)
+    for name, a, b, rate in zip(JOINT_NAMES, prev_hw, hw, JOG_MAX_RATE):
+        if abs(b - a) / dt_s > rate:
+            return f'{name} {abs(b - a) / dt_s:.1f}/s > {rate}/s'
+    return None
 
 
 def validate_command(command, streaming=False):
@@ -95,6 +138,7 @@ class ArduinoBridge(Node):
         self.firmware_restarts = 0
         self.last_error = None
         self.id_requested = False
+        self.jog = None
         self.joint_state_pub = self.create_publisher(JointState, '/joint_states', 10)
         self.hardware_state_pub = self.create_publisher(JointState, '/hardware/joint_states', 10)
         self.ack_pub = self.create_publisher(String, '/arduino/ack', 10)
@@ -102,11 +146,13 @@ class ArduinoBridge(Node):
         self.status_pub = self.create_publisher(Bool, '/arduino/status', latched)
         self.ready_pub = self.create_publisher(Bool, '/arduino/ready', latched)
         self.info_pub = self.create_publisher(String, '/arduino/bridge_info', latched)
+        self.jog_status_pub = self.create_publisher(String, '/arduino/jog_status', 10)
         self._set_ready(False)
         self.status_pub.publish(Bool(data=False))
         self.create_subscription(String, '/arduino/command_queue', self._command_queue_callback, 10)
         self.create_subscription(Bool, '/arduino/stop', self._stop_callback, 10)
         self.create_subscription(Bool, '/arduino/zero', self._zero_callback, 10)
+        self.create_subscription(String, '/arduino/jog', self._jog_callback, 10)
         self.create_timer(1.0 / max(20, read_hz), self._read_loop)
         self.create_timer(5.0, self._report_connection)
 
@@ -130,7 +176,7 @@ class ArduinoBridge(Node):
             'opened_wall': self.opened_wall, 'compatible': self.compatible,
             'protocol': 'STATE4' if self.streaming_capable else None, 'last_error': self.last_error,
             'firmware_restarts': self.firmware_restarts, 'zero_supported': self.zero_supported,
-            'zero_count': self.zero_count})))
+            'zero_count': self.zero_count, 'jog': True, 'jog_lookahead_ms': JOG_LOOKAHEAD_MS})))
 
     def _zero_callback(self, msg):
         """ZERO: odometry and held base target := current pose, without resetting the board."""
@@ -153,6 +199,9 @@ class ArduinoBridge(Node):
 
     def _fail(self, reason):
         self.last_error = reason
+        if self.jog is not None:
+            self._jog_status(self.jog, 'failed', reason)
+            self.jog = None
         if self.active_id is not None:
             self.ack_pub.publish(String(data=f'ERROR {self.active_id} {reason}'))
         self.active_id = None
@@ -209,6 +258,9 @@ class ArduinoBridge(Node):
                 self.last_serial_line = bytes(line[:160]).decode('ascii', errors='replace')
                 self._handle_line(line.decode('ascii', errors='strict').strip())
             self._pump_tx()
+            jog = self.jog
+            if jog is not None and not jog['ending'] and now - jog['last_rx'] > JOG_INPUT_TIMEOUT_S:
+                self._jog_end(jog, 'input timeout')
             if self.compatible and now - self.last_feedback > 1.0:
                 self.ser.write(b'\nSTOP\n')
                 self._fail('STALE_FEEDBACK')
@@ -307,7 +359,10 @@ class ArduinoBridge(Node):
                 raise ValueError('bad stream credit')
             cid, sequence, free = map(int, fields[1:])
             if cid == self.active_id and getattr(self, 'stream', None) is not None:
-                self._refill_stream(sequence, free)
+                if self.stream.get('jog'):
+                    self._jog_refill(sequence, free)
+                else:
+                    self._refill_stream(sequence, free)
             return
         if fields[0] not in ('ACK', 'DONE', 'ERROR') or len(fields) < 2:
             return
@@ -327,13 +382,16 @@ class ArduinoBridge(Node):
                 self._fail('PREMATURE_DONE')
                 return
             self.stream = None
+            if self.jog is not None:
+                self._jog_status(self.jog, 'done', 'settled')
+                self.jog = None
             self.ack_pub.publish(String(data=line))
             self.active_id = None
             self._set_ready(True)
             self.status_pub.publish(Bool(data=True))
         elif fields[0] == 'ERROR':
             self._fail(' '.join(fields[2:]))
-        else:
+        elif self.jog is None:  # per-packet jog ACKs (~15 Hz) would only flood /arduino/ack
             self.ack_pub.publish(String(data=line))
 
     def _command_queue_callback(self, msg):
@@ -378,6 +436,139 @@ class ArduinoBridge(Node):
             except (serial.SerialException, OSError):
                 pass  # Firmware heartbeat watchdog stops a lost connection.
             self._fail(f'WRITE {exc}')
+
+    # ------------------------------------------------------------------ live jog (console teleop)
+    def _jog_status(self, jog, state, reason=''):
+        self.jog_status_pub.publish(String(data=json.dumps({
+            'session': jog['session'], 'cid': jog.get('cid'), 'state': state, 'reason': reason,
+            'lookahead_ms': JOG_LOOKAHEAD_MS + jog.get('pad_ms', 0), 'points': jog.get('points', 0)})))
+
+    def _jog_callback(self, msg):
+        """/arduino/jog JSON: {"op": "point", "session": s, "q": [8 SI values, JOINT_NAMES order]}
+        or {"op": "end", "session": s}. The first point of a new session opens a stream at the
+        measured pose; later points replace the pending setpoint (only the newest is streamed)."""
+        try:
+            m = json.loads(msg.data)
+            op, session = m['op'], str(m['session'])
+        except (ValueError, KeyError, TypeError):
+            return
+        jog = self.jog
+        if op == 'end':
+            if jog is not None and jog['session'] == session and not jog['ending']:
+                self._jog_end(jog, 'console end')
+            return
+        if op != 'point':
+            return
+        try:
+            q = validate_jog_setpoint(m['q'])
+        except (ValueError, KeyError, TypeError) as exc:
+            if jog is not None and jog['session'] == session:
+                self._jog_abort(f'JOG_BAD_SETPOINT {exc}')
+            else:
+                self._jog_status({'session': session}, 'rejected', str(exc))
+            return
+        if jog is None:
+            self._jog_start(session, q)
+            return
+        if jog['session'] != session:
+            self._jog_status({'session': session}, 'rejected', 'another jog session is active')
+            return
+        if jog['ending']:
+            return
+        jog['q'] = q
+        jog['fresh'] = True
+        jog['last_rx'] = time.monotonic()
+
+    def _jog_start(self, session, q):
+        now = time.monotonic()
+        reason = None
+        if self.ser is None or not self.compatible:
+            reason = 'no firmware link'
+        elif not getattr(self, 'streaming_capable', False):
+            reason = 'firmware is not STATE4 streaming firmware'
+        elif self.active_id is not None or getattr(self, 'tx', None) is not None:
+            reason = 'bridge busy with another command'
+        elif not self.ready:
+            reason = 'bridge not ready (robot not still yet, or after an error)'
+        elif now - self.last_feedback > 0.2 or not self.state_history:
+            reason = 'joint feedback stale'
+        if reason is None:
+            measured = to_hardware(self.state_history[-1][1])
+            hw = to_hardware(q)
+            for name, a, b, tol in zip(JOINT_NAMES, measured, hw, JOG_START_TOLERANCE):
+                if abs(a - b) > tol:
+                    reason = f'first point {name} is {abs(a - b):.1f} from the measured pose (max {tol})'
+                    break
+        if reason is not None:
+            self._jog_status({'session': session}, 'rejected', reason)
+            return
+        cid = (time.time_ns() // 1000) % (2**32 - 1) + 1
+        self.active_id = cid
+        self.deadline = now + JOG_MAX_POINT_MS / 1000.0 + 15.0
+        self.status_pub.publish(Bool(data=False))
+        self.stream = dict(points=[], offset=0, sequence=0, transit=False, jog=True)
+        self.jog = dict(session=session, cid=cid, q=q, sent_hw=hw, last_t=JOG_LOOKAHEAD_MS, t0=now,
+                        last_rx=now, fresh=False, ending=False, final_sent=False, pad_ms=0, points=2)
+        # Two points: hold the current pose now, and again one lookahead later.
+        try:
+            self._jog_send([jog_point_text(hw, 0), jog_point_text(hw, JOG_LOOKAHEAD_MS)], final=False)
+        except (serial.SerialException, OSError, ValueError) as exc:
+            self._jog_abort(f'WRITE {exc}')
+            return
+        self._jog_status(self.jog, 'active')
+        self.get_logger().info(f'Jog session {session} started as stream {cid}')
+
+    def _jog_send(self, points, final):
+        stream = self.stream
+        body = f"{stream['sequence']} {1 if final else 0} " + ','.join(points)
+        crc = binascii.crc_hqx(body.encode('ascii'), 0xffff)
+        payload = f'STR {self.active_id} {crc:04x} {body}\n'.encode('ascii')
+        if len(payload) >= 2048:
+            raise ValueError('jog packet exceeds firmware RX capacity')
+        if getattr(self, 'tx', None) is not None:
+            raise ValueError('overlapping serial packets')
+        stream['sequence'] += 1
+        self.tx = dict(payload=payload, sent=0, acked=0, last_progress=time.monotonic())
+        self._pump_tx()
+
+    def _jog_end(self, jog, why):
+        """Finish the stream: the next credit sends a final point equal to the last streamed point,
+        so the robot stops where it was already heading (at most one lookahead away) and settles."""
+        jog['ending'] = True
+        self._jog_status(jog, 'ending', why)
+
+    def _jog_abort(self, reason):
+        if self.ser is not None:
+            self.ser.write(b'\nSTOP\n')
+        self._fail(reason)
+
+    def _jog_refill(self, sequence, free):
+        jog, stream = self.jog, self.stream
+        if jog is None or sequence != stream['sequence'] or getattr(self, 'tx', None) is not None or jog['final_sent']:
+            return
+        now = time.monotonic()
+        # BUF3 free counts include the interpolation anchor: 44 free = the firmware is on its last point.
+        if MAX_COMMANDS - free <= 1 and not jog['ending']:
+            jog['pad_ms'] = min(jog['pad_ms'] + JOG_UNDERRUN_PAD_MS, 200)
+        due = int((now - jog['t0']) * 1000) + JOG_LOOKAHEAD_MS + jog['pad_ms']
+        if not jog['ending'] and due > JOG_MAX_POINT_MS:
+            self._jog_end(jog, 'session length limit (the next input starts a new session)')
+        if jog['ending']:
+            self._jog_send([jog_point_text(jog['sent_hw'], jog['last_t'] + 20)], final=True)
+            jog['final_sent'] = True
+            jog['last_t'] += 20
+            return
+        if not jog['fresh']:
+            return  # nothing new: the buffer drains; the input watchdog ends the session
+        hw = to_hardware(jog['q'])
+        t = max(jog['last_t'] + 10, due)
+        bad = jog_rate_violation(jog['sent_hw'], hw, (t - jog['last_t']) / 1000.0)
+        if bad:
+            self._jog_abort(f'JOG_RATE_GUARD {bad}')
+            return
+        self._jog_send([jog_point_text(hw, t)], final=False)
+        jog['sent_hw'], jog['last_t'], jog['fresh'] = hw, t, False
+        jog['points'] += 1
 
     def _refill_stream(self, sequence, free):
         """One outstanding packet; credits include the retained interpolation point."""

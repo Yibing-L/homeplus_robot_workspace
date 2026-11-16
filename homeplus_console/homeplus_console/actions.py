@@ -16,7 +16,7 @@ from .robot_io import RobotIO
 from .tracker import Tracker
 
 MOTION = {"approve", "start_task", "home", "gripper_open", "gripper_close", "back_up",
-          "return_to_start", "undo_step", "undo_sequence", "resume"}
+          "return_to_start", "undo_step", "undo_sequence", "resume", "teleop_on"}
 RECOVERY = ("return_to_start", "undo_step", "undo_sequence", "resume")
 TASK_COMMANDS = {1: "pick_up_coffee", 2: "press_square_button", 7: "place_cup_on_drip_tray", 8: "press_round_button"}
 # Tasks that need the cup in the gripper; every other task refuses to start while holding it
@@ -149,6 +149,7 @@ class ActionService:
         self.stop_result: Optional[Dict[str, Any]] = None
         self.requested_task = 1
         self._no_controller_since: Optional[float] = None
+        self.teleop = None   # TeleopService, attached by the Console
 
     # ------------------------------------------------------------------ gating
     def allowed(self, state: Dict[str, Any], client: Optional[str], now: float) -> Dict[str, Dict[str, Any]]:
@@ -168,9 +169,13 @@ class ActionService:
         flow_busy = self.flow is not None and self.flow.status in ("active", "error")
         out: Dict[str, Dict[str, Any]] = {}
 
+        teleop_on = bool(self.teleop and self.teleop.mode)
+
         def put(name, ok, reason=None, needs_control=True):
             if ok and needs_control and not controlling:
                 ok, reason = False, "view only: take control first"
+            if ok and teleop_on and name in MOTION and name != "teleop_on":
+                ok, reason = False, "teleop mode is on: turn it off first"
             out[name] = {"allowed": bool(ok), "reason": None if ok else reason, "motion": name in MOTION}
 
         put("stop", True, needs_control=False)
@@ -230,6 +235,20 @@ class ActionService:
         put("unit_stop", True)
         put("unit_restart", idle or not ex["fresh"], "executor busy")
         put("recover", robot == "ABORTED", "nothing to recover from")
+        # Teleop (TELEOP.md): the same motion gate as the manual commands, plus no open fault, no plan
+        # waiting for approval, and a bridge that advertises the live jog stream.
+        jog = self.io.jog_capable() if hasattr(self.io, "jog_capable") else False
+        ok, why = why_motion(not open_faults and ap is None and jog is True and not teleop_on,
+                             "teleop mode is already on" if teleop_on else "hardware fault open" if open_faults
+                             else "a plan is awaiting approval" if ap is not None
+                             else "the running bridge has no live jog (restart hp-bridge from the teleop branch)" if jog is False
+                             else "bridge info not received yet")
+        put("teleop_on", ok, why)
+        put("teleop_off", teleop_on, "teleop mode is off", needs_control=False)
+        put("teleop_collision", teleop_on, "teleop mode is off")
+        rec = bool(self.teleop and self.teleop.recorder.active)
+        put("record_start", teleop_on and not rec, "recording already" if rec else "teleop mode is off")
+        put("record_stop", rec, "not recording")
         put("flow_set_start", not flow_busy and (idle or not ex["fresh"]), "flow already running" if flow_busy else "executor busy")
         put("flow_confirm", self.flow is not None and self.flow.status == "active", "no flow step to confirm")
         put("flow_cancel", self.flow is not None and self.flow.status in ("active", "error"), "no flow running")
@@ -420,11 +439,24 @@ class ActionService:
             return {"status": "confirmed", "detail": "retrying step"}
         if name == "flow_confirm":
             return self._flow_confirm(operator, args, state, now)
+        if name == "teleop_on":
+            return self.teleop.enable(client, operator, now)
+        if name == "teleop_off":
+            self.teleop.disable(f"turned off by {operator}", now)
+            return {"status": "confirmed", "detail": "teleop mode off"}
+        if name == "teleop_collision":
+            return self.teleop.set_collision_mode(str(args.get("mode", "full")))
+        if name == "record_start":
+            return self.teleop.record_start(str(args.get("instruction", "")), now)
+        if name == "record_stop":
+            return self.teleop.record_stop(str(args.get("outcome", "success")))
         return {"status": "rejected", "detail": f"unhandled action {name}"}
 
     # ------------------------------------------------------------------ STOP (§6.1)
     def _stop(self, rid: str, state: Dict[str, Any], now: float) -> Dict[str, Any]:
         reached = self.io.publish_stop()
+        if self.teleop is not None:
+            self.teleop.on_stop(now)
         cancel = self.io.call_cancel()
         was_busy = bool(state["executor"]["busy"])
         if not reached:

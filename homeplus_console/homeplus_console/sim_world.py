@@ -248,6 +248,9 @@ class SimWorld:
         self._last_gpu = -99.0
         self._last_task_poll = -99.0
         self._sim_octree: Optional[bytes] = None
+        # teleop jog stream (the bridge's /arduino/jog in ROS mode)
+        self.jog: Optional[Dict[str, Any]] = None
+        self._chain = None
 
     # ------------------------------------------------------------------ lifecycle
     def start(self) -> None:
@@ -275,12 +278,101 @@ class SimWorld:
             self.logs.add(BRIDGE, "WARN", "Host STOP received; holding position")
             if not self.bridge_up:
                 return False
+            if self.jog:
+                self._jog_status("failed", "HOST_STOP")
+                self._ack(f"ERROR {self.jog['cid']} HOST_STOP")
+                self.jog = None
             if self.cmd and self.cmd.result is None:
                 self.cmd.result = "ERROR HOST_STOP"
                 self._ack(f"ERROR {self.cmd.id} HOST_STOP")
             for k in self.j:
                 self.tgt[k] = self.j[k]
             return True
+
+    # ------------------------------------------------------------------ teleop (bridge jog stream, sim)
+    def _jog_status(self, state: str, reason: str = "", session: Optional[str] = None) -> None:
+        sid = session or (self.jog or {}).get("session")
+        self.store.push_event("/arduino/jog_status", {"session": sid, "cid": (self.jog or {}).get("cid"), "state": state,
+                                                      "reason": reason, "lookahead_ms": 0}, "/arduino/jog_status [sim]")
+
+    def jog_point(self, session: str, q: List[float]) -> None:
+        with self._lock:
+            names = ("base_x", "base_y", "base_theta", "joint_grip_L", "joint_hand", "joint_wrist", "joint_elbow", "joint_shoulder")
+            vals = {n: (v if n in ("base_x", "base_y") else math.degrees(v)) for n, v in zip(names, q)}
+            now = self.clock()
+            if self.jog is None:
+                why = None
+                if not self.bridge_up:
+                    why = "no firmware link"
+                elif self.cmd and self.cmd.result is None:
+                    why = "bridge busy with another command"
+                elif any(abs(vals[n] - self.j[n]) > (0.02 if n in BASE[:2] else 3.0) for n in names):
+                    why = "first point is not the measured pose"
+                if why:
+                    self._jog_status("rejected", why, session)
+                    return
+                self.jog = {"session": session, "cid": self._next_cmd_id, "last_rx": now, "ending": None}
+                self._next_cmd_id += 1
+                self._jog_status("active")
+            if self.jog["session"] != session or self.jog["ending"] is not None:
+                return
+            self.jog["last_rx"] = now
+            for n in names:
+                self.tgt[n] = vals[n]
+
+    def jog_end(self, session: str) -> None:
+        with self._lock:
+            if self.jog and self.jog["session"] == session and self.jog["ending"] is None:
+                self.jog["ending"] = self.clock()
+                self._jog_status("ending", "console end")
+
+    def _jog_tick(self, now: float) -> None:
+        jg = self.jog
+        if jg is None:
+            return
+        if jg["ending"] is None and now - jg["last_rx"] > 0.15:
+            jg["ending"] = now
+            self._jog_status("ending", "input timeout")
+        if jg["ending"] is not None and now - jg["ending"] > 0.4 and self._arm_still():
+            self._ack(f"DONE {jg['cid']}")
+            self._jog_status("done", "settled")
+            self.jog = None
+
+    def jog_capable(self) -> Optional[bool]:
+        return True
+
+    def set_feed_boost(self, on: bool) -> None:
+        pass
+
+    def raw_frame(self, fid: str):
+        f = self.frames.get(fid)
+        return None if f is None else (f.recv_mono, f.jpeg)
+
+    def check_state(self, q: Dict[str, float]):
+        """Sim /check_state_validity: the table box (detected_table) against the palm/TCP and the base."""
+        from .teleop import Check
+        from . import robot_model, teleop_kin
+        if not self.supervisor.is_active("hp-moveit"):
+            return Check(False, error="/check_state_validity not available (move_group down?)")
+        if self._chain is None:
+            self._chain = teleop_kin.ArmChain(robot_model.urdf_xml())
+        T = self._chain.fk(q)
+        c, s_ = math.cos(q["base_theta"]), math.sin(q["base_theta"])
+        x = q["base_x"] + c * T[0, 3] - s_ * T[1, 3]
+        y = q["base_y"] + s_ * T[0, 3] + c * T[1, 3]
+        z = T[2, 3]
+        contacts = []
+        x0, x1, y0, y1 = 1.20 - 0.33, 1.20 + 0.33, -0.52, 0.52
+        top = SIM_TABLE_TOP + 0.005
+        if x0 <= x <= x1 and y0 <= y <= y1 and z < top:
+            contacts.append(("palm_1", "detected_table", round(top - z, 4)))
+        # base footprint: a 0.33 m radius disc around base_link
+        nx = min(max(q["base_x"], x0), x1)
+        ny = min(max(q["base_y"], y0), y1)
+        d = math.hypot(q["base_x"] - nx, q["base_y"] - ny)
+        if d < 0.33:
+            contacts.append(("base_link", "detected_table", round(0.33 - d, 4)))
+        return Check(not contacts, contacts=contacts, ms=0.3)
 
     def call_cancel(self) -> Optional[bool]:
         with self._lock:
@@ -566,6 +658,7 @@ class SimWorld:
             self._last_status = still
             self.store.update("/arduino/status", still, "/arduino/status")
         self._arduino_cmd(now)
+        self._jog_tick(now)
 
     def _ack(self, text: str) -> None:
         self.store.push_event("/arduino/ack", text, "/arduino/ack")

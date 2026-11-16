@@ -12,7 +12,7 @@ from pathlib import Path
 from typing import Any, Dict, Optional
 
 from fastapi import FastAPI, HTTPException, Request, WebSocket, WebSocketDisconnect
-from fastapi.responses import FileResponse, JSONResponse, Response
+from fastapi.responses import FileResponse, JSONResponse, Response, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 
 from .actions import ActionService, Audit
@@ -23,10 +23,12 @@ from .robot_io import RobotIO
 from .scene import SceneWorker
 from .signals import SignalStore
 from .state_machine import FEEDS, Inputs, derive
+from .teleop_service import TeleopService
 from .tracker import Tracker
 
 STATIC = Path(__file__).parent / "static"
 SNAPSHOT_HZ = 4.0
+SNAPSHOT_HZ_TELEOP = 10.0   # speeds and blocked reasons in the teleop HUD
 DERIVE_HZ = 10.0
 
 
@@ -43,10 +45,15 @@ class Console:
         self._stop = threading.Event()
         # MoveIt planning scene for the 3D view: polled on its own thread, only while a browser is connected
         self.scene = SceneWorker(getattr(io, "fetch_scene", None), logs, store.clock)
+        self.teleop = TeleopService(io, store, tracker, logs, cfg, data_dir, store.clock)
+        self.teleop.state_getter = lambda: self.state
+        self.teleop.lease_ok = lambda client, now: client is not None and self.actions.lease.is_holder(client, now)
+        self.actions.teleop = self.teleop
 
     def start(self) -> None:
         threading.Thread(target=self._loop, name="derive", daemon=True).start()
         self.scene.start()
+        self.teleop.start()
 
     def _loop(self) -> None:
         while not self._stop.is_set():
@@ -112,6 +119,7 @@ class Console:
         state["profile"] = self.profile
         state["sim"] = self.io.fault_state() if self.io.mode == "sim" else None
         state["scene"] = self.scene.view(now)
+        state["teleop"] = self.teleop.view(now)
         with self._lock:
             self.state = state
         return state
@@ -147,6 +155,8 @@ def create_app(console: Console) -> FastAPI:
                 if msg.get("type") == "hello":
                     client = msg.get("client_id")
                     label = msg.get("label") or label
+                elif msg.get("type") == "teleop":
+                    console.teleop.on_frame(client, msg, console.store.clock())
                 if client:
                     console.actions.lease.beat(client, console.store.clock())
 
@@ -156,7 +166,7 @@ def create_app(console: Console) -> FastAPI:
             while True:
                 if time.time() >= console.link_paused_until:
                     await sock.send_json(console.snapshot_for(client))
-                await asyncio.sleep(1.0 / SNAPSHOT_HZ)
+                await asyncio.sleep(1.0 / (SNAPSHOT_HZ_TELEOP if console.teleop.mode else SNAPSHOT_HZ))
                 if task.done():
                     break
         except (WebSocketDisconnect, RuntimeError):
@@ -186,6 +196,27 @@ def create_app(console: Console) -> FastAPI:
             raise HTTPException(404, "no frame")
         return Response(f.jpeg, media_type="image/jpeg",
                         headers={"Cache-Control": "no-store", "X-Frame-Seq": str(f.seq)})
+
+    @app.get("/stream/{feed}.mjpg")
+    async def mjpeg(feed: str):
+        """Live camera as multipart JPEG for the teleop view (snapshot-driven /img is 4 Hz)."""
+        if feed not in {f[0] for f in FEEDS}:
+            raise HTTPException(404, "unknown feed")
+
+        async def gen():
+            last = None
+            idle = 0.0
+            while idle < 30.0:
+                f = console.frames.get(feed)
+                if f is not None and f.seq != last:
+                    last, idle = f.seq, 0.0
+                    yield (b"--frame\r\nContent-Type: image/jpeg\r\nContent-Length: " + str(len(f.jpeg)).encode()
+                           + b"\r\n\r\n" + f.jpeg + b"\r\n")
+                await asyncio.sleep(0.02)
+                idle += 0.02
+
+        return StreamingResponse(gen(), media_type="multipart/x-mixed-replace; boundary=frame",
+                                 headers={"Cache-Control": "no-store"})
 
     @app.get("/api/robot/urdf")
     async def urdf():

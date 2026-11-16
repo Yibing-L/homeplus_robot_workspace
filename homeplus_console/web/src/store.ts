@@ -48,12 +48,22 @@ export const useConsole = create<ConsoleStore>((set) => ({
   },
 }));
 
+let sock: WebSocket | null = null;
+
+/** Send one message on the console WebSocket (teleop input frames). False when the link is down. */
+export function wsSend(msg: unknown): boolean {
+  if (!sock || sock.readyState !== WebSocket.OPEN) return false;
+  sock.send(JSON.stringify(msg));
+  return true;
+}
+
 export function connect(): void {
   let ws: WebSocket | null = null;
   let beat: number | undefined;
   const open = () => {
     const proto = location.protocol === "https:" ? "wss" : "ws";
     ws = new WebSocket(`${proto}://${location.host}/ws`);
+    sock = ws;
     ws.onopen = () => {
       useConsole.setState({ connected: true });
       const { operator } = useConsole.getState();

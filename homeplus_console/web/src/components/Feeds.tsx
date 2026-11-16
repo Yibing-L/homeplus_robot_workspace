@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import type { Feed, Perception, Snapshot } from "../types";
 import { fmtAge, useSinceSnapshot } from "../util";
 import { Plan3D } from "./Plan3D";
+import { TeleopPanel } from "./Teleop";
 import { TimeStrip } from "./TimeStrip";
 
 // Frames are fetched per sequence number, only when the snapshot says a newer one exists and the
@@ -135,7 +136,13 @@ export function Feeds({ snap }: { snap: Snapshot }) {
   const [full, setFull] = useState(false);
   const main = snap.feeds.find((f) => f.id === focus) ?? snap.feeds[0];
   const rest = snap.feeds.filter((f) => f !== main);
-  const [tab, setTab] = useState<"cameras" | "plan">("cameras");
+  const [tab, setTab] = useState<"cameras" | "plan" | "teleop">("cameras");
+  const teleopOn = !!snap.teleop?.mode;
+  useEffect(() => {
+    // teleop mode on → its view; off → back to the cameras
+    if (teleopOn) setTab("teleop");
+    else setTab((t) => (t === "teleop" ? "cameras" : t));
+  }, [teleopOn]);
   const pid = snap.approval?.plan_id ?? null;
   const shownFor = useRef<number | null>(null);
   useEffect(() => {
@@ -156,15 +163,22 @@ export function Feeds({ snap }: { snap: Snapshot }) {
         <button role="tab" aria-selected={tab === "plan"} onClick={() => setTab("plan")}>
           Plan 3D{snap.approval && <span className="pip" aria-label="plan awaiting approval" />}
         </button>
+        <button role="tab" aria-selected={tab === "teleop"} onClick={() => setTab("teleop")}>
+          Teleop{teleopOn && <span className="pip on" aria-label="teleop mode on" />}
+        </button>
         <span className="hint">
-          {tab === "plan"
+          {tab === "teleop"
+            ? "WASD base · QE turn · drag camera = gripper · Space STOP"
+            : tab === "plan"
             ? "drag to orbit · scroll to zoom"
             : lost
               ? "feeds unknown: link lost"
               : `${snap.feeds.filter((f) => f.status === "live").length}/${snap.feeds.length} feeds live`}
         </span>
       </div>
-      {tab === "cameras" ? (
+      {tab === "teleop" ? (
+        <TeleopPanel snap={snap} />
+      ) : tab === "cameras" ? (
         <div className="feeds">
           <FeedTile feed={main} big onClick={() => setFull(true)} />
           <div className="small">
@@ -182,7 +196,7 @@ export function Feeds({ snap }: { snap: Snapshot }) {
       ) : (
         <Plan3D plan={plan} planAge={snap.approval ? null : snap.plan_preview_age} now={snap.joints.si} scene={snap.scene ?? null} />
       )}
-      <Detection p={snap.perception} />
+      {tab !== "teleop" && <Detection p={snap.perception} />}
     </section>
   );
 }
