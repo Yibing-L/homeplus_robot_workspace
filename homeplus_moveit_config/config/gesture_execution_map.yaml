@@ -891,3 +891,222 @@ commands:
           joint_elbow: 0.0
           joint_wrist: 0.0
           joint_hand: 0.0
+
+  # Hand the held cup to a person (task 9; detector tasks 9 = the person, 10 = their
+  # open hand). Refused unless detected_cup is attached (held_cup_placement). First
+  # versions: the drive toward the person, the move over the hand and the guarded
+  # lower each need approval, and the gripper opens only when the operator approves
+  # it (contact at the lower and a pull on the arm are shown as evidence); otherwise
+  # the cup is kept and the sequence stops with it in the gripper.
+  hand_cup_to_person:
+    type: sequence
+    task_id: 9
+    detection_topic: /molmopoint/task_9/pose
+    detection_timeout_sec: 10.0
+    # A standing person sways a few cm between samples; 3 agreeing within 10 cm.
+    detection_min_stable_samples: 3
+    detection_stability_tolerance_m: 0.10
+    max_replanning_attempts: 3
+    # `target: detected` offsets below place the held cup's BOTTOM CENTRE relative
+    # to the measured palm point (as on the drip tray): offset_z 0 = cup bottom at
+    # the palm reading.
+    held_cup_placement:
+      cup_axis_behind_grasp_point_m: 0.043  # same Solo cup as place_cup_on_drip_tray
+      release_clearance_m: 0.0
+    steps:
+      # 1. Find the person: look at the current heading, then turn in place 30 deg at
+      #    a time (base only, collision-checked, slow) up to a full turn. Task 9 uses
+      #    the side D455 (task_registry.yaml): the held cup blocks much of the D405.
+      - name: scan_for_person
+        type: scan_rotate
+        step_deg: 30
+        max_deg: 360
+        direction: left
+        detection_timeout_sec: 10.0  # ~2 s per MolmoPoint cycle: 3 samples + motion settle
+        min_target_range_m: 0.5
+        max_target_range_m: 4.0
+        allow_finger_map_contact: true  # fingers around the held cup
+        allow_held_cup_map_contact: true  # turning in place; the base stays checked
+        velocity_scaling: 0.2
+        acceleration_scaling: 0.2
+        endpoint_profile: transit
+        require_trajectory_approval: false  # turning in place only; STOP stays live
+
+      # 2. Face the person and drive straight toward them until the held cup is 0.65 m
+      #    from their measured front; arm and cup stay as they are (level). Slow.
+      - name: approach_person
+        type: base_approach
+        standoff_m: 0.65
+        max_drive_m: 2.5
+        allow_finger_map_contact: true  # fingers around the held cup
+        velocity_scaling: 0.2
+        acceleration_scaling: 0.2
+        endpoint_profile: transit
+        require_trajectory_approval: true
+
+      # 3. Find the open hand with the hand camera, close up: 3 agreeing samples within
+      #    2 cm, within 1 m of the person reading and of the base.
+      - name: find_hand
+        type: detect
+        task_id: 10
+        detection_topic: /molmopoint/task_10/pose
+        detection_timeout_sec: 30.0
+        detection_min_stable_samples: 3
+        detection_stability_tolerance_m: 0.02
+        detection_max_refresh_shift_m: 1.0
+        max_target_range_m: 1.1
+        preserve_reference_z: false
+
+      # 4. Present: the cup bottom 10 cm above the palm. The base may shuffle (at most
+      #    35 cm, slow) to bring the hand into the arm's plane; arm at 20%.
+      - name: present_cup_above_hand
+        allow_finger_map_contact: true  # fingers around the held cup
+        clear_octomap_before_plan: true  # fresh map of the person and hand
+        velocity_scaling: 0.2
+        acceleration_scaling: 0.2
+        endpoint_profile: transit
+        type: pose
+        mobile_standoff: true
+        base_placement:
+          heading_offsets_deg: [0.0]
+          min_reach_margin_m: 0.03
+          joint_limit_margin_rad: 0.05
+          reach_preference: centre
+          base_motion: combined
+          max_base_move_m: 0.35
+          base_velocity_scaling: 0.2
+        require_trajectory_approval: true
+        frame_id: world
+        group_name: base_arm
+        target: detected
+        orientation_from_detection: true
+        offset_frame: target
+        offset_x: 0.0
+        offset_z: 0.10
+        gripper_value: 75.0
+        rpy_deg: [0.0, 0.0, 0.0]
+        position_tolerance_m: 0.03
+        position_tolerance_xy_m: 0.01
+        position_tolerance_z_m: 0.005
+        use_orientation_constraint: true
+        orientation_tolerance_rad: 0.05
+        planner_id: RRTConnectkConfigDefault
+        allowed_planning_time: 5.0
+        num_planning_attempts: 3
+
+      # 5a. Guarded lower onto the palm: aim the cup bottom 2 cm below the palm reading
+      #     at 10% and stop on contact (a stall = contact; never retried). The held cup
+      #     and fingers may touch map voxels (the hand) on this step only.
+      - name: lower_cup_into_hand
+        allow_finger_map_contact: true
+        allow_held_cup_map_contact: true
+        contact_ends_step: true
+        velocity_scaling: 0.1
+        acceleration_scaling: 0.1
+        type: pose
+        clear_octomap_before_plan: false
+        cartesian: true
+        require_trajectory_approval: true
+        frame_id: world
+        group_name: arm
+        heading_from_base: true
+        target: detected
+        orientation_from_detection: true
+        offset_frame: target
+        offset_x: 0.0
+        offset_z: -0.02
+        gripper_value: 75.0
+        rpy_deg: [0.0, 0.0, 0.0]
+        position_tolerance_m: 0.02
+        position_tolerance_z_m: 0.005
+        use_orientation_constraint: true
+        orientation_tolerance_rad: 0.05
+        maintain_orientation_during_path: true
+        max_replanning_attempts: 2
+        planner_id: RRTConnectkConfigDefault
+        allowed_planning_time: 5.0
+        num_planning_attempts: 3
+        post_delay_sec: 0.5
+
+      # 5b. Ask permission to open the gripper (operator, 2026-11-15): the console
+      #     shows "wait_for_person_to_take_cup/open_gripper" for approval; only Approve
+      #     opens it. Contact at the lower and a pull (shoulder or elbow encoder 1.5 deg
+      #     off its settled value for 0.3 s) are measured and shown as evidence.
+      #     No approval within 60 s, Reject or STOP: the sequence stops here and the
+      #     cup stays in the gripper (then "Open gripper" in the console opens it by hand).
+      - name: wait_for_person_to_take_cup
+        type: handoff_wait
+        contact_from_step: lower_cup_into_hand
+        require_release_approval: true
+        release_on_contact: true  # only with require_release_approval: false
+        operator_confirm: true
+        timeout_sec: 60.0
+        pull_threshold_deg: 1.5
+        pull_min_duration_sec: 0.3
+        pull_joints: [joint_shoulder, joint_elbow]
+        allow_finger_map_contact: true
+        allow_held_cup_map_contact: true
+
+      - name: release_cup_to_person
+        type: gripper
+        detach_cup: true
+        value: 0.0
+        max_attempts: 2
+        settle_sec: 1.0
+
+      # 6. Back the open hand straight away from the cup, then the base, then retract
+      #    the arm (upright only once well clear of the person).
+      - name: withdraw_hand_from_cup
+        allow_finger_map_contact: true  # the open fingers still surround the cup
+        allow_held_cup_map_contact: true
+        velocity_scaling: 0.2
+        acceleration_scaling: 0.2
+        type: pose
+        clear_octomap_before_plan: false
+        cartesian: true
+        require_trajectory_approval: false
+        frame_id: world
+        group_name: arm
+        target: previous_pose
+        orientation_from_detection: true
+        offset_frame: target
+        offset_x: -0.12
+        offset_z: 0.0
+        gripper_value: 0.0
+        rpy_deg: [0.0, 0.0, 0.0]
+        position_tolerance_m: 0.03
+        position_tolerance_z_m: 0.005
+        use_orientation_constraint: true
+        orientation_tolerance_rad: 0.05
+        maintain_orientation_during_path: true
+        planner_id: RRTConnectkConfigDefault
+        allowed_planning_time: 10.0
+        num_planning_attempts: 5
+
+      - name: back_away_from_person
+        type: joint_state
+        group_name: base
+        base_relative: true
+        allow_finger_map_contact: true
+        endpoint_profile: transit
+        velocity_scaling: 0.2
+        acceleration_scaling: 0.2
+        require_trajectory_approval: false
+        joints:
+          base_x: -0.30
+          base_y: 0.0
+          base_theta: 0.0
+
+      - name: retract_arm_after_handoff
+        clear_octomap_before_plan: false
+        endpoint_profile: transit
+        type: joint_state
+        group_name: arm
+        velocity_scaling: 0.3
+        acceleration_scaling: 0.3
+        require_trajectory_approval: false
+        joints:
+          joint_shoulder: 0.0
+          joint_elbow: 0.0
+          joint_wrist: 0.0
+          joint_hand: 0.0

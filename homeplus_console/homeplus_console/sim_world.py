@@ -29,6 +29,8 @@ FOLDED = {"joint_elbow": -35.0, "joint_shoulder": -30.0}
 CUP = (0.95, 0.02, 0.762)          # cup in world (start spot = origin), metres
 SECOND_OBJECT = (0.95, 0.42, 0.765)
 TRAY = (1.10, -0.25, 0.80)         # coffee machine drip tray surface (task 7)
+PERSON = (1.70, 0.60, 0.95)        # a person to hand the cup to (task 9)
+HAND = (1.35, 0.45, 0.90)          # their open hand (task 10, hand_cup_to_person's find_hand)
 SIM_TABLE_TOP = 0.712              # planning scene stub: detected_table top (cup base)
 SIM_OCTOMAP_RES = 0.02
 
@@ -72,10 +74,29 @@ PLACE_STEPS = [
     ("retract_arm_after_place", "joint_state", False, {"joint_shoulder": 0.0, "joint_elbow": 0.0,
                                                         "joint_wrist": 0.0, "joint_hand": 0.0}),
 ]
+# hand_cup_to_person from gesture_execution_map.yaml (stub: the scan is one detection, the
+# hand-off wait asks for the operator's approval, which is one of its real release triggers).
+HANDOFF_STEPS = [
+    ("scan_for_person", "detect", False, {}),
+    ("approach_person", "joint_state", True, {"base_x": 0.55, "base_y": 0.30, "base_theta": 30.0}),
+    ("find_hand", "detect", False, {}),
+    ("present_cup_above_hand", "pose", True, {"base_dx": 0.05, "joint_shoulder": 30.0, "joint_elbow": 52.0}),
+    ("lower_cup_into_hand", "pose", True, {"joint_shoulder": 33.0, "joint_elbow": 55.0}),
+    ("wait_for_person_to_take_cup", "pose", True, {}),
+    ("release_cup_to_person", "gripper", False, {"joint_grip_L": 40.0}),
+    ("withdraw_hand_from_cup", "pose", False, {"joint_shoulder": 26.0, "joint_elbow": 50.0}),
+    ("back_away_from_person", "joint_state", False, {"base_dx": -0.26, "base_dy": -0.15}),
+    ("retract_arm_after_handoff", "joint_state", False, {"joint_shoulder": 0.0, "joint_elbow": 0.0,
+                                                          "joint_wrist": 0.0, "joint_hand": 0.0}),
+]
+# Steps that switch the detector to another task when they start.
+STEP_TASKS = {"find_hand": 10}
+DETECTOR_TARGETS = {7: TRAY, 9: PERSON, 10: HAND}
 COMMANDS = {
     "pick_up_coffee": ("sequence", PICKUP_STEPS, 1),
     "press_square_button": ("sequence", BUTTON_STEPS, 2),
     "place_cup_on_drip_tray": ("sequence", PLACE_STEPS, 7),
+    "hand_cup_to_person": ("sequence", HANDOFF_STEPS, 9),
     "home": ("joint_state", [("home", "joint_state", True, {"base_x": 0.0, "base_y": 0.0, "base_theta": 0.0,
                                                               "joint_shoulder": 0.0, "joint_elbow": 0.0,
                                                               "joint_wrist": 0.0})], None),
@@ -83,8 +104,8 @@ COMMANDS = {
     "gripper_close": ("gripper", [("gripper_close", "gripper", False, {"joint_grip_L": 5.0})], None),
 }
 
-SEQUENCES = ("pick_up_coffee", "press_square_button", "place_cup_on_drip_tray")
-HOLDING_SEQUENCES = ("place_cup_on_drip_tray",)   # need the cup attached; the others refuse while holding
+SEQUENCES = ("pick_up_coffee", "press_square_button", "place_cup_on_drip_tray", "hand_cup_to_person")
+HOLDING_SEQUENCES = ("place_cup_on_drip_tray", "hand_cup_to_person")   # need the cup attached; the others refuse while holding
 HOME_TARGETS = {"base_x": 0.0, "base_y": 0.0, "base_theta": 0.0, "joint_shoulder": 0.0, "joint_elbow": 0.0,
                 "joint_wrist": 0.0}
 RECOVERY = ("return_to_start", "undo_step", "undo_sequence", "resume")
@@ -792,6 +813,8 @@ class SimWorld:
         s: ExecStep = e["steps"][e["idx"]]
         if s.status == "pending":
             s.status, s.t_start = "running", wall
+            if s.name in STEP_TASKS:
+                self.task_id = STEP_TASKS[s.name]
             self._exec_phase_t0 = now
             if s.type == "noop":
                 s.status, s.t_end = "skipped", wall
@@ -910,7 +933,7 @@ class SimWorld:
         if s.name == "close_gripper_at_target":
             self.holding_cup = True     # executor attaches detected_cup (attach_cup: true)
             self.logs.add(EXECUTOR, "INFO", "Attached detected_cup to grasp_tcp")
-        elif s.type == "gripper" and self.holding_cup and (s.name == "release_cup" or (
+        elif s.type == "gripper" and self.holding_cup and (s.name in ("release_cup", "release_cup_to_person") or (
                 grip is not None and grip <= 1.0 and command not in ("pick_up_coffee", "press_square_button"))):
             self.holding_cup = False    # place's release_cup (detach_cup: true) or a single gripper open detaches
             self.logs.add(EXECUTOR, "INFO", "Detached detected_cup")
@@ -1120,7 +1143,7 @@ class SimWorld:
             diag.update(stage="geometry", reason="model_returned_no_points", detail="There are none.",
                         model_text="There are none.")
         else:
-            x, y, z = TRAY if self.task_id == 7 else CUP
+            x, y, z = DETECTOR_TARGETS.get(self.task_id, CUP)
             if scen == "two_targets" and self._cycle_n % 2 == 0:
                 x, y, z = SECOND_OBJECT
             if scen == "garbage_z":

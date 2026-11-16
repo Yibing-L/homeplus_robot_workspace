@@ -12,6 +12,10 @@ from itertools import combinations
 from typing import Any, Dict, List, Optional
 
 from .signals import Signal, sig_view
+
+# Tasks whose sequence searches for its own target (hand_cup_to_person turns the base until
+# it sees the person): the detection window need not pass before the start.
+SEARCH_TASKS = {9}
 from .tracker import ERROR_HINTS, Memory, error_code, finite
 
 SEV_ORDER = {"bad": 0, "warn": 1, "info": 2, "ok": 3, "unknown": 1}
@@ -463,7 +467,9 @@ def derive(inp: Inputs, now: float, wall: float) -> Dict[str, Any]:
              feed_map["d405_color"]["status"], "feeds"),
         item("task", "Detector task matches", perception["task_id"] == inp.requested_task,
              f"task_id {perception['task_id']}", "perception"),
-        item("window", "Detection window passes", perception["window"]["ok"], "; ".join(perception["window"]["reasons"]), "perception"),
+        item("window", "Detection window passes", perception["window"]["ok"] or inp.requested_task in SEARCH_TASKS,
+             "; ".join(perception["window"]["reasons"]) if inp.requested_task not in SEARCH_TASKS
+             else "search task: the sequence turns to find its target", "perception"),
         item("publishers", "No foreign command publishers", not foreign, ", ".join(foreign), "health"),
     ]
     if cfg.get("remote_gpu", True):

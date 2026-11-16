@@ -58,6 +58,10 @@ from tf2_ros import Buffer, TransformListener
 from planar_reach import PlanarArm, arm_plane_error, fixed_link_height, plan_base_placements, wrap
 from fault_recovery import (MotionFault, fault_code, fault_retry_decision, recovery_config_errors,
                             recovery_setting, scaled_step, start_state_recoverable)
+from handoff_logic import (APPROACH_DEFAULTS, APPROACH_KEYS, HANDOFF_DEFAULTS, HANDOFF_KEYS, SCAN_DEFAULTS,
+                           SCAN_KEYS, PullDetector, approach_goal, evidence_text, handoff_config_errors,
+                           release_decision,
+                           scan_turns, setting, target_range)
 
 # Joint order that the Arduino expects for trajectory waypoints
 TRAJECTORY_JOINT_ORDER = [
@@ -1156,6 +1160,8 @@ class GestureMotionExecutor(Node):
             return [f"{name}: command must be a mapping"]
 
         allowed = set("endpoint_profile name type group_name joints value frame_id position orientation rpy_deg target steps task_id detection_topic detection_timeout_sec detection_min_stable_samples detection_stability_tolerance_m detection_max_refresh_shift_m max_replanning_attempts max_attempts settle_sec require_trajectory_approval planner_id allowed_planning_time num_planning_attempts link_name offset_x offset_y offset_z offset_frame orientation_from_detection gripper_value final_gripper_value position_tolerance_m position_tolerance_xy_m position_tolerance_z_m use_orientation_constraint orientation_tolerance_rad orientation_tolerance_x_rad orientation_tolerance_y_rad orientation_tolerance_z_rad safe_z_candidate_offsets_m base_goal_tcp_x_min_m base_goal_tcp_x_max_m base_goal_tcp_y_max_m max_base_goal_rotation_rad max_base_goal_translation_m max_base_goal_y_translation_m preserve_reference_z maintain_orientation_during_path post_delay_sec cartesian mobile_standoff lookahead_offsets velocity_scaling acceleration_scaling clear_octomap_before_plan octomap_clear_timeout_sec octomap_rebuild_wait_sec ik_candidate_attempts attach_cup joint_tolerance hardcoded_detection_pose hardcoded_detection_frame planning_service_timeout_sec phase_allowed_planning_time phase_num_planning_attempts phase_joint_tolerance continue_on_arduino_timeout base_placement heading_from_base max_arm_plane_error_m redo_from_step max_redos detach_cup held_cup_placement base_relative allow_held_cup_map_contact allow_finger_map_contact contact_ends_step surface_height_memory surface_height_prior_m surface_height_tolerance_m corridor_half_width_m min_forward_m max_forward_m min_points cup_bottom_radius_m face_margin_m overhang_margin_m required path_orientation_tolerance_rad face_min_above_tray_m face_max_above_tray_m cup_top_radius_m max_face_shift_m arm_first keep_arm converge_tol_m check_overhang measure_tray forward_only fault_retries fault_settle_timeout_sec start_state_recovery on_detection_timeout".split())
+        # hand_cup_to_person: scan_rotate, base_approach and handoff_wait (handoff_logic.py)
+        allowed |= SCAN_KEYS | APPROACH_KEYS | HANDOFF_KEYS
         if command_cfg.get('endpoint_profile', 'precise') not in ('precise', 'transit'):
             errors.append(f'{name}: endpoint_profile must be precise or transit')
         if command_cfg.get('cartesian') and command_cfg.get('endpoint_profile') == 'transit':
@@ -1173,7 +1179,8 @@ class GestureMotionExecutor(Node):
             if key in command_cfg and not 0 < float(command_cfg[key]) <= 1:
                 errors.append(f'{name}: {key} must be in (0, 1]')
         action_type = str(command_cfg.get("type", "command"))
-        supported = {"pose", "joint_state", "gripper", "command", "sequence", "detect", "measure_ahead"}
+        supported = {"pose", "joint_state", "gripper", "command", "sequence", "detect", "measure_ahead",
+                     "scan_rotate", "base_approach", "handoff_wait"}
         if action_type not in supported:
             errors.append(f"{name}: unsupported type '{action_type}'")
 
@@ -1208,7 +1215,8 @@ class GestureMotionExecutor(Node):
         placement = command_cfg.get('base_placement')
         if placement is not None:
             allowed_placement = {'heading_offsets_deg', 'min_reach_margin_m',
-                                 'joint_limit_margin_rad', 'base_motion', 'reach_preference'}
+                                 'joint_limit_margin_rad', 'base_motion', 'reach_preference',
+                                 'max_base_move_m', 'base_velocity_scaling'}
             if not isinstance(placement, dict):
                 errors.append(f'{name}: base_placement must be a mapping')
             else:
@@ -1219,9 +1227,11 @@ class GestureMotionExecutor(Node):
                     errors.append(f'{name}: base_placement.base_motion must be combined or turn_then_drive')
                 if placement.get('reach_preference', 'centre') not in ('centre', 'near'):
                     errors.append(f'{name}: base_placement.reach_preference must be centre or near')
-                for key in ('min_reach_margin_m', 'joint_limit_margin_rad'):
+                for key in ('min_reach_margin_m', 'joint_limit_margin_rad', 'max_base_move_m'):
                     if key in placement and float(placement[key]) < 0.0:
                         errors.append(f'{name}: base_placement.{key} must be nonnegative')
+                if 'base_velocity_scaling' in placement and not 0.0 < float(placement['base_velocity_scaling']) <= 1.0:
+                    errors.append(f'{name}: base_placement.base_velocity_scaling must be in (0, 1]')
             if not command_cfg.get('mobile_standoff') or command_cfg.get('group_name') not in ('base_arm', 'base_press_arm'):
                 errors.append(f'{name}: base_placement requires mobile_standoff and a mobile-base group')
             if command_cfg.get('target') != 'detected':
@@ -1255,6 +1265,9 @@ class GestureMotionExecutor(Node):
             value = command_cfg['max_redos']
             if not isinstance(value, int) or isinstance(value, bool) or value < 0:
                 errors.append(f'{name}: max_redos must be a nonnegative integer')
+
+        if action_type in ("scan_rotate", "base_approach", "handoff_wait") and "/" not in name:
+            errors.append(f"{name}: {action_type} runs only as a step of a sequence")
 
         if action_type == "joint_state" and not command_cfg.get("joints"):
             errors.append(f"{name}: joint_state requires a non-empty joints mapping")
@@ -1323,6 +1336,25 @@ class GestureMotionExecutor(Node):
                     )
                 names = [str(step.get("name", "")) if isinstance(step, dict) else "" for step in steps]
                 for index, step in enumerate(steps):
+                    if not isinstance(step, dict):
+                        continue
+                    step_type = str(step.get("type", "command"))
+                    errors.extend(handoff_config_errors(f"{name}/{names[index]}", step, step_type,
+                                                        names[:index]))
+                    if ("task_id" in step) != ("detection_topic" in step) or (
+                            "task_id" in step and step_type not in ("detect", "scan_rotate")):
+                        # A detect/scan step may switch the detector to another task
+                        # (hand_cup_to_person: person, then hand).
+                        errors.append(f"{name}/{names[index]}: a step's task_id and detection_topic go "
+                                      "together, on a detect or scan_rotate step")
+                waits = [k for k, st in enumerate(steps)
+                         if isinstance(st, dict) and st.get("type") == "handoff_wait"]
+                for index, step in enumerate(steps):
+                    if (waits and isinstance(step, dict) and step.get("type") == "gripper"
+                            and float(step.get("value", 90.0)) <= 1.0 and index < waits[0]):
+                        # Handing over: the gripper may open only after the evidence wait.
+                        errors.append(f"{name}/{names[index]}: opens the gripper before the handoff_wait")
+                for index, step in enumerate(steps):
                     if isinstance(step, dict) and step.get("redo_from_step") is not None:
                         if step["redo_from_step"] not in names[:index]:
                             errors.append(
@@ -1330,7 +1362,8 @@ class GestureMotionExecutor(Node):
                             )
                 uses_detection = any(
                     isinstance(step, dict)
-                    and (step.get("target") == "detected" or step.get("type") == "detect")
+                    and (step.get("target") == "detected"
+                         or step.get("type") in ("detect", "scan_rotate", "base_approach"))
                     for step in steps
                 )
                 if uses_detection and not (
@@ -1692,16 +1725,17 @@ class GestureMotionExecutor(Node):
         # a temporary hardcoded test pose is configured.
         detection_topic = sequence_cfg.get("detection_topic")
         detected_pose: Optional[PoseStamped] = self._build_hardcoded_detection_pose(sequence_cfg)
+        # Detect before the first step only when a step aims at the target before
+        # any step finds it itself (a scan_rotate searches for the person first).
+        first_search = next((k for k, st in enumerate(steps)
+                             if st.get("type") in ("detect", "scan_rotate")), len(steps))
         needs_detection = detection_topic and any(
-            s.get("target") == "detected" for s in steps
+            s.get("target") == "detected" or s.get("type") == "base_approach"
+            for s in steps[:first_search]
         )
 
         if 'task_id' in sequence_cfg:
-            req = SetParameters.Request()
-            req.parameters = [Parameter('task_id', value=int(sequence_cfg['task_id'])).to_parameter_msg()]
-            response = self._call_service(self.detector_config_client, req)
-            if not response.results or not all(r.successful for r in response.results):
-                raise RuntimeError('Detector rejected requested manipulation task')
+            self._set_detector_task(int(sequence_cfg['task_id']))
 
         if detected_pose is not None:
             p = detected_pose.pose.position
@@ -1748,6 +1782,8 @@ class GestureMotionExecutor(Node):
             self._update_cup_scene(detected_pose)
         last_successful_pose: Optional[PoseStamped] = None
         redos: Dict[str, int] = {}
+        # Steps that ended on contact (contact_ends_step): evidence for handoff_wait.
+        contact_steps = set()
         # A while loop so a detect step can send the sequence back to an
         # earlier step (re-place the base from a better observation).
         i = -1
@@ -1849,6 +1885,11 @@ class GestureMotionExecutor(Node):
             self.get_logger().info(
                 f"  Step {i+1}/{len(steps)}: {step_name} (type={step_type})"
             )
+            if step_type in ("detect", "scan_rotate") and "task_id" in step:
+                # This step looks for another target (e.g. the person's hand after
+                # the person): switch the detector and listen on that task's topic.
+                self._set_detector_task(int(step["task_id"]))
+                detection_topic = str(step["detection_topic"])
 
             if step_type == "gripper":
                 grip_val = float(effective_step["value"])
@@ -1976,6 +2017,10 @@ class GestureMotionExecutor(Node):
                         f"no stable detection on {detection_topic} within {timeout}s",
                     )
                     return
+                out_of_range = self._target_range_violation(effective_step, refreshed_pose)
+                if out_of_range:
+                    self._abort_sequence(sequence_name, step_name, out_of_range)
+                    return
 
                 limit = effective_step.get("max_arm_plane_error_m")
                 if limit is not None:
@@ -2039,6 +2084,33 @@ class GestureMotionExecutor(Node):
                         continue
                     self.get_logger().warn(f"  {step_name}: still {shift * 1000:.0f} mm off after {done} slides")
                 continue
+            elif step_type == "scan_rotate":
+                if not self.enable_moveit_planning:
+                    self._abort_sequence(sequence_name, step_name, "MoveIt not enabled")
+                    return
+                found, reason = self._scan_for_target(sequence_name, step_name, effective_step,
+                                                      sequence_cfg, str(detection_topic or ""))
+                if found is None:
+                    self._abort_sequence(sequence_name, step_name, reason)
+                    return
+                detected_pose = found
+            elif step_type == "base_approach":
+                if not self.enable_moveit_planning:
+                    self._abort_sequence(sequence_name, step_name, "MoveIt not enabled")
+                    return
+                if detected_pose is None:
+                    self._abort_sequence(sequence_name, step_name, "no detected target to approach")
+                    return
+                reason = self._approach_target(sequence_name, step_name, effective_step, sequence_cfg,
+                                               detected_pose)
+                if reason is not None:
+                    self._abort_sequence(sequence_name, step_name, reason)
+                    return
+            elif step_type == "handoff_wait":
+                reason = self._handoff_wait(sequence_name, step_name, effective_step, contact_steps)
+                if reason is not None:
+                    self._abort_sequence(sequence_name, step_name, reason)
+                    return
             elif step_type == "pose":
                 if not self.enable_moveit_planning or self.move_group_client is None:
                     self._abort_sequence(sequence_name, step_name, "MoveIt not enabled")
@@ -2108,6 +2180,7 @@ class GestureMotionExecutor(Node):
                         # Never retried: a retry would press again.
                         self.get_logger().info(f"  {step_name}: contact detected ({error}); treating as reached")
                         self._publish_status(f"[{sequence_name}] {step_name}: contact detected")
+                        contact_steps.add(step_name)
                         break
                     retry_step, reason = self._try_fault_recovery(
                         sequence_name, step_name, effective_step, sequence_cfg,
@@ -2298,6 +2371,281 @@ class GestureMotionExecutor(Node):
             if cup_contact:
                 self._set_allowed_collisions(self._CUP_MAP_PAIRS, False)
                 self._cup_map_contact_allowed = False
+
+    # ------------------------------------------------------------------
+    # Hand the held cup to a person (hand_cup_to_person; handoff_logic.py)
+    # ------------------------------------------------------------------
+    def _set_detector_task(self, task_id: int) -> None:
+        req = SetParameters.Request()
+        req.parameters = [Parameter('task_id', value=int(task_id)).to_parameter_msg()]
+        response = self._call_service(self.detector_config_client, req)
+        if not response.results or not all(r.successful for r in response.results):
+            raise RuntimeError(f'Detector rejected task {task_id} (restart hp-vision after adding tasks)')
+        self.get_logger().info(f'  Detector switched to task {task_id}')
+
+    def _target_range_violation(self, step: Dict, pose: PoseStamped) -> Optional[str]:
+        """Reason when the target's horizontal distance from base_link is outside
+        the step's [min_target_range_m, max_target_range_m], else None."""
+        low, high = step.get('min_target_range_m'), step.get('max_target_range_m')
+        if low is None and high is None:
+            return None
+        self._require_fresh_state()
+        bx, by, _ = self._measured_base()
+        distance = target_range((bx, by), (pose.pose.position.x, pose.pose.position.y))
+        if low is not None and distance < float(low):
+            return f'target {distance:.2f} m from the base, closer than {float(low):.2f} m'
+        if high is not None and distance > float(high):
+            return f'target {distance:.2f} m from the base, farther than {float(high):.2f} m'
+        return None
+
+    def _run_base_goal(self, sequence_name: str, label: str, step: Dict, sequence_cfg: Dict,
+                       goal: Dict[str, float]) -> Optional[str]:
+        """Plan a collision-checked base-only motion to `goal` (world base joints)
+        from the measured state, send it (approval as the step says), and wait.
+        A TRACKING_ERROR/SETTLE_TIMEOUT replans from the measured state at reduced
+        speed (fault_recovery.py). Returns None when reached, else why not."""
+        goal_msg = JointState(name=list(goal), position=[float(v) for v in goal.values()])
+        attempt = step
+        retries = 0
+        while True:
+            if self._stop_was_requested():
+                return 'operator STOP'
+            self._begin_plan_attempt()
+            self._require_fresh_state()
+            if self._joint_goal_already_reached(goal_msg):
+                return None
+            # A map clear wipes the fingers<->held-cup voxel allowance (see
+            # _reapply_map_allowances); the base phase checks the start state.
+            self._reapply_map_allowances()
+            phase_cfg = {k: attempt[k] for k in ('velocity_scaling', 'acceleration_scaling', 'planner_id',
+                                                 'phase_allowed_planning_time', 'phase_num_planning_attempts')
+                         if k in attempt}
+            self.joint_target_pub.publish(goal_msg)
+            trajectory = self._plan_joint_phase(label, 'base', self.latest_joint_state, goal, phase_cfg)
+            if trajectory is None:
+                return 'no collision-free base path from the measured state'
+            context = self._execute_preplanned(label, trajectory, {**attempt, 'group_name': 'base'})
+            if not context.success:
+                return self._plan_abort_reason() if self._stop_was_requested() else \
+                    f'{label}: plan not approved or not sent'
+            error = self._await_step_trajectory(sequence_name, label)
+            if error is None:
+                if retries:
+                    self._publish_status(f"{label}: recovered after {retries} retr{'y' if retries == 1 else 'ies'}")
+                return None
+            retry_step, reason = self._try_fault_recovery(sequence_name, label, step, sequence_cfg,
+                                                          error, retries, 1.0)
+            if retry_step is None:
+                return reason
+            retries += 1
+            attempt = retry_step
+
+    def _scan_for_target(self, sequence_name: str, step_name: str, step: Dict, sequence_cfg: Dict,
+                         topic: str):
+        """Look for a stable detection at the current heading, then turn the base
+        in place step_deg at a time (collision-checked, from the measured state)
+        and look again, up to max_deg. Returns (pose, None) or (None, reason)."""
+        if not topic:
+            return None, 'no detection_topic configured'
+        turns = scan_turns(setting(step, SCAN_DEFAULTS, 'step_deg'), setting(step, SCAN_DEFAULTS, 'max_deg'),
+                           setting(step, SCAN_DEFAULTS, 'direction'))
+        timeout = float(step.get('detection_timeout_sec', sequence_cfg.get('detection_timeout_sec', 10.0)))
+        kwargs = dict(
+            required_samples=int(step.get('detection_min_stable_samples',
+                                          sequence_cfg.get('detection_min_stable_samples',
+                                                           self.detection_min_stable_samples))),
+            stability_tolerance_m=step.get('detection_stability_tolerance_m',
+                                           sequence_cfg.get('detection_stability_tolerance_m')))
+        turned = 0.0
+        looks = len(turns) + 1
+        rejected = []
+        for look in range(looks):
+            if self._stop_was_requested():
+                return None, 'operator STOP'
+            if look:
+                self._require_fresh_state()
+                x, y, th = self._measured_base()
+                goal = {'base_x': x, 'base_y': y, 'base_theta': th + turns[look - 1]}
+                reason = self._run_base_goal(sequence_name, f'{step_name}/turn_{look}', step, sequence_cfg, goal)
+                if reason is not None:
+                    return None, f'turning to look further failed: {reason}'
+                turned += turns[look - 1]
+            line = (f'[{sequence_name}] {step_name}: looking at {math.degrees(turned):+.0f} deg '
+                    f'({look + 1}/{looks})')
+            self.get_logger().info(line)
+            self._publish_status(line)
+            pose = self._refresh_detection(sequence_name, topic, timeout, **kwargs)
+            if pose is None:
+                continue
+            out_of_range = self._target_range_violation(step, pose)
+            if out_of_range:
+                rejected.append(out_of_range)
+                self.get_logger().warn(f'  {step_name}: ignoring detection: {out_of_range}')
+                continue
+            p = pose.pose.position
+            self._publish_status(f'[{sequence_name}] {step_name}: target found at ({p.x:.2f}, {p.y:.2f}, '
+                                 f'{p.z:.2f}) after turning {math.degrees(turned):+.0f} deg')
+            return pose, None
+        detail = f'; rejected: {"; ".join(rejected)}' if rejected else ''
+        return None, (f'no stable detection on {topic} at {looks} heading(s) over '
+                      f'{abs(math.degrees(turned)):.0f} deg{detail}')
+
+    def _approach_target(self, sequence_name: str, step_name: str, step: Dict, sequence_cfg: Dict,
+                         target: PoseStamped) -> Optional[str]:
+        """Turn to face the detected target and drive straight toward it until the
+        held gripper is standoff_m short of it; the arm (and held cup) stay as they
+        are. Base-only, collision-checked, slow. None when reached, else why not."""
+        self._require_fresh_state()
+        bx, by, byaw = self._measured_base()
+        link = step.get('link_name', self.end_effector_link)
+        try:
+            tcp = self.tf_buffer.lookup_transform(self.base_frame, link, Time(),
+                                                  timeout=Duration(seconds=1.0)).transform.translation
+        except Exception as exc:
+            return f'no TF for {link}: {exc}'
+        tcp_forward = math.cos(byaw) * (tcp.x - bx) + math.sin(byaw) * (tcp.y - by)
+        p = target.pose.position
+        goal, why = approach_goal((bx, by, byaw), (p.x, p.y),
+                                  setting(step, APPROACH_DEFAULTS, 'standoff_m'),
+                                  setting(step, APPROACH_DEFAULTS, 'max_drive_m'),
+                                  setting(step, APPROACH_DEFAULTS, 'min_drive_m'),
+                                  tcp_forward_m=tcp_forward)
+        self.get_logger().info(f'  {step_name}: {why} (gripper {tcp_forward:.3f} m ahead of base_link)')
+        if goal is None:
+            return why
+        self._publish_status(f'[{sequence_name}] {step_name}: {why}')
+        return self._run_base_goal(sequence_name, f'{step_name}/base', step, sequence_cfg, goal)
+
+    def _offer_release_confirmation(self, name: str) -> PlanContext:
+        """Make the console offer Approve/Reject for releasing the cup: a plan
+        context awaiting approval with a zero-motion preview (the console enables
+        Approve only once a preview has arrived). Approve = release, Reject = keep
+        holding. The context never sends a trajectory."""
+        self._reset_trajectory_approval()
+        with self._plan_lock:
+            if self._active_plan is not None:
+                raise RuntimeError('A planning request is already active')
+            context = PlanContext(self._next_plan_request_id, name)
+            self._next_plan_request_id += 1
+            context.awaiting_approval = True
+            self._active_plan = context
+        here = deepcopy(self.latest_joint_state)
+        names = [n for n in TRAJECTORY_JOINT_ORDER if n in here.name]
+        q = dict(zip(here.name, here.position))
+        trajectory = RobotTrajectory()
+        trajectory.joint_trajectory.joint_names = names
+        for seconds in (0.0, 0.1):
+            point = JointTrajectoryPoint(positions=[q[n] for n in names])
+            point.time_from_start = Duration(seconds=seconds).to_msg()
+            trajectory.joint_trajectory.points.append(point)
+        result = SimpleNamespace(planned_trajectory=trajectory,
+                                 trajectory_start=RobotState(joint_state=here, is_diff=True))
+        self._publish_display_trajectory(name, result)
+        self._publish_status(f"Plan for {name} is waiting for approval")
+        return context
+
+    def _end_release_confirmation(self, context: PlanContext) -> None:
+        with self._plan_lock:
+            context.awaiting_approval = False
+            if self._active_plan is context:
+                self._active_plan = None
+        context.event.set()
+
+    def _handoff_wait(self, sequence_name: str, step_name: str, step: Dict, contact_steps) -> Optional[str]:
+        """Hold the cup still at the person's hand and decide whether the gripper
+        may open. With require_release_approval (default) it opens only when the
+        operator approves '<step>/open_gripper' in the console; contact at the
+        guarded lower (contact_from_step) and a pull on the arm (measured
+        shoulder/elbow leaving their settled values) are measured and shown as
+        evidence. Without it, that evidence alone may open it. Returns None to go
+        on to the release; otherwise the reason, with the cup still held."""
+        def cfg(key):
+            return setting(step, HANDOFF_DEFAULTS, key)
+        holding = '; still holding the cup'
+        if self.dry_run:
+            # Nothing moved, so there is nothing to measure: plan the rest.
+            self.get_logger().warn(f'DRY RUN: {step_name} assumes the release is approved')
+            return None
+        if not self._holding_cup:
+            return 'no cup is attached'
+        need_approval = bool(cfg('require_release_approval'))
+        on_contact = bool(cfg('release_on_contact'))
+        contact = step.get('contact_from_step') in contact_steps
+        # After a contact stop the bridge reports not-ready until the arm is still.
+        settle_t0 = time.monotonic()
+        settle_deadline = settle_t0 + float(cfg('settle_timeout_sec'))
+        while not (self._hardware_ready and self._measured_still(settle_t0)):
+            if self._stop_was_requested():
+                return 'operator STOP' + holding
+            if time.monotonic() > settle_deadline:
+                return f"arm not ready and still {float(cfg('settle_timeout_sec')):.0f}s into the hand-off" + holding
+            time.sleep(0.05)
+        release, why = release_decision(contact, False, None, on_contact, need_approval)
+        if release:
+            self._publish_status(f'[{sequence_name}] {step_name}: release approved by evidence: {why}')
+            return None
+        detector = PullDetector(cfg('pull_joints'), math.radians(float(cfg('pull_threshold_deg'))),
+                                float(cfg('pull_min_duration_sec')), float(cfg('baseline_sec')))
+        timeout = float(cfg('timeout_sec'))
+        context = self._offer_release_confirmation(f'{step_name}/open_gripper') if cfg('operator_confirm') else None
+        if need_approval:
+            asks = 'approve opening the gripper in the console (Reject keeps the cup)'
+        else:
+            asks = 'take the cup (a gentle pull is enough)' + (' or approve the release' if context else '')
+        self._publish_status(f'[{sequence_name}] {step_name}: holding the cup at the hand '
+                             f'({evidence_text(contact, False)}); {asks} within {timeout:.0f}s')
+        deadline = time.monotonic() + timeout
+        last_t = time.monotonic()  # only samples measured from now on
+        next_log = time.monotonic() + 2.0
+        pulled = False
+        try:
+            while True:
+                if self._stop_was_requested():
+                    return 'operator STOP' + holding
+                if context is not None and context.cancelled:
+                    return 'release confirmation cancelled' + holding
+                if not self._hardware_ready:
+                    return 'bridge not ready during the hand-off' + holding
+                if time.monotonic() - self._last_state_received > 0.5:
+                    return 'joint feedback stale during the hand-off' + holding
+                for t, js in list(self._joint_history):
+                    if t <= last_t:
+                        continue
+                    last_t = t
+                    if detector.update(t, dict(zip(js.name, js.position))) and not pulled:
+                        pulled = True
+                        line = f'{step_name}: pull on the cup measured ({detector.describe()})'
+                        self.get_logger().info(f'  {line}')
+                        self._publish_status(f'[{sequence_name}] {line}'
+                                             + ('; approve to open the gripper' if need_approval else ''))
+                operator = None
+                if context is not None and self._trajectory_approval_event.is_set():
+                    with self._trajectory_approval_lock:
+                        operator = bool(self._trajectory_approval_response)
+                release, why = release_decision(contact, pulled, operator, on_contact, need_approval)
+                if release is True:
+                    self.get_logger().info(f'  {step_name}: opening the gripper: {why}')
+                    self._publish_status(f'[{sequence_name}] {step_name}: release approved: {why}')
+                    return None
+                if release is False:
+                    return why + holding
+                now = time.monotonic()
+                if now >= deadline:
+                    seen = (f'{evidence_text(contact, pulled)}; largest arm deviation '
+                            f'{math.degrees(detector.max_deviation):.2f} deg')
+                    if need_approval:
+                        return f'opening the gripper was not approved within {timeout:.0f}s ({seen})' + holding
+                    return (f'no hand-off evidence within {timeout:.0f}s ({seen}'
+                            + (', no operator confirmation)' if context else ')') + holding)
+                if now >= next_log:
+                    next_log = now + 2.0
+                    self.get_logger().info(
+                        f'  {step_name}: waiting ({deadline - now:.0f}s left); '
+                        + (detector.describe() if detector.baseline is not None else 'measuring the hold'))
+                time.sleep(0.02)
+        finally:
+            if context is not None:
+                self._end_release_confirmation(context)
 
     def _abort_sequence(self, sequence_name: str, step_name: str, reason: str) -> None:
         self._save_sequence_trajectory_csv(sequence_name)
@@ -3746,6 +4094,16 @@ class GestureMotionExecutor(Node):
             limit_margin=float(settings.get('joint_limit_margin_rad', 0.05)),
             base_height=self._base_link_height,
             preference=str(settings.get('reach_preference', 'centre')))
+        if settings.get('max_base_move_m') is not None:
+            # Near a person (hand_cup_to_person) the base may only shuffle: drop
+            # placements that would drive it further than this.
+            limit = float(settings['max_base_move_m'])
+            kept = [pl for pl in placements if math.hypot(pl.base_x - bx, pl.base_y - by) <= limit]
+            if len(kept) < len(placements):
+                self.get_logger().warn(
+                    f'{name}: {len(placements) - len(kept)} base placement(s) need more than '
+                    f'{limit:.2f} m of base travel; not used')
+            placements = kept
         self.get_logger().info(
             f'{name}: base placement for target ({p.x:.3f}, {p.y:.3f}, {p.z:.3f}) from base '
             f'({bx:.3f}, {by:.3f}, {theta:.3f}); arm waypoints (forward, up) {offsets}; '
@@ -4035,6 +4393,11 @@ class GestureMotionExecutor(Node):
         rejections = {}
         diagnosed = False
         base_phase_cfg = self._fault_phase_cfg(cfg)
+        base_scale = (cfg.get('base_placement') or {}).get('base_velocity_scaling')
+        if base_scale is not None:
+            # Opt-in slow base drive (near a person); a fault retry slows it further.
+            factor = float(base_scale) * float(cfg.get('_fault_scale', 1.0))
+            base_phase_cfg = {'velocity_scaling': factor, 'acceleration_scaling': factor}
         def rejected(reason):
             rejections[reason] = rejections.get(reason, 0) + 1
         for candidate in candidates:

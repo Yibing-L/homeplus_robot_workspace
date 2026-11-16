@@ -3,7 +3,7 @@ import { useEffect, useRef, useState } from "react";
 import { act, useConsole } from "../store";
 import type { Approval, Flow, NextAction, Snapshot } from "../types";
 import { fmtAge, fmtClock, JOINT_LABEL, signed, useSinceSnapshot } from "../util";
-import { type Arm, ArmConfirm, ArmDetails, ManualMotion, TASKS } from "./Recovery";
+import { type Arm, ArmConfirm, ArmDetails, HOLDING_TASKS, ManualMotion, TASKS } from "./Recovery";
 import { TopDown } from "./TopDown";
 
 function Mark({ sev }: { sev: string }) {
@@ -28,6 +28,9 @@ function Bay({ motion = true }: { motion?: boolean }) {
 }
 
 // ------------------------------------------------------------------ approval (§4.4)
+// hand_cup_to_person asks before opening the gripper: a no-motion "plan" named <step>/open_gripper.
+const releasesCup = (approval: Approval) => approval.step.endsWith("/open_gripper");
+
 function HoldToApprove({ approval, allowed, reason }: { approval: Approval; allowed: boolean; reason: string | null }) {
   const [holding, setHolding] = useState(false);
   const timer = useRef<number>();
@@ -57,7 +60,11 @@ function HoldToApprove({ approval, allowed, reason }: { approval: Approval; allo
     >
       <span className="fill" />
       <span>
-        <Move size={20} aria-hidden /> {approval.preview_ready ? `Hold to approve${approval.plan_id != null ? ` #${approval.plan_id}` : ""}` : "Waiting for plan preview…"}
+        <Move size={20} aria-hidden /> {!approval.preview_ready
+          ? "Waiting for plan preview…"
+          : releasesCup(approval)
+            ? "Hold to open the gripper (release the cup)"
+            : `Hold to approve${approval.plan_id != null ? ` #${approval.plan_id}` : ""}`}
       </span>
     </button>
   );
@@ -176,7 +183,7 @@ function ApprovalBand({ snap, approval }: { snap: Snapshot; approval: Approval }
         <HoldToApprove approval={approval} allowed={!!a.approve?.allowed} reason={a.approve?.reason ?? null} />
         <div style={{ display: "flex", gap: 8 }}>
           <button className="btn" style={{ flex: 1 }} disabled={!a.reject?.allowed} onClick={() => act("reject")}>
-            <X size={15} aria-hidden /> Reject
+            <X size={15} aria-hidden /> {releasesCup(approval) ? "Keep holding" : "Reject"}
           </button>
           <button className="btn" style={{ flex: 1 }} disabled={!a.cancel?.allowed} onClick={() => act("cancel")}>
             <Square size={13} aria-hidden /> Cancel sequence
@@ -500,10 +507,10 @@ function StartBand({ snap, arm, setArm }: BandProps) {
   const a = snap.allowed;
   const holding = snap.executor.holding_cup;
   const [task, setTask] = useState(holding ? 7 : 1);
-  // Offer placement while the cup is held and pickup once it's released.
+  // Offer placement (or the hand-over) while the cup is held and pickup once it's released.
   useEffect(() => {
-    if (holding === true) setTask(7);
-    else if (holding === false) setTask((t) => (t === 7 ? 1 : t));
+    if (holding === true) setTask((t) => (HOLDING_TASKS.includes(t) ? t : 7));
+    else if (holding === false) setTask((t) => (HOLDING_TASKS.includes(t) ? 1 : t));
   }, [holding]);
   const taskGate = a.start_task?.tasks?.[String(task)];
   const startOk = !!a.start_task?.allowed && taskGate?.allowed !== false;
