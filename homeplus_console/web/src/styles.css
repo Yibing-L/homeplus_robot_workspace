@@ -656,3 +656,7 @@ footer .logline .ERROR { color: var(--bad); }
 @media (max-width: 900px) { .teleop .tmain { grid-template-columns: minmax(0, 1fr); } }
 .teleop .tcoll select { padding: 3px 6px; border-radius: 3px; border: 1px solid var(--seam-2); background: var(--field); }
 .teleop .tcoll.badline { color: var(--bad); }
+
+/* teleop arm sensitivity */
+.tsens { display: flex; align-items: center; gap: 8px; font-size: 13px; margin: 6px 0; }
+.tsens input { flex: 1; }

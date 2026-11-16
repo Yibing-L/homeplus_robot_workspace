@@ -21,6 +21,27 @@ const AXES: Record<string, Axis> = {
 };
 const HANDLED = new Set([...Object.values(AXES).flatMap((a) => [...a.pos, ...a.neg]), "KeyG", "Space", "ShiftLeft", "ShiftRight"]);
 
+const SENS_KEY = "homeplus.teleop.sensitivity";
+let sens = 2.5;
+try { const v = Number(localStorage.getItem(SENS_KEY)); if (v >= 0.5 && v <= 6) sens = v; } catch { /* storage blocked */ }
+const sensitivity = () => sens;
+function setSensitivity(v: number) {
+  sens = v;
+  try { localStorage.setItem(SENS_KEY, String(v)); } catch { /* storage blocked */ }
+}
+
+function SensitivitySlider() {
+  const [v, setV] = useState(sens);
+  return (
+    <label className="tsens" title="Mouse sensitivity for the arm (mouse up/down and wheel)">
+      arm sensitivity
+      <input type="range" min={0.5} max={6} step={0.25} value={v}
+        onChange={(e) => { const n = Number(e.target.value); setV(n); setSensitivity(n); }} />
+      <span className="mono">{v.toFixed(2)}×</span>
+    </label>
+  );
+}
+
 function typing(t: EventTarget | null): boolean {
   const el = t as HTMLElement | null;
   return !!el && (el.tagName === "INPUT" || el.tagName === "TEXTAREA" || el.tagName === "SELECT" || el.isContentEditable);
@@ -33,6 +54,7 @@ function useTeleopInput(on: boolean) {
   const mouse = useRef({ dx: 0, dy: 0, wheel: 0, drag: false, toggles: 0 });
   const seq = useRef(0);
   const area = useRef<HTMLDivElement | null>(null);
+  const [grabbed, setGrabbed] = useState(false);
 
   useEffect(() => {
     if (!on) {
@@ -95,27 +117,40 @@ function useTeleopInput(on: boolean) {
     };
   }, [on]);
 
-  // Mouse on the camera view: hold the left button and move; the wheel tilts the gripper.
+  // Mouse on the camera view (2026-11-15): click once to grab the mouse (pointer lock, Esc
+  // releases) or hold the left button. Mouse up/down = gripper up/down, wheel = forward/back.
+  // Both scaled by the operator's sensitivity.
   useEffect(() => {
     const el = area.current;
     if (!el || !on) return;
+    const locked = () => document.pointerLockElement === el;
     const pdown = (e: PointerEvent) => {
       if (e.button !== 0) return;
+      if (!locked()) {
+        try { el.requestPointerLock(); } catch { /* falls back to hold-to-drag */ }
+      }
       el.setPointerCapture(e.pointerId);
       mouse.current.drag = true;
       el.focus();
     };
     const pmove = (e: PointerEvent) => {
-      if (!mouse.current.drag) return;
-      mouse.current.dx += e.movementX;
-      mouse.current.dy += e.movementY;
+      if (!mouse.current.drag && !locked()) return;
+      mouse.current.dx += e.movementX * sensitivity();
+      mouse.current.dy += e.movementY * sensitivity();
     };
     const pup = () => {
-      mouse.current.drag = false;
+      mouse.current.drag = locked();
     };
+    const lockChange = () => {
+      mouse.current.drag = locked();
+      setGrabbed(locked());
+    };
+    document.addEventListener("pointerlockchange", lockChange);
     const wheel = (e: WheelEvent) => {
       e.preventDefault();
-      mouse.current.wheel += Math.max(-3, Math.min(3, -e.deltaY / 100));
+      mouse.current.drag = true;
+      mouse.current.wheel += Math.max(-3, Math.min(3, -e.deltaY / 100)) * sensitivity();
+      window.setTimeout(() => { if (!locked()) mouse.current.drag = false; }, 400);
     };
     const ctx = (e: MouseEvent) => e.preventDefault();
     el.addEventListener("pointerdown", pdown);
@@ -133,10 +168,12 @@ function useTeleopInput(on: boolean) {
       el.removeEventListener("lostpointercapture", pup);
       el.removeEventListener("wheel", wheel);
       el.removeEventListener("contextmenu", ctx);
+      document.removeEventListener("pointerlockchange", lockChange);
+      if (locked()) document.exitPointerLock();
     };
   }, [on]);
 
-  return { shown, area, dragging: () => mouse.current.drag };
+  return { shown, area, dragging: () => mouse.current.drag, grabbed };
 }
 
 function LiveCamera({ feed }: { feed: string }) {
@@ -272,7 +309,7 @@ function Recorder({ t, allowed }: { t: TeleopView; allowed: Snapshot["allowed"] 
 export function TeleopPanel({ snap }: { snap: Snapshot }) {
   const t = snap.teleop;
   const on = !!t?.mode && snap.control.you;
-  const { shown, area, dragging } = useTeleopInput(on);
+  const { shown, area, dragging, grabbed } = useTeleopInput(on);
   const [, force] = useState(0);
   useEffect(() => {
     if (!on) return;
@@ -330,7 +367,9 @@ export function TeleopPanel({ snap }: { snap: Snapshot }) {
           <span className="tag">D405 hand · {d405?.status ?? "—"}</span>
           {on && (
             <div className="tcam-help">
-              hold left button + move: → reach out · ↑ up &nbsp;·&nbsp; wheel: tilt
+              {grabbed
+                ? "mouse grabbed: move ↑↓ = arm up/down · wheel = forward/back · R/F tilt · Esc releases"
+                : "click to grab the mouse (or hold left button): ↑↓ = up/down · wheel = forward/back · R/F tilt"}
             </div>
           )}
         </div>
@@ -338,6 +377,7 @@ export function TeleopPanel({ snap }: { snap: Snapshot }) {
           <div className="t3d">
             <Plan3D plan={null} planAge={null} now={snap.joints.si} scene={snap.scene ?? null} />
           </div>
+          <SensitivitySlider />
           <KeyMap held={shown} dragging={dragging()} />
           <Hud t={t} />
         </div>

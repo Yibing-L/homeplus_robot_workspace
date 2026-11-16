@@ -45,7 +45,8 @@ DEFAULTS: Dict[str, Any] = {
     "tcp_mps": [0.03, 0.06],
     "tcp_acc": 0.15,
     "mouse_m_per_px": [0.00015, 0.0004],
-    "pending_max_m": 0.03,        # mouse motion beyond this, not yet executed, is dropped
+    "pending_max_m": 0.05,        # mouse motion beyond this, not yet executed, is dropped
+    "wheel_reach_m_per_notch": 0.01,  # wheel = gripper forward/back (before the UI sensitivity)
     "wheel_deg_per_notch": 3.0,
     "pending_max_deg": 10.0,
     "pitch_dps": [15.0, 25.0],
@@ -177,13 +178,14 @@ class Controller:
         return dict(self.q)
 
     def add_mouse(self, dx_px: float, dy_px: float, wheel: float, fast: bool) -> None:
-        """Mouse right = reach out, mouse up = up (screen y grows down), wheel up = tip up."""
+        """Mouse up = gripper up (screen y grows down); wheel forward = gripper forward (into
+        the camera view). The arm is planar, so mouse x is unused; tilt is on R/F
+        (2026-11-15: the old right=reach, wheel=tilt mapping was awkward). The UI scales
+        dy and wheel by the operator's sensitivity before sending."""
         k = self.cfg["mouse_m_per_px"][1 if fast else 0]
         lim = self.cfg["pending_max_m"]
-        self.pend[0] = clamp(self.pend[0] + dx_px * k, -lim, lim)
+        self.pend[0] = clamp(self.pend[0] + float(self.cfg["wheel_reach_m_per_notch"]) * wheel, -lim, lim)
         self.pend[1] = clamp(self.pend[1] - dy_px * k, -lim, lim)
-        plim = D(self.cfg["pending_max_deg"])
-        self.pend[2] = clamp(self.pend[2] + D(self.cfg["wheel_deg_per_notch"]) * wheel, -plim, plim)
 
     def toggle_grip(self) -> None:
         if self.q is None:

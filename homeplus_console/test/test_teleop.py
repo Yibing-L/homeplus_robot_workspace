@@ -76,7 +76,7 @@ def test_mouse_reach_keeps_height_and_pitch(chain):
     c = Controller(chain)
     c.anchor(home(), 0.0)
     t0 = c.tcp()
-    c.add_mouse(100, 0, 0, fast=False)       # 100 px right → +1.5 cm reach
+    c.add_mouse(0, 0, 1.5, fast=False)       # wheel forward 1.5 notches → +1.5 cm reach
     out = run(c, Intent(drag=True), n=50)
     t1 = c.tcp(out.q)
     assert t1[0] - t0[0] == pytest.approx(0.015, abs=0.0015)
@@ -212,7 +212,7 @@ def test_gripper_may_close_on_an_object(chain):
     out = run(c, Intent(grip=1.0), check=cup, n=40)
     assert not out.blocked and out.q["joint_grip_L"] > D(40)
     # but moving the arm while the fingers touch the cup is still blocked
-    c.add_mouse(100, 0, 0, fast=False)
+    c.add_mouse(0, 0, 1.5, fast=False)
     blocked = [c.step(5.0 + i * DT, DT, Intent(drag=True), c.q, cup).blocked for i in range(10)]
     assert any(blocked)
 
