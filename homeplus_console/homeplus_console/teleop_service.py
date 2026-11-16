@@ -96,6 +96,7 @@ class TeleopService:
             if self.ctrl is None:
                 return {"status": "rejected", "detail": "robot URDF not found: teleop needs it for the arm kinematics"}
             self.mode, self.owner, self.operator = True, client, operator
+            self.last_seq = -1
             self._set_phase("latched", now, "release every key and mouse button with this tab focused to start")
             self.io.set_feed_boost(True)
             self.logs.add("console", "WARN", f"Teleop mode ON ({operator})")
@@ -134,7 +135,10 @@ class TeleopService:
             if not self.mode or client is None or client != self.owner:
                 return
             seq = int(msg.get("seq", 0))
-            if seq <= self.last_seq and seq != 0:
+            # Out-of-order guard only within a live stream: a reloaded page restarts its count at 1
+            # (2026-11-15: that dropped every frame and left teleop in HOLD forever).
+            fresh = self.last_frame is not None and now - self.last_frame < 1.0
+            if seq <= self.last_seq and seq != 0 and fresh:
                 return
             self.last_seq = seq
             if self.last_frame is not None:
