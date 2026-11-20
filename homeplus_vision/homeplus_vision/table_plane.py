@@ -147,8 +147,13 @@ def _supports(n, d, support, below=0.08, above=0.015):
 
 def table_box(points_world: np.ndarray, plane: TablePlane, *, thickness: float = 0.04,
               margin: float = 0.02):
-    """Axis-aligned box (center, size) whose top face is the fitted table surface."""
+    """Axis-aligned box (center, size) whose top face is the fitted table surface,
+    or None when no point of this frame lies on the plane."""
     inl = np.asarray(points_world)[plane.inliers]
+    if inl.shape[0] == 0:
+        # 2026-11-20: a frame seeing the machine top (1.14 m) smoothed to the table's
+        # median height (0.68 m) had no inliers; .min() of nothing killed the node.
+        return None
     lo = inl[:, :2].min(axis=0) - margin
     hi = inl[:, :2].max(axis=0) + margin
     top = float(np.median(inl[:, 2]))

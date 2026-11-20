@@ -721,7 +721,15 @@ class ObstacleCloudNode(Node):
         dist = plane.signed_distance(world.astype(np.float64))
         band = (dist >= -c["remove_below_m"]) & (dist <= c["remove_above_m"])
         base = self._target_base_column(world, target, plane, camera_xy)
-        center, size = table_box(world, plane, thickness=c["box_thickness_m"])
+        box = table_box(world, plane, thickness=c["box_thickness_m"])
+        if box is None:
+            # The smoothed table height has no points in this frame (it saw another
+            # surface): still remove the band at the known height, keep the existing box.
+            status.update(height_m=round(plane.height, 4), inliers=0, removed=int(np.count_nonzero(band)),
+                          box_kept=True)
+            self.table_status_pub.publish(String(data=json.dumps(status)))
+            return obstacle_points[~(band | base)]
+        center, size = box
         self._publish_table_box(center, size, stamp_msg)
         if self.table_from_fit_task:
             self._save_table(plane, center, size)
