@@ -1,0 +1,28 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- Large-image publisher profile for d405_vm_receiver.py: default SHM segment (512 KB)
+     overflows with 1 MB images under best-effort QoS and drops frames. -->
+<profiles xmlns="http://www.eprosima.com/XMLSchemas/fastRTPS_Profiles">
+  <transport_descriptors>
+    <transport_descriptor>
+      <transport_id>shm_big</transport_id>
+      <type>SHM</type>
+      <segment_size>33554432</segment_size>
+      <port_queue_capacity>512</port_queue_capacity>
+    </transport_descriptor>
+    <transport_descriptor>
+      <transport_id>udp_big</transport_id>
+      <type>UDPv4</type>
+      <sendBufferSize>33554432</sendBufferSize>
+      <receiveBufferSize>33554432</receiveBufferSize>
+    </transport_descriptor>
+  </transport_descriptors>
+  <participant profile_name="big_images" is_default_profile="true">
+    <rtps>
+      <userTransports>
+        <transport_id>shm_big</transport_id>
+        <transport_id>udp_big</transport_id>
+      </userTransports>
+      <useBuiltinTransports>false</useBuiltinTransports>
+    </rtps>
+  </participant>
+</profiles>

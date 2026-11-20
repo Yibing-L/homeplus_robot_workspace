@@ -26,7 +26,7 @@ gesture_motion_executor:
     # The current firmware expects the complete comma-delimited trajectory in
     # one line; newline streaming resets its queue for every waypoint.
     stream_trajectory_waypoints: false
-    pretty_print_trajectory_waypoints: true
+    pretty_print_trajectory_waypoints: false  # ~70 ms per log line cost 1-4.5 s per step; CSVs in ~/trajectory_logs keep the data
     arduino_wait_progress_sec: 2.0
     display_planned_path_topic: "/display_planned_path"
     require_trajectory_approval: true

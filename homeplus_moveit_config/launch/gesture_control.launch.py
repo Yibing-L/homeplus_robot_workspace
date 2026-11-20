@@ -162,6 +162,8 @@ def generate_launch_description():
             {
                 "execution_map_path": LaunchConfiguration("execution_map_path"),
                 "enable_moveit_planning": LaunchConfiguration("enable_moveit_planning"),
+                # Clear before pose plans (pickup worked this way); steps that should
+                # keep the map set clear_octomap_before_plan: false (place, 2026-10-30).
                 "clear_octomap_before_pose_plan": LaunchConfiguration("use_octomap"),
                 "wait_for_gripper_ack": LaunchConfiguration("wait_for_hardware_ack"),
                 "wait_for_trajectory_ack": LaunchConfiguration("wait_for_hardware_ack"),

@@ -1,0 +1,51 @@
+"""Thresholds (UI_PLAN §2, §3). Defaults here; config/console.yaml overrides."""
+from __future__ import annotations
+
+from pathlib import Path
+from typing import Any, Dict, Optional
+
+import yaml
+
+DEFAULTS: Dict[str, Any] = {
+    "link_lost_sec": 1.5,            # client-side
+    "joints_fresh_sec": 0.5,
+    "bridge_down_sec": 1.0,
+    "ready_fresh_sec": 6.0,
+    "executor_fresh_sec": 1.5,
+    "camera_fresh_sec": 1.0,
+    "camera_frozen_sec": 3.0,
+    "overlay_stale_sec": 5.0,        # debug image at inference_rate 0.5
+    "tf_fresh_sec": 1.0,
+    "moveit_fresh_sec": 5.0,
+    "gpu_fresh_sec": 10.0,
+    "detector_slow_sec": 10.0,
+    "detector_down_sec": 37.0,       # max(10, 2/rate + remote_timeout_sec + 5)
+    "detector_old_frames_sec": 10.0,
+    "inference_rate": 0.5,
+    "boot_upright_sec": 8.0,
+    "upright_deg": 3.0,
+    "folded_elbow_deg": -34.0,
+    "folded_shoulder_deg": -29.0,
+    "drift_arm_deg": 2.0,
+    "drift_base_m": 0.02,
+    "drift_base_deg": 2.0,
+    "window_n": 10,
+    "window_min_consecutive": 3,
+    "window_max_age_sec": 20.0,
+    "window_spread_m": 0.03,
+    "window_cluster_m": 0.10,
+    "z_band": [0.70, 0.85],
+    "approval_no_controller_reject_sec": 5.0,
+    "lease_expiry_sec": 3.0,
+    "stop_motion_confirm_sec": 1.0,
+    "stop_idle_confirm_sec": 3.0,
+    "start_confirm_sec": 2.0,
+    "origin_recent_sec": 600.0,
+}
+
+
+def load(path: Optional[Path]) -> Dict[str, Any]:
+    cfg = dict(DEFAULTS)
+    if path and path.exists():
+        cfg.update(yaml.safe_load(path.read_text()) or {})
+    return cfg

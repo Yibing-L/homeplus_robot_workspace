@@ -57,6 +57,9 @@ unsigned long command_start_millis = 0;
 // MoveIt trajectories in this pipeline are sampled at 10 Hz. Intermediate
 // samples are streaming setpoints, not individual stop-and-settle goals.
 unsigned long activeCommandId = 0;
+// Identifies this power-on/reset. The host compares it across serial reopens to tell a
+// reconnect (same boot, odometry intact) from a reset (new boot, odometry re-zeroed).
+unsigned long bootId = 0;
 unsigned long trajectoryStart = 0;
 unsigned long settledSince = 0;
 unsigned long lastStateMillis = 0;
@@ -257,6 +260,8 @@ void parseStreamPacket(char* input);
 void printRobotState();
 void stopAtCurrentState();
 void protocolError(const char* reason);
+void printBootId();
+void zeroOdometry();
 
 void setup() {
   pinMode(RELAY_PIN, OUTPUT);
@@ -346,7 +351,12 @@ void setup() {
   delay(1000);
   digitalWrite(RELAY_PIN, RELAY_ON);
 
+  // Floating analog input plus boot timing: distinct across resets, no EEPROM wear.
+  bootId = (micros() ^ ((unsigned long)analogRead(A0) << 20) ^ ((unsigned long)analogRead(A1) << 10)) & 0xFFFFFFUL;
+  if (bootId == 0) bootId = 1;
+
   Serial.println("READY4");
+  printBootId();
 }
 
 void loop() {
@@ -368,6 +378,10 @@ void loop() {
           } else if (strcmp(serialBuffer, "STOP") == 0) {
             stopAtCurrentState();
             protocolError("STOPPED");
+          } else if (strcmp(serialBuffer, "ID") == 0) {
+            printBootId();
+          } else if (strcmp(serialBuffer, "ZERO") == 0) {
+            zeroOdometry();
           } else if (strncmp(serialBuffer, "STR ", 4) == 0) {
             parseStreamPacket(serialBuffer);
           } else if (commandCount > 0) {
@@ -874,6 +888,33 @@ void parseMessage(const CommandWaypoint& command) {
 void protocolError(const char* reason) {
   Serial.print("ERROR "); Serial.print(activeCommandId);
   Serial.print(" "); Serial.println(reason);
+}
+
+// "BOOT <id> ZERO": boot identity plus the capabilities this firmware supports.
+void printBootId() {
+  Serial.print("BOOT "); Serial.print(bootId); Serial.println(" ZERO");
+}
+
+// Re-zero without a reset: odometry and the held base target become the current pose, so the
+// base PID holds still instead of driving back, and the arm is untouched (no re-homing).
+void zeroOdometry() {
+  if (commandCount > 0 || streamActive) {
+    Serial.println("ERROR 0 ZERO_BUSY");
+    return;
+  }
+  x = 0; y = 0; theta = 0;
+  target_x = 0; target_y = 0; target_theta = 0;
+  dx = 0; dy = 0; dtheta = 0;
+  previousSettleX = 0; previousSettleY = 0; previousSettleTheta = 0;
+  settledSince = 0;
+  // PID_v1 keeps lastInput and the integral; re-initialize so the jump in measured
+  // position is not seen as motion (derivative kick) and no stale integral remains.
+  xInput = 0; yInput = 0; thInput = 0;
+  xSetpoint = 0; ySetpoint = 0; thSetpoint = 0;
+  xOutput = 0; yOutput = 0; thOutput = 0;
+  pidX.SetMode(MANUAL); pidY.SetMode(MANUAL); pidTh.SetMode(MANUAL);
+  pidX.SetMode(AUTOMATIC); pidY.SetMode(AUTOMATIC); pidTh.SetMode(AUTOMATIC);
+  Serial.print("ZEROED "); Serial.println(bootId);
 }
 
 void stopAtCurrentState() {

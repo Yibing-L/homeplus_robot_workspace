@@ -1,5 +1,7 @@
 # Flat parameter dictionary consumed by realsense2_camera/rs_launch.py.
-# D405 color and depth share the depth_module sensor. Use its hardware clock,
-# which the ROS driver anchors to node time, instead of SDK global-time mapping.
-# Restart the camera after a host clock adjustment or suspend/resume.
-depth_module.global_time_enabled: false
+# D405 color and depth share the depth_module sensor. Global time keeps mapping
+# the camera's hardware clock onto host time. With it off, the driver anchors the
+# hardware clock once at start and its crystal drift (~50 ppm measured,
+# 2026-10-29) put frames 0.11-0.15 s ahead of ROS within 30-40 min; the
+# detector then drops every frame and planning has no target-masked cloud.
+depth_module.global_time_enabled: true

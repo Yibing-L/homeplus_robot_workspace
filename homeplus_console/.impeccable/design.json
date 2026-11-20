@@ -1,0 +1,536 @@
+{
+  "schemaVersion": 2,
+  "generatedAt": "2026-10-18T16:00:00Z",
+  "title": "Design System: HomePlus Console",
+  "extensions": {
+    "colorMeta": {
+      "ground": {
+        "role": "neutral",
+        "displayName": "Graphite Ground",
+        "canonical": "oklch(19.0% 0.007 258)",
+        "tonalRamp": [
+          "#090b0e",
+          "#232528",
+          "#404246",
+          "#5f6165",
+          "#808286",
+          "#a2a5a9",
+          "#c6c9ce",
+          "#eceff3"
+        ]
+      },
+      "panel": {
+        "role": "neutral",
+        "displayName": "Graphite Panel",
+        "canonical": "oklch(22.9% 0.009 256)",
+        "tonalRamp": [
+          "#090b0f",
+          "#222529",
+          "#3f4247",
+          "#5e6266",
+          "#7f8388",
+          "#a1a5ab",
+          "#c5c9cf",
+          "#ebeff5"
+        ]
+      },
+      "panel-2": {
+        "role": "neutral",
+        "displayName": "Lifted Graphite",
+        "canonical": "oklch(25.9% 0.013 258)",
+        "tonalRamp": [
+          "#080b11",
+          "#21252b",
+          "#3e4249",
+          "#5d6269",
+          "#7e838a",
+          "#a0a5ad",
+          "#c4cad2",
+          "#e9eff7"
+        ]
+      },
+      "raise": {
+        "role": "neutral",
+        "displayName": "Raised Graphite",
+        "canonical": "oklch(28.7% 0.013 253)",
+        "tonalRamp": [
+          "#070c11",
+          "#21262b",
+          "#3d4349",
+          "#5c6269",
+          "#7d838a",
+          "#9fa6ad",
+          "#c3cad2",
+          "#e8eff7"
+        ]
+      },
+      "field": {
+        "role": "neutral",
+        "displayName": "Well Black",
+        "canonical": "oklch(16.7% 0.005 248)",
+        "tonalRamp": [
+          "#090b0d",
+          "#232528",
+          "#404245",
+          "#5f6164",
+          "#808385",
+          "#a2a5a8",
+          "#c6c9cc",
+          "#eceff2"
+        ]
+      },
+      "seam": {
+        "role": "neutral",
+        "displayName": "Seam",
+        "canonical": "oklch(30.0% 0.012 258)",
+        "tonalRamp": [
+          "#080b10",
+          "#21252b",
+          "#3e4249",
+          "#5d6268",
+          "#7e838a",
+          "#a0a5ad",
+          "#c4c9d1",
+          "#eaeff7"
+        ]
+      },
+      "seam-2": {
+        "role": "neutral",
+        "displayName": "Seam Strong",
+        "canonical": "oklch(34.7% 0.016 260)",
+        "tonalRamp": [
+          "#070b12",
+          "#21252d",
+          "#3d424a",
+          "#5c626a",
+          "#7d838c",
+          "#9fa5af",
+          "#c3cad4",
+          "#e8eff9"
+        ]
+      },
+      "ink": {
+        "role": "neutral",
+        "displayName": "Ink",
+        "canonical": "oklch(93.0% 0.005 258)",
+        "tonalRamp": [
+          "#0a0b0d",
+          "#242527",
+          "#404244",
+          "#606164",
+          "#818285",
+          "#a3a5a8",
+          "#c7c9cc",
+          "#edeff2"
+        ]
+      },
+      "ink-2": {
+        "role": "neutral",
+        "displayName": "Ink Secondary",
+        "canonical": "oklch(73.2% 0.013 256)",
+        "tonalRamp": [
+          "#080b11",
+          "#21252c",
+          "#3d4249",
+          "#5c6269",
+          "#7d838a",
+          "#a0a6ae",
+          "#c3cad2",
+          "#e9eff8"
+        ]
+      },
+      "ink-3": {
+        "role": "neutral",
+        "displayName": "Ink Tertiary",
+        "canonical": "oklch(60.4% 0.017 257)",
+        "tonalRamp": [
+          "#070b12",
+          "#20252e",
+          "#3c424b",
+          "#5b626b",
+          "#7c838d",
+          "#9ea6b0",
+          "#c2cad5",
+          "#e7effa"
+        ]
+      },
+      "ok": {
+        "role": "primary",
+        "displayName": "Signal Green",
+        "canonical": "oklch(73.5% 0.136 159)",
+        "tonalRamp": [
+          "#000f06",
+          "#012e1a",
+          "#024f31",
+          "#06744a",
+          "#0e9a64",
+          "#47bf86",
+          "#70e4a9",
+          "#c5fedd"
+        ]
+      },
+      "warn": {
+        "role": "primary",
+        "displayName": "Caution Amber",
+        "canonical": "oklch(80.6% 0.147 79)",
+        "tonalRamp": [
+          "#120900",
+          "#332102",
+          "#573c05",
+          "#7f5a0d",
+          "#aa7800",
+          "#d6980f",
+          "#fcbd49",
+          "#feeccf"
+        ]
+      },
+      "bad": {
+        "role": "primary",
+        "displayName": "Fault Red",
+        "canonical": "oklch(68.9% 0.201 29)",
+        "tonalRamp": [
+          "#1f0000",
+          "#4d0001",
+          "#7e0a08",
+          "#b80207",
+          "#e13f33",
+          "#fe7464",
+          "#feb4a9",
+          "#ffe9e5"
+        ]
+      },
+      "info": {
+        "role": "primary",
+        "displayName": "Running Blue",
+        "canonical": "oklch(72.9% 0.140 258)",
+        "tonalRamp": [
+          "#000a22",
+          "#002253",
+          "#013d8a",
+          "#285faf",
+          "#4a82d5",
+          "#6ca6fb",
+          "#a9cbfd",
+          "#e5efff"
+        ]
+      },
+      "stop": {
+        "role": "secondary",
+        "displayName": "STOP Vermilion",
+        "canonical": "oklch(62.3% 0.196 29)",
+        "tonalRamp": [
+          "#1f0000",
+          "#4c0201",
+          "#800504",
+          "#b60e0a",
+          "#df4235",
+          "#fd7665",
+          "#ffb3a7",
+          "#fee9e5"
+        ]
+      },
+      "ok-dim": {
+        "role": "primary",
+        "displayName": "Signal Green Wash",
+        "tonalRamp": [
+          "#000f06",
+          "#012e1a",
+          "#024f31",
+          "#06744a",
+          "#0e9a64",
+          "#47bf86",
+          "#70e4a9",
+          "#c5fedd"
+        ]
+      },
+      "warn-dim": {
+        "role": "primary",
+        "displayName": "Caution Amber Wash",
+        "tonalRamp": [
+          "#120900",
+          "#332102",
+          "#573c05",
+          "#7f5a0d",
+          "#aa7800",
+          "#d6980f",
+          "#fcbd49",
+          "#feeccf"
+        ]
+      },
+      "bad-dim": {
+        "role": "primary",
+        "displayName": "Fault Red Wash",
+        "tonalRamp": [
+          "#1f0000",
+          "#4d0001",
+          "#7e0a08",
+          "#b80207",
+          "#e13f33",
+          "#fe7464",
+          "#feb4a9",
+          "#ffe9e5"
+        ]
+      },
+      "info-dim": {
+        "role": "primary",
+        "displayName": "Running Blue Wash",
+        "tonalRamp": [
+          "#000a22",
+          "#002253",
+          "#013d8a",
+          "#285faf",
+          "#4a82d5",
+          "#6ca6fb",
+          "#a9cbfd",
+          "#e5efff"
+        ]
+      },
+      "stop-hover": {
+        "role": "secondary",
+        "displayName": "STOP Vermilion Hover",
+        "tonalRamp": [
+          "#1f0000",
+          "#4c0201",
+          "#800504",
+          "#b60e0a",
+          "#df4235",
+          "#fd7665",
+          "#ffb3a7",
+          "#fee9e5"
+        ]
+      }
+    },
+    "typographyMeta": {
+      "state-headline": {
+        "displayName": "State headline",
+        "purpose": "Robot state in its accent colour, uppercase; 24px below 1360px."
+      },
+      "band-title": {
+        "displayName": "Band title",
+        "purpose": "The one problem or decision in the action bar; mono 20px/500 variant for step names."
+      },
+      "body": {
+        "displayName": "Body",
+        "purpose": "Default prose; fix sentence at 16.5px, max 70ch."
+      },
+      "meta": {
+        "displayName": "Meta",
+        "purpose": "Context line after a heading, ink-3."
+      },
+      "label": {
+        "displayName": "Label",
+        "purpose": "Uppercase-tracked panel headers, tabs, table keys, feed tags."
+      },
+      "mono": {
+        "displayName": "Mono",
+        "purpose": "Ids, topics, step names, figures, logs."
+      },
+      "countdown": {
+        "displayName": "Countdown",
+        "purpose": "Approval seconds left."
+      }
+    },
+    "hatch": [
+      {
+        "name": "hatch",
+        "value": "repeating-linear-gradient(135deg, rgb(163 169 177 / 0.12) 0 1px, transparent 1px 6px)",
+        "purpose": "Unknown / silent row and pill fill."
+      },
+      {
+        "name": "hatch-dense",
+        "value": "repeating-linear-gradient(135deg, rgb(163 169 177 / 0.2) 0 1px, transparent 1px 4px)",
+        "purpose": "Unknown mark, stale/frozen veil, link-lost overlay."
+      }
+    ],
+    "shadows": [
+      {
+        "name": "stop-inner-hairline",
+        "value": "0 0 0 1px #ff8a7f66 inset",
+        "purpose": "STOP edge definition; not elevation."
+      },
+      {
+        "name": "mark-ring",
+        "value": "0 0 0 2px <accent> inset",
+        "purpose": "Hollow-ring state mark."
+      },
+      {
+        "name": "scrim",
+        "value": "#0008",
+        "purpose": "Drawer backdrop below the header."
+      }
+    ],
+    "motion": [
+      {
+        "name": "hold-fill",
+        "value": "width 1000ms linear",
+        "purpose": "Hold-to-approve fill."
+      },
+      {
+        "name": "drain",
+        "value": "width 250ms linear",
+        "purpose": "Approval countdown drain."
+      },
+      {
+        "name": "ease",
+        "value": "cubic-bezier(0.16, 1, 0.3, 1)",
+        "purpose": "Drawer slide-in, 220ms, one axis (24px from the right)."
+      },
+      {
+        "name": "stop-hover",
+        "value": "background 120ms",
+        "purpose": "STOP hover."
+      },
+      {
+        "name": "feed-veil",
+        "value": "filter 300ms",
+        "purpose": "Feed grayscale when stale."
+      },
+      {
+        "name": "reduced-motion",
+        "value": "none",
+        "purpose": "All transitions and animations off under prefers-reduced-motion."
+      }
+    ],
+    "breakpoints": [
+      {
+        "name": "min-width",
+        "value": "1180px"
+      },
+      {
+        "name": "compact-width",
+        "value": "max-width: 1360px"
+      },
+      {
+        "name": "short-height",
+        "value": "max-height: 820px"
+      }
+    ]
+  },
+  "components": [
+    {
+      "name": "STOP",
+      "kind": "button",
+      "refersTo": "stop",
+      "description": "The only red button: alone in a field bay, bound to Esc, never confirms.",
+      "html": "<div class=\"ds-stopbay\"><button class=\"ds-stop\">STOP<kbd>Esc</kbd></button></div>",
+      "css": ".ds-stopbay { display:flex; align-items:center; justify-content:center; background:var(--field,#0d0f11); padding:14px 24px; width:300px; } .ds-stop { display:flex; flex-direction:column; align-items:center; justify-content:center; gap:4px; width:100%; max-width:220px; height:80px; border:0; border-radius:6px; background:var(--stop,#e5483a); color:#fff; font:700 32px 'Geist Variable','Geist',system-ui,sans-serif; letter-spacing:0.06em; cursor:pointer; box-shadow:0 0 0 1px #ff8a7f66 inset; transition:background 120ms; } .ds-stop:hover { background:var(--stop-hover,#f05a4c); } .ds-stop:active { transform:translateY(1px); } .ds-stop:focus-visible { outline:2px solid var(--info,#6ea8fe); outline-offset:2px; } .ds-stop kbd { font:500 11.5px 'Geist Mono Variable','Geist Mono',ui-monospace,monospace; padding:1px 6px; border-radius:3px; background:#0000002e; }"
+    },
+    {
+      "name": "Button",
+      "kind": "button",
+      "refersTo": "button",
+      "description": "Read-only and setup controls.",
+      "html": "<button class=\"ds-btn\">Clear octomap</button> <button class=\"ds-btn\" disabled>Undo last step</button>",
+      "css": ".ds-btn { display:inline-flex; align-items:center; justify-content:center; gap:8px; min-height:38px; padding:0 14px; border:1px solid var(--seam-2,#353a42); border-radius:5px; background:var(--panel-2,#20242a); color:var(--ink,#e6e8eb); font:550 14px 'Geist Variable','Geist',system-ui,sans-serif; cursor:pointer; } .ds-btn:hover:not(:disabled) { border-color:var(--ink-3,#7b828c); background:var(--raise,#262b31); } .ds-btn:focus-visible { outline:2px solid var(--info,#6ea8fe); outline-offset:2px; } .ds-btn:disabled { cursor:not-allowed; color:var(--ink-3,#7b828c); background:transparent; border-color:var(--seam,#2a2e34); }"
+    },
+    {
+      "name": "Primary Button",
+      "kind": "button",
+      "refersTo": "button-primary",
+      "description": "Inverted ink; the selected option of a toggle group.",
+      "html": "<button class=\"ds-btn ds-btn-primary\">Task 1 · pickup</button> <button class=\"ds-btn\">Task 2 · button</button>",
+      "css": ".ds-btn { display:inline-flex; align-items:center; justify-content:center; gap:8px; min-height:38px; padding:0 14px; border:1px solid var(--seam-2,#353a42); border-radius:5px; background:var(--panel-2,#20242a); color:var(--ink,#e6e8eb); font:550 14px 'Geist Variable','Geist',system-ui,sans-serif; cursor:pointer; } .ds-btn:hover:not(:disabled) { border-color:var(--ink-3,#7b828c); background:var(--raise,#262b31); } .ds-btn:focus-visible { outline:2px solid var(--info,#6ea8fe); outline-offset:2px; } .ds-btn:disabled { cursor:not-allowed; color:var(--ink-3,#7b828c); background:transparent; border-color:var(--seam,#2a2e34); } .ds-btn-primary { background:var(--ink,#e6e8eb); color:var(--ground,#121417); border-color:var(--ink,#e6e8eb); } .ds-btn-primary:hover:not(:disabled) { background:#fff; border-color:#fff; }"
+    },
+    {
+      "name": "Motion Bay with Hold to Approve",
+      "kind": "custom",
+      "refersTo": "motion-bay",
+      "description": "Every robot-moving action, outlined green with the move icon, confirmed inline; hold fills linearly over 1 s.",
+      "html": "<div class=\"ds-bay\"><div class=\"ds-bay-label\">Causes motion</div><button class=\"ds-btn ds-motion ds-hold\"><span class=\"ds-fill\"></span><span class=\"ds-in\"><svg width=\"18\" height=\"18\" viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"2\" stroke-linecap=\"round\" stroke-linejoin=\"round\" aria-hidden=\"true\"><path d=\"M12 2v20\"/><path d=\"m15 19-3 3-3-3\"/><path d=\"m19 9 3 3-3 3\"/><path d=\"M2 12h20\"/><path d=\"m5 9-3 3 3 3\"/><path d=\"m9 5 3-3 3 3\"/></svg> Hold to approve #19</span></button><button class=\"ds-btn ds-motion\"><svg width=\"18\" height=\"18\" viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"2\" stroke-linecap=\"round\" stroke-linejoin=\"round\" aria-hidden=\"true\"><path d=\"M12 2v20\"/><path d=\"m15 19-3 3-3-3\"/><path d=\"m19 9 3 3-3 3\"/><path d=\"M2 12h20\"/><path d=\"m5 9-3 3 3 3\"/><path d=\"m9 5 3-3 3 3\"/></svg> Return to start</button></div>",
+      "css": ".ds-btn { display:inline-flex; align-items:center; justify-content:center; gap:8px; min-height:38px; padding:0 14px; border:1px solid var(--seam-2,#353a42); border-radius:5px; background:var(--panel-2,#20242a); color:var(--ink,#e6e8eb); font:550 14px 'Geist Variable','Geist',system-ui,sans-serif; cursor:pointer; } .ds-btn:hover:not(:disabled) { border-color:var(--ink-3,#7b828c); background:var(--raise,#262b31); } .ds-btn:focus-visible { outline:2px solid var(--info,#6ea8fe); outline-offset:2px; } .ds-btn:disabled { cursor:not-allowed; color:var(--ink-3,#7b828c); background:transparent; border-color:var(--seam,#2a2e34); } .ds-bay { background:var(--field,#0d0f11); padding:16px 20px; display:flex; flex-direction:column; gap:10px; width:300px; border-top:2px solid var(--warn,#f2b33d); } .ds-bay-label { font:650 11px 'Geist Variable','Geist',system-ui,sans-serif; letter-spacing:0.08em; text-transform:uppercase; color:var(--warn,#f2b33d); } .ds-motion { position:relative; overflow:hidden; background:#4cc38a14; border-color:var(--ok,#4cc38a); color:var(--ok,#4cc38a); } .ds-motion:hover:not(:disabled) { background:#4cc38a26; border-color:var(--ok,#4cc38a); } .ds-hold { min-height:64px; font-size:18px; width:100%; } .ds-fill { position:absolute; left:0; top:0; bottom:0; width:0; background:var(--ok,#4cc38a); opacity:0.3; } .ds-hold:active .ds-fill { width:100%; transition:width 1000ms linear; } .ds-in { position:relative; display:inline-flex; gap:8px; align-items:center; }"
+    },
+    {
+      "name": "State Pill",
+      "kind": "chip",
+      "refersTo": "chip",
+      "description": "Header state pills: mark, uppercase label, value; variants by state.",
+      "html": "<span class=\"ds-chip\"><i class=\"ds-dot\"></i><b>Motors</b> verified 15:31</span> <span class=\"ds-chip ds-bad\"><i class=\"ds-dot\"></i><b>Perception</b> camera down</span> <span class=\"ds-chip ds-unk\"><i class=\"ds-dot\"></i><b>Origin</b> unknown</span> <span class=\"ds-chip ds-sim\"><b>SIM</b></span>",
+      "css": ".ds-chip { display:inline-flex; align-items:center; gap:8px; height:30px; padding:0 11px; border:1px solid var(--seam-2,#353a42); border-radius:5px; background:var(--panel-2,#20242a); color:var(--ink-2,#a3a9b1); font:13px 'Geist Variable','Geist',system-ui,sans-serif; } .ds-chip b { color:var(--ink,#e6e8eb); font-size:11.5px; font-weight:650; letter-spacing:0.07em; text-transform:uppercase; } .ds-dot { width:8px; height:8px; border-radius:50%; background:var(--ok,#4cc38a); } .ds-bad { border-color:#ff5c4d80; background:var(--bad-dim,#ff5c4d1f); color:var(--bad,#ff5c4d); } .ds-bad .ds-dot { background:var(--bad,#ff5c4d); width:9px; height:3px; border-radius:1px; } .ds-unk { background:repeating-linear-gradient(135deg, rgb(163 169 177 / 0.12) 0 1px, transparent 1px 6px), var(--panel-2,#20242a); } .ds-unk .ds-dot { border-radius:1px; background:repeating-linear-gradient(135deg, rgb(163 169 177 / 0.2) 0 1px, transparent 1px 4px); box-shadow:0 0 0 1px var(--ink-3,#7b828c) inset; } .ds-sim, .ds-sim b { border-color:var(--warn,#f2b33d); color:var(--warn,#f2b33d); }"
+    },
+    {
+      "name": "State Marks",
+      "kind": "custom",
+      "description": "Filled dot ok/running, hollow ring warn/silent, red bar bad, hatched square unknown.",
+      "html": "<span class=\"ds-m\"><i class=\"ds-mk ok\"></i>live</span> <span class=\"ds-m\"><i class=\"ds-mk warn\"></i>silent</span> <span class=\"ds-m\"><i class=\"ds-mk bad\"></i>down</span> <span class=\"ds-m\"><i class=\"ds-mk unk\"></i>unknown</span>",
+      "css": ".ds-m { display:inline-flex; align-items:center; gap:8px; margin-right:16px; color:var(--ink-2,#a3a9b1); font:13px 'Geist Variable','Geist',system-ui,sans-serif; } .ds-mk { width:8px; height:8px; display:inline-block; border-radius:50%; } .ds-mk.ok { background:var(--ok,#4cc38a); } .ds-mk.warn { box-shadow:0 0 0 2px var(--warn,#f2b33d) inset; } .ds-mk.bad { background:var(--bad,#ff5c4d); border-radius:1px; width:9px; height:3px; } .ds-mk.unk { border-radius:1px; background:repeating-linear-gradient(135deg, rgb(163 169 177 / 0.2) 0 1px, transparent 1px 4px); box-shadow:0 0 0 1px var(--ink-3,#7b828c) inset; }"
+    },
+    {
+      "name": "Seam-Tiled Panel with Header and Health Row",
+      "kind": "card",
+      "refersTo": "panel",
+      "description": "Square panels on a 1px seam gap; 36px small-caps header; 42px health row with time strip.",
+      "html": "<div class=\"ds-tile\"><section class=\"ds-panel\"><div class=\"ds-ph\"><h2>Health</h2><span>7/7 live</span></div><div class=\"ds-row\"><i class=\"ds-mk\"></i><span><b>D405 camera</b><small>hp-camera-rx</small></span><span class=\"ds-v\">4.6 fps</span></div><div class=\"ds-row ds-silent\"><i class=\"ds-mk\"></i><span><b>Detector</b><small>running but silent</small></span><span class=\"ds-v\">12 s</span></div></section><section class=\"ds-panel\"><div class=\"ds-ph\"><h2>Sequence</h2><span>idle</span></div></section></div>",
+      "css": ".ds-tile { display:grid; grid-template-columns:1fr 1fr; gap:1px; background:var(--seam,#2a2e34); } .ds-panel { background:var(--panel,#1a1d21); color:var(--ink,#e6e8eb); min-height:140px; } .ds-ph { display:flex; align-items:center; justify-content:space-between; height:36px; padding:0 16px; border-bottom:1px solid var(--seam,#2a2e34); font:11.5px 'Geist Variable','Geist',system-ui,sans-serif; color:var(--ink-3,#7b828c); letter-spacing:0.08em; text-transform:uppercase; } .ds-ph h2 { margin:0; font-size:11.5px; font-weight:650; color:var(--ink-2,#a3a9b1); } .ds-row { display:grid; grid-template-columns:10px 1fr auto; align-items:center; gap:12px; min-height:42px; padding:4px 16px; border-bottom:1px solid var(--seam,#2a2e34); font:14.5px 'Geist Variable','Geist',system-ui,sans-serif; } .ds-row:hover { background:var(--panel-2,#20242a); } .ds-row b { font:550 14.5px 'Geist Mono Variable','Geist Mono',monospace; display:block; } .ds-row small { font:11.5px 'Geist Mono Variable','Geist Mono',monospace; color:var(--ink-3,#7b828c); } .ds-v { font-size:12.5px; color:var(--ink-2,#a3a9b1); } .ds-mk { width:8px; height:8px; border-radius:50%; background:var(--ok,#4cc38a); } .ds-silent { background:repeating-linear-gradient(135deg, rgb(163 169 177 / 0.12) 0 1px, transparent 1px 6px); } .ds-silent .ds-mk { background:none; box-shadow:0 0 0 2px var(--warn,#f2b33d) inset; } .ds-silent small { color:var(--warn,#f2b33d); }"
+    },
+    {
+      "name": "Stale Feed Veil",
+      "kind": "custom",
+      "description": "Stale/frozen feed: grayscale image under a dense hatch, bordered red word, mono reason, red age.",
+      "html": "<div class=\"ds-feed\"><div class=\"ds-frame\"><div class=\"ds-veil\"><b>STALE</b><span>last frame 12 s ago</span></div></div><div class=\"ds-cap\"><span class=\"ds-age\">12 s</span><span>– fps</span></div></div>",
+      "css": ".ds-feed { width:320px; background:var(--field,#0d0f11); } .ds-frame { position:relative; height:160px; background:#3a3d40; } .ds-veil { position:absolute; inset:0; display:flex; flex-direction:column; align-items:center; justify-content:center; gap:6px; background:repeating-linear-gradient(135deg, rgb(163 169 177 / 0.2) 0 1px, transparent 1px 4px); } .ds-veil b { padding:3px 10px; border:1px solid var(--bad,#ff5c4d); border-radius:3px; color:var(--bad,#ff5c4d); font:650 13px 'Geist Variable','Geist',system-ui,sans-serif; letter-spacing:0.12em; background:#121417d0; } .ds-veil span { font:12.5px 'Geist Mono Variable','Geist Mono',monospace; color:var(--ink-2,#a3a9b1); background:#121417d0; padding:1px 6px; border-radius:3px; } .ds-cap { display:flex; gap:10px; align-items:center; height:28px; padding:0 10px; background:var(--panel,#1a1d21); font:12.5px 'Geist Mono Variable','Geist Mono',monospace; color:var(--ink-3,#7b828c); } .ds-age { font-weight:600; min-width:42px; color:var(--bad,#ff5c4d); }"
+    }
+  ],
+  "narrative": {
+    "northStar": "Graphite Console",
+    "overview": "**Creative North Star: \"Graphite Console\"**\n\nA dark-first working surface where the robot's true state reads at arm's length. Graphite panels tile edge to edge and persist; they are divided by one-pixel seams, not cards or shadows. Colour is reserved for state, so a calm screen is grey and any colour on it means something. STOP and every action that moves the robot sit apart in their own bays behind seams, against the darkest ground.\n\nThe density is a working console's: 42px rows, 36px panel headers, tabular figures everywhere. Unknown is never a colour: it is a fine diagonal hatch. The system rejects the cluttered light dashboard and the neon \"cockpit\" costume.",
+    "keyCharacteristics": [
+      "One-pixel seam tiling: the grid's gap shows the seam colour through.",
+      "Four state accents (ok, warn, bad, info), each paired with a shape and a word.",
+      "Hatch for unknown, stale, silent and link-lost.",
+      "An isolated STOP bay at top left and an isolated motion bay at bottom right.",
+      "Geist for prose, Geist Mono for ids, figures, topics and step names."
+    ],
+    "rules": [
+      {
+        "name": "The State-Only Colour Rule",
+        "body": "Accents appear only to express state or the motion affordance. Chrome, headers and idle controls stay graphite.",
+        "section": "colors"
+      },
+      {
+        "name": "The Hatch-Is-Unknown Rule",
+        "body": "Unknown, stale, silent and link-lost are a 135° hatch (`1px` ink-2 line at 12% every 6px; dense variant 20% every 4px), never a colour.",
+        "section": "colors"
+      },
+      {
+        "name": "The Never-Colour-Alone Rule",
+        "body": "Every state carries a shape (see State marks) and a word.",
+        "section": "colors"
+      },
+      {
+        "name": "The Mono-Is-Machine Rule",
+        "body": "Anything copied from or comparable to the robot (topic, node, step, plan id, numbers with units) is Geist Mono. Prose is never mono.",
+        "section": "typography"
+      },
+      {
+        "name": "The Tabular Rule",
+        "body": "`font-variant-numeric: tabular-nums` is set on body; figures never jitter as they update.",
+        "section": "typography"
+      },
+      {
+        "name": "The Meta-After Rule",
+        "body": "Headings stand first; context follows on a meta line beneath. No label line sits above a heading.",
+        "section": "typography"
+      },
+      {
+        "name": "The Seam-Not-Shadow Rule",
+        "body": "Panels never cast shadows or float; separation is a 1px seam or a tonal step.",
+        "section": "elevation"
+      }
+    ],
+    "dos": [
+      "Do tile panels with `gap: 1px` over the seam colour; keep panels square and persistent.",
+      "Do pair every state with a mark shape and a word, and use the hatch for anything unknown or stale.",
+      "Do put every robot-moving action in the motion bay, outlined green with the move icon, confirmed inline.",
+      "Do set ids, topics, step names and figures in Geist Mono with tabular numerals.",
+      "Do follow a heading with its meta line; label panels with 36px uppercase-tracked headers.",
+      "Do keep STOP alone in its bay, uncovered by drawers or overlays."
+    ],
+    "donts": [
+      "Don't use accent colour for chrome, decoration or idle controls.",
+      "Don't add drop shadows, floating cards or rounded panels. The hatch and data colour-scales are the only gradients.",
+      "Don't confirm motion in a modal, or place a motion action beside read-only controls.",
+      "Don't put a label line (kicker) above a heading.",
+      "Don't show a last-known value as if live; veil it or hatch it."
+    ]
+  }
+}

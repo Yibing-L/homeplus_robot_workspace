@@ -13,7 +13,15 @@ tasks:
 
   2:
     name: press_square_button
-    caption: square button
+    # Both buttons are silver; name the shape and place (2026-10-30).
+    caption: the bottom silver button on the coffee machine
+    # Press along a fixed direction below horizontal: at 45 deg the hand passed through
+    # the machine body ~8 cm above the button once the live map showed it (2026-11-08).
+    # 30 -> 15 -> 22 deg (operator, 2026-11-20): at 30 the camera looked steeply down and the
+    # close-ups flipped between the two buttons; at 15 it looked too flat. The standoff also
+    # moved back (move_to_button_standoff) so the button isn't hidden by the fingers.
+    target_geometry: point
+    approach_pitch_down_deg: 22
     command_name: press_square_button
     command_type: sequence
 
@@ -32,3 +40,88 @@ tasks:
   6:
     name: locate_coffee_cup
     caption: the coffee cup
+
+  # Place the held cup (after pick_up_coffee). `target_geometry:
+  # horizontal_surface` makes the detector publish the centroid of the visible
+  # masked surface at its median measured height (a point ON the tray), not a
+  # cup-style body centre.
+  7:
+    name: place_cup_on_drip_tray
+    # "coffee machine drip tray" alternated with the dispensing recess 15 cm higher
+    # (2026-10-29); naming the base kept 7/7 detections on the tray.
+    caption: the round drip tray at the base of the coffee machine
+    target_geometry: horizontal_surface
+    # Reject candidates more than surface_max_above_memory_m above the remembered
+    # tray height (~/.homeplus/surface_heights.json, written by the executor): the
+    # model alternated with a ledge ~80 px higher in the image (2026-11-08).
+    surface_height_memory: drip_tray
+    # 8 cm: from some arm poses the tray reads 4-5 cm high (hand-camera bias) and
+    # 4 cm rejected every good detection; the executor and measure_tray_ahead fix
+    # the height (2026-11-13).
+    surface_max_above_memory_m: 0.08
+    command_name: place_cup_on_drip_tray
+    command_type: sequence
+
+  # Round button on top of the coffee machine, pressed from above (task 8).
+  8:
+    name: press_round_button
+    caption: the top silver button on the coffee machine
+    # Pressed along a fixed line 60 deg below horizontal: straight down (90 deg) has
+    # no IK at this height (arm joint limits, 2026-11-08). Position from the level
+    # surface: 'point' depth read the top 9 cm high from the far view (background
+    # behind the top edge at a shallow angle).
+    target_geometry: horizontal_surface
+    approach_pitch_down_deg: 60
+    command_name: press_round_button
+    command_type: sequence
+
+  # Hand the held cup to a person (task 9; executor sequence hand_cup_to_person).
+  # The person is searched for by turning the base. `camera: d455` points this task at
+  # the side D455 (secondary_* topics in target_detection_params.yaml): with the cup
+  # in the gripper much of the hand D405's view is the cup. `target_geometry: person`
+  # = the front of the masked body (near-depth cluster median) with a level heading;
+  # depth up to max_depth_m (the D455 is good to several metres).
+  9:
+    name: hand_cup_to_person
+    caption: the person
+    camera: d455
+    target_geometry: person
+    max_depth_m: 4.0
+    target_z_range_m: [0.1, 2.0]
+    command_name: hand_cup_to_person
+    command_type: sequence
+
+  # The person's open hand, found close up by the hand camera once the robot faces
+  # them (step find_hand of hand_cup_to_person). Depth at the model's point (the
+  # palm surface), level heading. Points on or around the held cup / the gripper
+  # (held_object_frame volume) are rejected: "open hand" can land on the gripper.
+  10:
+    name: locate_person_hand
+    caption: the person's open hand, palm up
+    target_geometry: point
+    approach_pitch_down_deg: 0
+    reject_held_object: true
+    target_z_range_m: [0.5, 1.5]
+    publish_task_pose: true
+
+  # Pickup variant: pull the cup back before lifting (executor sequence
+  # pick_up_coffee_retract_first). Same target as task 1.
+  11:
+    name: pick_up_red_cup_retract_first
+    caption: red cup
+    command_name: pick_up_coffee_retract_first
+    command_type: sequence
+
+  # The person, seen by the FRONT hand camera (D405). hand_cup_to_person scans with this
+  # and task 9 (side D455), then locks onto the person with it before the final approach
+  # (the side camera loses them once the base turns to face them). The held cup and
+  # gripper are excluded.
+  12:
+    name: locate_person_front
+    caption: the person
+    target_geometry: person
+    max_depth_m: 4.0
+    target_z_range_m: [0.1, 2.0]
+    reject_held_object: true
+    publish_task_pose: true
+

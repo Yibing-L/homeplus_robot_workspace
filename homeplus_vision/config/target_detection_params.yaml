@@ -6,17 +6,30 @@ molmopoint:
     model_revision: "188130f961c8e0888a34e11121a1423c461a01ba"
     quantization: "4bit"
     device: "auto"
-    model_cache_dir: ".models/huggingface"
+    # Linux disk, not /mnt/c: reading the 33 GB weights over the WSL Windows mount
+    # took ~2.5 min per vision start (2026-11-08). Copy with rsync from .models/.
+    model_cache_dir: "~/.cache/homeplus_models/huggingface"
     # Runtime is network-independent after setup_molmopoint.sh downloads the
     # pinned snapshot.
     local_files_only: true
     max_new_tokens: 64
+    # Non-empty: skip local MolmoPoint/SAM2 loading and call the GPU server
+    # (parallel_prompts/CONTRACT.md), e.g. "http://192.168.64.1:8765".
+    remote_inference_url: ""
+    remote_timeout_sec: 30.0
     max_points: 1
     point_selection: "closest_to_center"
     image_topic: "/cameras/d405/color/image_raw"
     depth_topic: "/cameras/d405/aligned_depth_to_color/image_raw"
     camera_info_topic: "/cameras/d405/color/camera_info"
     camera_frame: "d405_color_optical_frame"
+    # Second RGB-D input for tasks with `camera: d455` in task_registry.yaml (task 9,
+    # the person in hand_cup_to_person). Subscribed only when such a task exists.
+    secondary_camera_name: "d455"
+    secondary_image_topic: "/cameras/d455/color/image_raw"
+    secondary_depth_topic: "/cameras/d455/aligned_depth_to_color/image_raw"
+    secondary_camera_info_topic: "/cameras/d455/color/camera_info"
+    secondary_camera_frame: ""  # "" = CameraInfo frame (d455_color_optical_frame)
     world_frame: "world"
     inference_rate: 0.5
     # Median valid depth in an 11x11 neighborhood; robust to D405 depth holes.
@@ -31,6 +44,20 @@ molmopoint:
     cup_collision_height_m: 0.15
     cup_min_radius_m: 0.025
     cup_max_radius_m: 0.065
+    # Grasp height = middle of the segmented cup's vertical extent instead of
+    # the near-depth cluster, which is the rim in top-down hand views.
+    cup_height_from_mask_extent: true
+    # Never grasp so low that the palm (gripper_palm_below_tcp_m under the TCP)
+    # comes within this distance of the table: on a 12 cm cup mid-height leaves
+    # ~1.3 cm, less than one 2 cm OctoMap cell plus depth noise.
+    cup_min_palm_clearance_m: 0.03
+    # Never grasp higher than this below the measured rim (fingers on the body).
+    cup_grasp_below_rim_m: 0.03
+    # Table anchor off: the fitted table height is not reliable yet (2026-10-30).
+    cup_bottom_from_table_max_diff_m: 0.0
+    gripper_palm_below_tcp_m: 0.047  # palm contacts sat 4.7 cm under the target
+    # Measure the grasp approach from the gripper, not the side-mounted camera.
+    approach_reference_frame: ""  # set to "grasp_tcp" to try; untested on hardware
     # The D405 is hand-mounted. Do not spend CPU on images acquired while the
     # arm is moving, and never publish an in-flight frame after Arduino DONE.
     pause_during_motion: true
@@ -42,3 +69,8 @@ molmopoint:
     pose_topic: "/molmopoint_pose_world"
     mask_topic: "/object_mask"
     mask_center_topic: "/molmopoint/point"
+    # Per-cycle JSON: stage reached and why the cycle ended.
+    diagnostics_topic: "/molmopoint/diagnostics"
+    # Non-empty: save each inferred cycle's RGB-D/K/TF as .npz for
+    # tests/detector_replay.py.
+    debug_dump_dir: ""

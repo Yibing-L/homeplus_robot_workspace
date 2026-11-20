@@ -2,6 +2,11 @@ commands:
   home:
     type: joint_state
     group_name: base_arm
+    # Same speed as arm_upright: at full speed, raising the extended arm made the
+    # shoulder lag past the firmware's 3 deg tracking limit (TRACKING_ERROR
+    # shoulder -3.1 deg, 2026-10-30 Return to start).
+    velocity_scaling: 0.3
+    acceleration_scaling: 0.3
     joints:
       base_x: 0.0
       base_y: 0.0
@@ -10,6 +15,58 @@ commands:
       joint_elbow: 0.0
       joint_wrist: 0.0
       joint_hand: 0.0
+
+  # Recovery only, not for routine use: raise the arm to upright without moving
+  # the base or resetting the Arduino (a reset drops the arm while the firmware
+  # boots, and home would also drive the base back to odometry zero). Slow and
+  # endpoint-checked so the shoulder does not trip the 3 deg tracking limit.
+  arm_upright:
+    type: joint_state
+    group_name: arm
+    endpoint_profile: transit
+    velocity_scaling: 0.3
+    acceleration_scaling: 0.3
+    require_trajectory_approval: true
+    joints:
+      joint_shoulder: 0.0
+      joint_elbow: 0.0
+      joint_wrist: 0.0
+      joint_hand: 0.0
+
+  # Hold the cup where pick_up_coffee's retreat_with_object leaves it (joint
+  # values from that run, 2026-10-29): the hand camera sees the drip tray past
+  # the cup there, unlike the carry pose. Start place_cup_on_drip_tray from here.
+  cup_view_pose:
+    type: joint_state
+    group_name: arm
+    endpoint_profile: transit
+    velocity_scaling: 0.3
+    acceleration_scaling: 0.3
+    require_trajectory_approval: true
+    joints:
+      joint_shoulder: 0.9770
+      joint_elbow: 0.2542
+      joint_wrist: 0.0
+      joint_hand: 1.1208
+
+  # Drive straight back 20 cm from wherever the base stands (measured pose), arm
+  # and held cup unchanged, so the hand camera gets a wider view of the scene.
+  # Planned on the base group against the OctoMap with the cup attached.
+  back_up:
+    type: joint_state
+    # Backing away is how to recover when the map disagrees with the held cup or
+    # hand at the current pose (2026-10-30); only those may touch map voxels.
+    allow_held_cup_map_contact: true
+    group_name: base
+    base_relative: true
+    endpoint_profile: transit
+    velocity_scaling: 0.3
+    acceleration_scaling: 0.3
+    require_trajectory_approval: true
+    joints:
+      base_x: -0.20
+      base_y: 0.0
+      base_theta: 0.0
 
   reach_forward:
     type: pose
@@ -46,20 +103,24 @@ commands:
   gripper_close:
     type: gripper
     value: 75.0
+    attach_nominal_cup: true  # a manual close = holding the cup (gripper_open detaches it)
 
   press_square_button:
     type: sequence
     task_id: 2
     detection_topic: /molmopoint/task_2/pose
     detection_timeout_sec: 30.0
-    detection_min_stable_samples: 1
+    # 3 agreeing samples: single readings drifted toward the top button and the
+    # press hit it (2026-11-13).
+    detection_min_stable_samples: 3
+    detection_stability_tolerance_m: 0.02
     max_replanning_attempts: 5
     steps:
       # At 70 degrees the gripper is mostly closed, leaving one forward contact
       # point available for pressing instead of an open grasp.
       - name: set_single_contact_point
         type: gripper
-        value: 70.0
+        value: 75.0  # fully closed (operator, 2026-10-30)
         max_attempts: 2
         settle_sec: 1.0
 
@@ -84,6 +145,8 @@ commands:
       # short final approach. press_tcp is the selected fingertip at gripper 70
       # and its +X points forward at world RPY 0/0/0.
       - name: move_to_button_standoff
+        # The closed fingers press into the appliance face; only they may touch map voxels.
+        allow_finger_map_contact: true
         endpoint_profile: transit
         type: pose
         mobile_standoff: true
@@ -95,9 +158,12 @@ commands:
         target: detected
         orientation_from_detection: true
         offset_frame: target
-        offset_x: -0.15
+        # 22 cm back (was 15; operator, 2026-11-20): too close, the button sat low in the
+        # hand camera's view behind the fingers (the camera's line of sight is 6.7 cm above
+        # the press line, so the nearer the gripper, the lower the button appears).
+        offset_x: -0.22
         offset_z: 0.0
-        gripper_value: 70.0
+        gripper_value: 75.0
         rpy_deg: [0.0, 0.0, 0.0]
         position_tolerance_m: 0.02
         use_orientation_constraint: true
@@ -113,15 +179,28 @@ commands:
         num_planning_attempts: 5
 
       - name: refine_button_target
+        # Re-place the base if the close-up is off the arm's plane (2026-10-30: ~4 cm
+        # off, align had no IK at all).
+        max_arm_plane_error_m: 0.02
+        redo_from_step: move_to_button_standoff
+        max_redos: 1
         type: detect
         detection_timeout_sec: 30.0
         # The press goal is only +/-1 cm, so two samples allowed to disagree
         # by nearly 9 cm are not a meaningful stable estimate for this task.
-        detection_min_stable_samples: 1
+        detection_min_stable_samples: 3
+        # The close-up reads 4-5 cm below the far view (camera bias; it is the better
+        # one); the top button is 15+ cm above, so >8 cm means it switched buttons.
+        detection_max_refresh_shift_m: 0.08
         detection_stability_tolerance_m: 0.02
         preserve_reference_z: false
 
       - name: align_refined_button
+        acceleration_scaling: 0.3  # elbow TRACKING_ERROR at 0.5 on align_refined_button (2026-11-08)
+        velocity_scaling: 0.3  # elbow TRACKING_ERROR at 0.5 on align_refined_button (2026-11-08)
+        # The closed fingers press into the appliance face; only they may touch map voxels.
+        allow_finger_map_contact: true
+        heading_from_base: true  # planar arm: tool yaw = base heading
         type: pose
         group_name: press_arm
         link_name: press_tcp
@@ -130,7 +209,7 @@ commands:
         orientation_from_detection: true
         offset_frame: target
         offset_x: -0.15
-        gripper_value: 70.0
+        gripper_value: 75.0
         position_tolerance_m: 0.005
         orientation_tolerance_rad: 0.04
         use_orientation_constraint: true
@@ -139,6 +218,12 @@ commands:
         max_replanning_attempts: 2
 
       - name: press_button
+        acceleration_scaling: 0.3  # elbow TRACKING_ERROR at 0.5 on align_refined_button (2026-11-08)
+        velocity_scaling: 0.3  # elbow TRACKING_ERROR at 0.5 on align_refined_button (2026-11-08)
+        # The closed fingers press into the appliance face; only they may touch map voxels.
+        allow_finger_map_contact: true
+        contact_ends_step: true  # guarded press: a stall here = contact
+        heading_from_base: true  # planar arm: tool yaw = base heading
         type: pose
         clear_octomap_before_plan: false
         cartesian: true
@@ -149,9 +234,9 @@ commands:
         target: detected
         orientation_from_detection: true
         offset_frame: target
-        offset_x: 0.01
+        offset_x: 0.03  # 3 cm past the surface: the button is firm; 1 cm reached it without a click (2026-11-08)
         offset_z: 0
-        gripper_value: 70.0
+        gripper_value: 75.0
         rpy_deg: [0.0, 0.0, 0.0]
         position_tolerance_m: 0.01
         use_orientation_constraint: true
@@ -165,6 +250,14 @@ commands:
         post_delay_sec: 1.0
 
       - name: retreat_from_button
+        # Backing out from contact: the hand starts against the face it just pressed,
+        # whose voxels block every plan otherwise (2026-11-15). Straight line back;
+        # base, arm and table box stay checked.
+        allow_held_cup_map_contact: true
+        acceleration_scaling: 0.15  # shoulder TRACKING_ERROR at 0.3 lifting out of the press (2026-11-08)
+        velocity_scaling: 0.15  # shoulder TRACKING_ERROR at 0.3 lifting out of the press (2026-11-08)
+        # The closed fingers press into the appliance face; only they may touch map voxels.
+        allow_finger_map_contact: true
         type: pose
         clear_octomap_before_plan: false
         cartesian: true
@@ -177,7 +270,7 @@ commands:
         offset_frame: target
         offset_x: -0.18
         offset_z: 0.0
-        gripper_value: 70.0
+        gripper_value: 75.0
         rpy_deg: [0.0, 0.0, 0.0]
         position_tolerance_m: 0.02
         use_orientation_constraint: true
@@ -187,12 +280,178 @@ commands:
         allowed_planning_time: 10.0
         num_planning_attempts: 5
 
+  # Round button on top of the machine (task 8): from above, press_tcp pointing
+  # down (+X down = pitch +90 deg), look down from 12 cm, press 0.8 cm, back up,
+  # retract. First runs: approve the approach and the press.
+  press_round_button:
+    type: sequence
+    task_id: 8
+    detection_topic: /molmopoint/task_8/pose
+    detection_timeout_sec: 30.0
+    detection_min_stable_samples: 3
+    detection_stability_tolerance_m: 0.02
+    max_replanning_attempts: 5
+    steps:
+      - name: set_single_contact_point
+        type: gripper
+        value: 75.0  # fully closed (operator, 2026-10-30)
+        max_attempts: 2
+        settle_sec: 1.0
+
+      - name: move_above_round_button
+        # The closed fingers press into the appliance face; only they may touch map voxels.
+        allow_finger_map_contact: true
+        endpoint_profile: transit
+        type: pose
+        mobile_standoff: true
+        lookahead_offsets: [[0.15, 0.0, 0.0]]
+        require_trajectory_approval: true
+        velocity_scaling: 0.5
+        acceleration_scaling: 0.5
+        frame_id: world
+        group_name: base_press_arm
+        link_name: press_tcp
+        target: detected
+        orientation_from_detection: true
+        offset_frame: target
+        offset_x: -0.12  # along the 60 deg press line (2026-11-08)
+        gripper_value: 75.0
+        position_tolerance_m: 0.02
+        use_orientation_constraint: true
+        orientation_tolerance_rad: 0.08
+        safe_z_candidate_offsets_m: [0.0]
+        max_replanning_attempts: 3
+        base_goal_tcp_x_min_m: 0.35
+        base_goal_tcp_x_max_m: 0.75
+        base_goal_tcp_y_max_m: 0.20
+        max_base_goal_rotation_rad: 0.20
+        planner_id: RRTConnectkConfigDefault
+        allowed_planning_time: 10.0
+        num_planning_attempts: 5
+
+      - name: refine_round_button
+        type: detect
+        detection_timeout_sec: 30.0
+        detection_min_stable_samples: 2
+        detection_stability_tolerance_m: 0.02
+        preserve_reference_z: false
+
+      - name: align_above_round_button
+        acceleration_scaling: 0.3  # elbow TRACKING_ERROR at 0.5 on align_refined_button (2026-11-08)
+        velocity_scaling: 0.3  # elbow TRACKING_ERROR at 0.5 on align_refined_button (2026-11-08)
+        # The closed fingers press into the appliance face; only they may touch map voxels.
+        allow_finger_map_contact: true
+        heading_from_base: true
+        type: pose
+        group_name: press_arm
+        link_name: press_tcp
+        frame_id: world
+        target: detected
+        orientation_from_detection: true
+        offset_frame: target
+        offset_x: -0.12  # along the 60 deg press line (2026-11-08)
+        gripper_value: 75.0
+        position_tolerance_m: 0.005
+        orientation_tolerance_rad: 0.05
+        use_orientation_constraint: true
+        require_trajectory_approval: false
+        clear_octomap_before_plan: true
+        max_replanning_attempts: 2
+
+      - name: press_round_button
+        # The closed fingers press into the appliance face; only they may touch map voxels.
+        allow_finger_map_contact: true
+        contact_ends_step: true  # guarded press: a stall here = contact
+        heading_from_base: true
+        type: pose
+        clear_octomap_before_plan: false
+        cartesian: true
+        require_trajectory_approval: true
+        velocity_scaling: 0.3  # elbow TRACKING_ERROR at 0.5 on align_refined_button (2026-11-08)
+        acceleration_scaling: 0.3  # elbow TRACKING_ERROR at 0.5 on align_refined_button (2026-11-08)
+        frame_id: world
+        group_name: press_arm
+        link_name: press_tcp
+        target: detected
+        orientation_from_detection: true
+        offset_frame: target
+        offset_x: 0.05  # along the 60 deg press line; 3 -> 5 cm past the surface: didn't go in far enough (operator, 2026-11-20). Guarded: a stall ends it.
+        gripper_value: 75.0
+        position_tolerance_m: 0.01
+        use_orientation_constraint: true
+        orientation_tolerance_rad: 0.08
+        maintain_orientation_during_path: true
+        safe_z_candidate_offsets_m: [0.0]
+        max_replanning_attempts: 3
+        post_delay_sec: 1.0
+
+      - name: retreat_up_from_round_button
+        # Backing out from contact: the hand starts against the face it just pressed,
+        # whose voxels block every plan otherwise (2026-11-15). Straight line back;
+        # base, arm and table box stay checked.
+        allow_held_cup_map_contact: true
+        acceleration_scaling: 0.15  # shoulder TRACKING_ERROR at 0.3 lifting out of the press (2026-11-08)
+        velocity_scaling: 0.15  # shoulder TRACKING_ERROR at 0.3 lifting out of the press (2026-11-08)
+        # The closed fingers press into the appliance face; only they may touch map voxels.
+        allow_finger_map_contact: true
+        heading_from_base: true
+        type: pose
+        clear_octomap_before_plan: false
+        cartesian: true
+        require_trajectory_approval: false
+        frame_id: world
+        group_name: press_arm
+        link_name: press_tcp
+        target: detected
+        orientation_from_detection: true
+        offset_frame: target
+        offset_x: -0.12  # along the 60 deg press line (2026-11-08)
+        gripper_value: 75.0
+        position_tolerance_m: 0.01
+        use_orientation_constraint: true
+        orientation_tolerance_rad: 0.08
+        maintain_orientation_during_path: true
+        safe_z_candidate_offsets_m: [0.0]
+        max_replanning_attempts: 3
+
+      - name: retract_arm_after_round_button
+        endpoint_profile: transit
+        type: joint_state
+        require_trajectory_approval: false
+        velocity_scaling: 0.3
+        acceleration_scaling: 0.3
+        group_name: arm
+        joints:
+          joint_shoulder: 0.0
+          joint_elbow: 0.0
+          joint_wrist: 0.0
+          joint_hand: 0.0
+
+      # Back away from the machine so the next run (pickup) starts clear of it
+      # (operator, 2026-11-15). Relative to the measured base; collision-checked.
+      - name: back_away_after_round_button
+        type: joint_state
+        group_name: base
+        base_relative: true
+        endpoint_profile: transit
+        velocity_scaling: 0.3
+        acceleration_scaling: 0.3
+        require_trajectory_approval: false
+        joints:
+          base_x: -0.30
+          base_y: 0.0
+          base_theta: 0.0
+
   pick_up_coffee:
     type: sequence
     task_id: 1
     detection_topic: /molmopoint/task_1/pose
     detection_timeout_sec: 30.0
-    detection_min_stable_samples: 1
+    # Plan only from a consistent view: three samples whose pairwise spread is
+    # within 2 cm (the lateral budget, see refine_target). Outliers delay
+    # acceptance; they are never averaged in.
+    detection_min_stable_samples: 3
+    detection_stability_tolerance_m: 0.02
     max_replanning_attempts: 5
     steps:
       - name: open_gripper
@@ -201,21 +460,37 @@ commands:
 
       # First plan to a standoff pose. This gives MoveIt room to avoid the
       # scene instead of forcing one long motion directly into the object.
-      - name: retract_arm_for_pickup
-        endpoint_profile: transit
-        type: joint_state
-        group_name: arm
-        require_trajectory_approval: false
-        joints:
-          joint_shoulder: 0.0
-          joint_elbow: 0.0
-          joint_wrist: 0.0
-          joint_hand: 0.0
-
       - name: move_to_pregrasp
+        # Rebuild the map from the current view before planning: stale voxels where
+        # the cup stood on an earlier attempt blocked the approach (2026-11-08). This
+        # was off because the clear never got a fresh cloud; that was the obstacle
+        # node's TF bug, fixed 2026-11-08. A failed wait retries on the kept map.
+        clear_octomap_before_plan: true
         endpoint_profile: transit
         type: pose
         mobile_standoff: true
+        # Place the base from geometry instead of searching base_arm IK: the
+        # arm only moves in one vertical plane beside base_link, so the base
+        # heading points that plane at the cup and the reach is the centre of
+        # the interval from which the arm alone, level, covers this pre-grasp
+        # and the later fixed-base steps (grasp, lift, retreat). The pose's
+        # heading comes from this placement, not from the camera ray.
+        base_placement:
+          # Cup is round: other approach headings are fallbacks if the direct
+          # one collides.
+          heading_offsets_deg: [0.0, 20.0, -20.0]
+          # Base settles within 5 mm (transit profile) but far vs close-up
+          # detections differ by several cm: keep 3 cm of reach either way.
+          min_reach_margin_m: 0.03
+          joint_limit_margin_rad: 0.05
+          # Shortest reach with that margin: pre-grasp TCP ~0.66 m ahead at
+          # cup height ~0.78 m (centre would be ~0.76 m), so the arm lifts the
+          # cup less extended. refine_target re-places the base if the
+          # close-up cup is then out of arm-only reach.
+          reach_preference: near
+          # One combined base motion, as before. turn_then_drive exists but is
+          # unused until wheel slip has been measured on hardware.
+          base_motion: combined
         # Check the approach in the pre-grasp scene. Lift/retreat are checked
         # after closure with the cup attached, not as a static world obstacle.
         lookahead_offsets: [[0.19, 0.0, 0.0]]
@@ -234,12 +509,6 @@ commands:
         position_tolerance_z_m: 0.005
         use_orientation_constraint: true
         orientation_tolerance_rad: 0.05
-        safe_z_candidate_offsets_m: [0.0]
-        max_replanning_attempts: 3
-        base_goal_tcp_x_min_m: 0.50
-        base_goal_tcp_x_max_m: 0.70
-        base_goal_tcp_y_max_m: 0.20
-        max_base_goal_rotation_rad: 0.20
         planner_id: RRTConnectkConfigDefault
         allowed_planning_time: 5.0
         num_planning_attempts: 3
@@ -249,18 +518,31 @@ commands:
         # The hand-mounted view can be temporarily occluded immediately after
         # motion. Wait for a stable cluster instead of accepting the first
         # low-confidence pose from a different object/background surface.
-        # MolmoPoint runs asynchronously at the configured inference rate, and
-        # Wait for one fresh observation with usable depth.
+        # MolmoPoint runs asynchronously at the configured inference rate
+        # (0.5 Hz), so three samples take about 6 s of the 30 s budget.
         detection_timeout_sec: 30.0
-        detection_min_stable_samples: 1
-        # The initial distant view can report the table/bottom of the cup. Use
-        # the new segmented-depth estimate from the close view for Z instead
-        # of preserving that stale, often below-table initial measurement.
+        detection_min_stable_samples: 3
+        # Take Z from the close view: at ~1 m the mask misses the cup's lower
+        # part and the distant height reads several cm off (0.811 vs 0.755 on
+        # 2026-10-18, grasping at the rim). Close up the D405 is in range.
         preserve_reference_z: false
+        # Steps 5-6 keep the base locked and cannot move the gripper sideways.
+        # Closing the finger meshes on an 8 cm cup held fixed, both fingers
+        # still touch it on opposite sides of its centre before 75 deg for
+        # offsets up to 25 mm (tests/test_base_placement.py); 20 mm leaves
+        # 5 mm for detection noise. Further off, or if the remaining arm-only
+        # waypoints are out of reach from here, back off and re-place the
+        # base from this close-up detection instead.
+        max_arm_plane_error_m: 0.02
+        redo_from_step: move_to_pregrasp  # no retract (operator, 2026-10-30)
+        max_redos: 1
 
       - name: align_refined_grasp
         type: pose
         group_name: arm
+        # Gripper heading = measured base heading (the arm cannot yaw); the
+        # refined target is taken in the arm plane (checked by refine_target).
+        heading_from_base: true
         link_name: grasp_tcp
         frame_id: world
         target: detected
@@ -279,9 +561,13 @@ commands:
         type: pose
         clear_octomap_before_plan: false
         cartesian: true
+        # Full joint_limits.yaml speed, matching the smooth OMPL move_to_pregrasp (2026-11-08).
+        velocity_scaling: 1.0
+        acceleration_scaling: 1.0
         require_trajectory_approval: false
         frame_id: world
         group_name: arm
+        heading_from_base: true
         target: detected
         orientation_from_detection: true
         offset_frame: target
@@ -299,7 +585,7 @@ commands:
         planner_id: RRTConnectkConfigDefault
         allowed_planning_time: 5.0
         num_planning_attempts: 3
-        post_delay_sec: 3.0
+        post_delay_sec: 0.5
 
       - name: close_gripper_at_target
         type: gripper
@@ -308,12 +594,17 @@ commands:
         # Retry only if no DONE acknowledgement arrives. A successful close is
         # not repeated unnecessarily.
         max_attempts: 2
-        settle_sec: 2.0
+        settle_sec: 1.0
 
       - name: lift
         type: pose
-        clear_octomap_before_plan: false
+        # Rebuild the map with the cup attached: MoveIt's sensor filter drops points
+        # inside attached objects, but voxels mapped before the grasp (the cup's own
+        # unmasked surface) stay and collide with the held cup (2026-10-29).
+        clear_octomap_before_plan: true
         cartesian: true
+        velocity_scaling: 0.3  # carries the cup; 0.5 tripped shoulder TRACKING_ERROR (2026-11-08)
+        acceleration_scaling: 0.3  # carries the cup; 0.5 tripped shoulder TRACKING_ERROR (2026-11-08)
         require_trajectory_approval: false
         frame_id: world
         group_name: arm
@@ -335,8 +626,13 @@ commands:
 
       - name: retreat_with_object
         type: pose
-        clear_octomap_before_plan: false
+        # Rebuild the map with the cup attached: MoveIt's sensor filter drops points
+        # inside attached objects, but voxels mapped before the grasp (the cup's own
+        # unmasked surface) stay and collide with the held cup (2026-10-29).
+        clear_octomap_before_plan: true
         cartesian: true
+        velocity_scaling: 0.3  # carries the cup; 0.5 tripped shoulder TRACKING_ERROR (2026-11-08)
+        acceleration_scaling: 0.3  # carries the cup; 0.5 tripped shoulder TRACKING_ERROR (2026-11-08)
         require_trajectory_approval: false
         frame_id: world
         group_name: arm
@@ -355,3 +651,711 @@ commands:
         planner_id: RRTConnectkConfigDefault
         allowed_planning_time: 10.0
         num_planning_attempts: 5
+
+  # Same as pick_up_coffee up to the grasp, then pull the cup in BEFORE lifting
+  # (operator, 2026-11-15): lifting with the arm stretched out is the shoulder's
+  # heaviest load and kept tripping TRACKING_ERROR. Back 15 cm with 2 cm clearance
+  # (no dragging on the table), then up 8 cm close to the body. pick_up_coffee is
+  # unchanged. Detector task 11 = same red cup prompt as task 1.
+  pick_up_coffee_retract_first:
+    type: sequence
+    task_id: 11
+    detection_topic: /molmopoint/task_11/pose
+    detection_timeout_sec: 30.0
+    # Plan only from a consistent view: three samples whose pairwise spread is
+    # within 2 cm (the lateral budget, see refine_target). Outliers delay
+    # acceptance; they are never averaged in.
+    detection_min_stable_samples: 3
+    detection_stability_tolerance_m: 0.02
+    max_replanning_attempts: 5
+    steps:
+      - name: open_gripper
+        type: gripper
+        value: 0.0
+
+      # First plan to a standoff pose. This gives MoveIt room to avoid the
+      # scene instead of forcing one long motion directly into the object.
+      - name: move_to_pregrasp
+        # Rebuild the map from the current view before planning: stale voxels where
+        # the cup stood on an earlier attempt blocked the approach (2026-11-08). This
+        # was off because the clear never got a fresh cloud; that was the obstacle
+        # node's TF bug, fixed 2026-11-08. A failed wait retries on the kept map.
+        clear_octomap_before_plan: true
+        endpoint_profile: transit
+        type: pose
+        mobile_standoff: true
+        # Place the base from geometry instead of searching base_arm IK: the
+        # arm only moves in one vertical plane beside base_link, so the base
+        # heading points that plane at the cup and the reach is the centre of
+        # the interval from which the arm alone, level, covers this pre-grasp
+        # and the later fixed-base steps (grasp, lift, retreat). The pose's
+        # heading comes from this placement, not from the camera ray.
+        base_placement:
+          # Cup is round: other approach headings are fallbacks if the direct
+          # one collides.
+          heading_offsets_deg: [0.0, 20.0, -20.0]
+          # Base settles within 5 mm (transit profile) but far vs close-up
+          # detections differ by several cm: keep 3 cm of reach either way.
+          min_reach_margin_m: 0.03
+          joint_limit_margin_rad: 0.05
+          # Shortest reach with that margin: pre-grasp TCP ~0.66 m ahead at
+          # cup height ~0.78 m (centre would be ~0.76 m), so the arm lifts the
+          # cup less extended. refine_target re-places the base if the
+          # close-up cup is then out of arm-only reach.
+          reach_preference: near
+          # One combined base motion, as before. turn_then_drive exists but is
+          # unused until wheel slip has been measured on hardware.
+          base_motion: combined
+        # Check the approach in the pre-grasp scene. Lift/retreat are checked
+        # after closure with the cup attached, not as a static world obstacle.
+        lookahead_offsets: [[0.19, 0.0, 0.0]]
+        require_trajectory_approval: false
+        frame_id: world
+        group_name: base_arm
+        target: detected
+        orientation_from_detection: true
+        offset_frame: target
+        offset_x: -0.20
+        offset_z: 0.0
+        gripper_value: 0.0
+        rpy_deg: [0.0, 0.0, 0.0]
+        position_tolerance_m: 0.03
+        position_tolerance_xy_m: 0.01
+        position_tolerance_z_m: 0.005
+        use_orientation_constraint: true
+        orientation_tolerance_rad: 0.05
+        planner_id: RRTConnectkConfigDefault
+        allowed_planning_time: 5.0
+        num_planning_attempts: 3
+
+      - name: refine_target
+        type: detect
+        # The hand-mounted view can be temporarily occluded immediately after
+        # motion. Wait for a stable cluster instead of accepting the first
+        # low-confidence pose from a different object/background surface.
+        # MolmoPoint runs asynchronously at the configured inference rate
+        # (0.5 Hz), so three samples take about 6 s of the 30 s budget.
+        detection_timeout_sec: 30.0
+        detection_min_stable_samples: 3
+        # Take Z from the close view: at ~1 m the mask misses the cup's lower
+        # part and the distant height reads several cm off (0.811 vs 0.755 on
+        # 2026-10-18, grasping at the rim). Close up the D405 is in range.
+        preserve_reference_z: false
+        # Steps 5-6 keep the base locked and cannot move the gripper sideways.
+        # Closing the finger meshes on an 8 cm cup held fixed, both fingers
+        # still touch it on opposite sides of its centre before 75 deg for
+        # offsets up to 25 mm (tests/test_base_placement.py); 20 mm leaves
+        # 5 mm for detection noise. Further off, or if the remaining arm-only
+        # waypoints are out of reach from here, back off and re-place the
+        # base from this close-up detection instead.
+        max_arm_plane_error_m: 0.02
+        redo_from_step: move_to_pregrasp  # no retract (operator, 2026-10-30)
+        max_redos: 1
+
+      - name: align_refined_grasp
+        type: pose
+        group_name: arm
+        # Gripper heading = measured base heading (the arm cannot yaw); the
+        # refined target is taken in the arm plane (checked by refine_target).
+        heading_from_base: true
+        link_name: grasp_tcp
+        frame_id: world
+        target: detected
+        orientation_from_detection: true
+        offset_frame: target
+        offset_x: -0.20
+        gripper_value: 0.0
+        position_tolerance_m: 0.005
+        orientation_tolerance_rad: 0.04
+        use_orientation_constraint: true
+        require_trajectory_approval: false
+        clear_octomap_before_plan: true
+        max_replanning_attempts: 2
+
+      - name: move_to_grasp
+        type: pose
+        clear_octomap_before_plan: false
+        cartesian: true
+        # Full joint_limits.yaml speed, matching the smooth OMPL move_to_pregrasp (2026-11-08).
+        velocity_scaling: 1.0
+        acceleration_scaling: 1.0
+        require_trajectory_approval: false
+        frame_id: world
+        group_name: arm
+        heading_from_base: true
+        target: detected
+        orientation_from_detection: true
+        offset_frame: target
+        offset_x: -0.01
+        offset_z: 0.0
+        gripper_value: 0.0
+        rpy_deg: [0.0, 0.0, 0.0]
+        position_tolerance_m: 0.02
+        position_tolerance_z_m: 0.005
+        use_orientation_constraint: true
+        orientation_tolerance_rad: 0.05
+        maintain_orientation_during_path: true
+        safe_z_candidate_offsets_m: [0.0]
+        max_replanning_attempts: 3
+        planner_id: RRTConnectkConfigDefault
+        allowed_planning_time: 5.0
+        num_planning_attempts: 3
+        post_delay_sec: 0.5
+
+      - name: close_gripper_at_target
+        type: gripper
+        attach_cup: true
+        value: 75.0
+        # Retry only if no DONE acknowledgement arrives. A successful close is
+        # not repeated unnecessarily.
+        max_attempts: 2
+        settle_sec: 1.0
+
+      - name: retreat_low_with_object
+        type: pose
+        # Rebuild the map with the cup attached: MoveIt's sensor filter drops points
+        # inside attached objects, but voxels mapped before the grasp (the cup's own
+        # unmasked surface) stay and collide with the held cup (2026-10-29).
+        clear_octomap_before_plan: true
+        cartesian: true
+        velocity_scaling: 0.3  # carries the cup; 0.5 tripped shoulder TRACKING_ERROR (2026-11-08)
+        acceleration_scaling: 0.3  # carries the cup; 0.5 tripped shoulder TRACKING_ERROR (2026-11-08)
+        require_trajectory_approval: false
+        frame_id: world
+        group_name: arm
+        target: previous_pose
+        orientation_from_detection: true
+        offset_frame: target
+        offset_x: -0.15
+        offset_z: 0.02
+        gripper_value: 75.0
+        rpy_deg: [0.0, 0.0, 0.0]
+        position_tolerance_m: 0.03
+        position_tolerance_z_m: 0.005
+        use_orientation_constraint: true
+        orientation_tolerance_rad: 0.05
+        maintain_orientation_during_path: true
+        planner_id: RRTConnectkConfigDefault
+        allowed_planning_time: 10.0
+        num_planning_attempts: 5
+
+      - name: lift_after_retreat
+        type: pose
+        # Rebuild the map with the cup attached: MoveIt's sensor filter drops points
+        # inside attached objects, but voxels mapped before the grasp (the cup's own
+        # unmasked surface) stay and collide with the held cup (2026-10-29).
+        clear_octomap_before_plan: true
+        cartesian: true
+        velocity_scaling: 0.3  # carries the cup; 0.5 tripped shoulder TRACKING_ERROR (2026-11-08)
+        acceleration_scaling: 0.3  # carries the cup; 0.5 tripped shoulder TRACKING_ERROR (2026-11-08)
+        require_trajectory_approval: false
+        frame_id: world
+        group_name: arm
+        target: previous_pose
+        orientation_from_detection: true
+        offset_frame: target
+        offset_x: 0.0
+        offset_z: 0.08
+        gripper_value: 75.0
+        rpy_deg: [0.0, 0.0, 0.0]
+        position_tolerance_m: 0.02
+        position_tolerance_z_m: 0.005
+        use_orientation_constraint: true
+        orientation_tolerance_rad: 0.05
+        maintain_orientation_during_path: true
+        planner_id: RRTConnectkConfigDefault
+        allowed_planning_time: 10.0
+        num_planning_attempts: 5
+
+  # Put the cup held after pick_up_coffee on a coffee machine's drip tray
+  # (detector task 7: the centroid of the visible tray surface, at its
+  # measured height). Refused unless detected_cup is attached.
+  place_cup_on_drip_tray:
+    type: sequence
+    task_id: 7
+    # The tray height is fixed above the floor (world z), so it survives set-start.
+    # A reading more than 2 cm off the remembered height is the hand camera's
+    # pose-dependent error; keep live x/y, use the remembered height.
+    # Prior = median of 11 consistent readings on 2026-10-30 (0.780-0.791).
+    surface_height_memory: drip_tray
+    surface_height_prior_m: 0.787
+    surface_height_tolerance_m: 0.02
+    detection_topic: /molmopoint/task_7/pose
+    detection_timeout_sec: 30.0
+    detection_min_stable_samples: 3
+    detection_stability_tolerance_m: 0.02
+    max_replanning_attempts: 5
+    # The `target: detected` offsets below place the held cup's BOTTOM CENTRE
+    # relative to the tray point, not grasp_tcp. The executor converts them
+    # with the cup bottom measured at grasp (detector bottom_z, stored in the
+    # attached cup at closure), so offset_z 0 is the release height:
+    #   grasp_tcp z = tray z + release_clearance_m + (TCP height above cup bottom at grasp)
+    held_cup_placement:
+      # The grasp target is the cup's detected FRONT surface
+      # (cup_surface_to_center_m: 0), so the cup's axis is one cup radius at
+      # grasp height further forward. Ruler-measured on the red Solo cup at
+      # mid-height; if cup_surface_to_center_m is ever calibrated, subtract it.
+      cup_axis_behind_grasp_point_m: 0.043  # standard 16 oz Solo cup: 6 cm base, 9.5 cm rim, 12 cm tall; held 8.8 cm up
+      # Cup bottom this far above the measured tray surface when the gripper
+      # opens: covers the close-up surface/bottom measurement error so the arm
+      # never pushes the cup into the tray (it then drops at most this much).
+      # -1 cm (2026-10-30): the tray reading runs ~1 cm high (rim/lip), and the hand
+      # camera, ~6 cm above grasp_tcp, meets the brew head unless the cup goes this low.
+      release_clearance_m: -0.01
+    steps:
+      # No carry retract (2026-10-30): straight from the post-pickup pose to the
+      # tray standoff in one collision-checked base+arm motion (the approval).
+      - name: move_to_tray_standoff
+        # Keep the arm as pickup left it (cup low and level) and only drive the
+        # base until the cup is in front of the tray; the slide and the guarded
+        # lower set the height (operator, 2026-11-13).
+        keep_arm: true
+        allow_finger_map_contact: true  # fingers around the held cup
+        clear_octomap_before_plan: false  # place keeps the map
+        allow_held_cup_map_contact: true
+        # Base+arm transit with the arm out (no retract first): 50% keeps the
+        # shoulder inside its 3 deg tracking limit.
+        velocity_scaling: 0.5
+        acceleration_scaling: 0.5
+        endpoint_profile: transit
+        type: pose
+        mobile_standoff: true
+        base_placement:
+          # The tray is only reachable from the machine's front: no
+          # alternative headings, unlike the round cup.
+          heading_offsets_deg: [0.0]
+          min_reach_margin_m: 0.03
+          joint_limit_margin_rad: 0.05
+          # centre (2026-10-30): slack both ways for the far/close detection
+          # disagreement; near left no room when the close-up read 4.5 cm lower.
+          reach_preference: centre
+          base_motion: combined
+        # Check the slide in over the tray (standoff -> above the tray).
+        # Check the slide only as far as the cup actually goes (0.20 - 0.025, see move_over_tray).
+        lookahead_offsets: [[0.19, 0.0, 0.0]]
+        require_trajectory_approval: true  # base drive toward the table: operator checks the plan (2026-10-29)
+        frame_id: world
+        group_name: base_arm
+        target: detected
+        orientation_from_detection: true
+        offset_frame: target
+        # Cup 20 cm in front of the tray point, 3 cm above the release
+        # height: clear of the tray's front lip on the way in.
+        offset_x: -0.20
+        # Same height as move_over_tray so the slide under the brew head is level.
+        offset_z: 0.0
+        gripper_value: 75.0
+        rpy_deg: [0.0, 0.0, 0.0]
+        position_tolerance_m: 0.03
+        position_tolerance_xy_m: 0.01
+        position_tolerance_z_m: 0.005
+        use_orientation_constraint: true
+        orientation_tolerance_rad: 0.05
+        planner_id: RRTConnectkConfigDefault
+        allowed_planning_time: 5.0
+        num_planning_attempts: 3
+
+      # No close-up re-detection: once the arm is in the carry pose the held cup
+      # hides the tray from the hand camera (2026-10-29), so the sequence uses
+      # the detection taken at its start, from a pose that can see past the cup.
+
+      # measure_tray_ahead removed (2026-11-13): with the cup in hand the camera
+      # cannot see the tray up close (0 points), only the brew head and pod lid.
+
+      - name: move_over_tray
+        allow_finger_map_contact: true  # fingers around the held cup
+        allow_held_cup_map_contact: true
+        velocity_scaling: 0.3
+        acceleration_scaling: 0.3
+        type: pose
+        clear_octomap_before_plan: false
+        cartesian: true
+        require_trajectory_approval: false
+        frame_id: world
+        group_name: arm
+        heading_from_base: true
+        target: detected
+        orientation_from_detection: true
+        offset_frame: target
+        # 2026-10-30: the hand camera (~5 cm above grasp_tcp) met the brew head's
+        # front edge; set down 1.5 cm in front of the tray centre (the 6 cm cup base
+        # stays on the 9 cm platform) and slide at release height.
+        offset_x: 0.0  # to the detected tray centre (stopped short at -0.01, 2026-11-13)
+        # Slide in just above the release height: the 12 cm cup clears the brew
+        # head over the tray with ~1 cm, not with an extra 3 cm (2026-10-30).
+        # Slide in at the release height (as on 2026-10-30, when it placed): 2 cm
+        # higher put the hand camera into the brew head (2026-11-13). The guarded
+        # lower below finishes by contact.
+        # 2 cm below the release height (operator, 2026-11-13): approach low; the
+        # cup touching the tray is fine, the guarded lower stops on contact.
+        offset_z: -0.05  # 5 cm low: the tray reads 5-6 cm high from here (2026-11-13)
+        gripper_value: 75.0
+        rpy_deg: [0.0, 0.0, 0.0]
+        position_tolerance_m: 0.02
+        position_tolerance_z_m: 0.005
+        use_orientation_constraint: true
+        orientation_tolerance_rad: 0.05
+        maintain_orientation_during_path: true
+        max_replanning_attempts: 3
+        planner_id: RRTConnectkConfigDefault
+        allowed_planning_time: 5.0
+        num_planning_attempts: 3
+
+      # Closed loop on the black wall behind the tray (operator, 2026-11-13): after
+      # the slide, measure the wall just under the brew head over the cup's rim
+      # (9-12.5 cm above the tray) and slide again until the cup's axis sits
+      # rim radius + 1 cm in front of it.
+      - name: slide_to_wall
+        type: measure_ahead
+        detection_timeout_sec: 15.0  # the cloud waits for ~2 s of settled frames
+        measure_tray: false
+        check_overhang: false
+        corridor_half_width_m: 0.04
+        min_forward_m: 0.08
+        max_forward_m: 0.45
+        face_min_above_tray_m: 0.09
+        face_max_above_tray_m: 0.125
+        cup_bottom_radius_m: 0.0475
+        face_margin_m: 0.01
+        max_face_shift_m: 0.10
+        converge_tol_m: 0.01
+        forward_only: true
+        redo_from_step: move_over_tray
+        max_redos: 3
+
+      # Straight down to the release height (offset_z 0, see above).
+      - name: lower_cup_onto_tray
+        allow_finger_map_contact: true  # fingers around the held cup
+        allow_held_cup_map_contact: true
+        velocity_scaling: 0.2
+        acceleration_scaling: 0.2
+        type: pose
+        clear_octomap_before_plan: false
+        cartesian: true
+        require_trajectory_approval: false
+        frame_id: world
+        group_name: arm
+        heading_from_base: true
+        target: detected
+        orientation_from_detection: true
+        offset_frame: target
+        offset_x: 0.0  # to the detected tray centre (stopped short at -0.01, 2026-11-13)
+        # Aim up to 6 cm below the computed release height and stop on contact: the
+        # grip height on the cup is uncertain by several cm (2026-11-13).
+        offset_z: -0.10  # guarded: stops on contact
+        contact_ends_step: true
+        # Deepest first; shallower if the goal itself collides (forearm in the
+        # table voxels at -10 cm, 2026-11-13). Contact stops the descent anyway.
+        safe_z_candidate_offsets_m: [0.0, 0.03, 0.05, 0.07]
+        gripper_value: 75.0
+        rpy_deg: [0.0, 0.0, 0.0]
+        position_tolerance_m: 0.02
+        position_tolerance_z_m: 0.005
+        use_orientation_constraint: true
+        orientation_tolerance_rad: 0.05
+        maintain_orientation_during_path: true
+        max_replanning_attempts: 4  # one per safe_z candidate
+        planner_id: RRTConnectkConfigDefault
+        allowed_planning_time: 5.0
+        num_planning_attempts: 3
+        post_delay_sec: 1.0
+
+      # Detaches detected_cup. Fingers<->OctoMap contact stays allowed until
+      # the command ends: the open fingers still surround the placed cup.
+      - name: release_cup
+        type: gripper
+        detach_cup: true
+        value: 0.0
+        max_attempts: 2
+        settle_sec: 1.0
+
+      # Straight back first: the machine's spout is above the cup.
+      - name: retreat_from_cup
+        # 30%: full speed tripped the shoulder's 3 deg tracking limit (2026-11-13).
+        velocity_scaling: 0.3
+        acceleration_scaling: 0.3
+        allow_finger_map_contact: true  # fingers around the held cup
+        allow_held_cup_map_contact: true  # backing out from under the brew head
+        type: pose
+        clear_octomap_before_plan: false
+        cartesian: true
+        require_trajectory_approval: false
+        frame_id: world
+        group_name: arm
+        target: previous_pose
+        orientation_from_detection: true
+        offset_frame: target
+        offset_x: -0.15
+        offset_z: 0.0
+        gripper_value: 0.0
+        rpy_deg: [0.0, 0.0, 0.0]
+        position_tolerance_m: 0.03
+        position_tolerance_z_m: 0.005
+        use_orientation_constraint: true
+        orientation_tolerance_rad: 0.05
+        maintain_orientation_during_path: true
+        planner_id: RRTConnectkConfigDefault
+        allowed_planning_time: 10.0
+        num_planning_attempts: 5
+
+      - name: retract_arm_after_place
+        allow_held_cup_map_contact: true  # backing out from under the brew head
+        clear_octomap_before_plan: false  # place keeps the map
+        endpoint_profile: transit
+        type: joint_state
+        group_name: arm
+        require_trajectory_approval: false
+        joints:
+          joint_shoulder: 0.0
+          joint_elbow: 0.0
+          joint_wrist: 0.0
+          joint_hand: 0.0
+
+  # Hand the held cup to a person (task 9; detector tasks 9 = the person, 10 = their
+  # open hand). Refused unless detected_cup is attached (held_cup_placement). First
+  # versions: the drive toward the person, the move over the hand and the guarded
+  # lower each need approval, and the gripper opens only when the operator approves
+  # it (contact at the lower and a pull on the arm are shown as evidence); otherwise
+  # the cup is kept and the sequence stops with it in the gripper.
+  hand_cup_to_person:
+    type: sequence
+    task_id: 9
+    detection_topic: /molmopoint/task_9/pose
+    detection_timeout_sec: 10.0
+    # A standing person sways a few cm between samples; 3 agreeing within 10 cm.
+    detection_min_stable_samples: 3
+    detection_stability_tolerance_m: 0.10
+    max_replanning_attempts: 3
+    # `target: detected` offsets below place the held cup's BOTTOM CENTRE relative
+    # to the measured palm point (as on the drip tray): offset_z 0 = cup bottom at
+    # the palm reading.
+    held_cup_placement:
+      cup_axis_behind_grasp_point_m: 0.043  # same Solo cup as place_cup_on_drip_tray
+      release_clearance_m: 0.0
+    steps:
+      # 1. Find the person: look at the current heading, then turn in place 30 deg at
+      #    a time (base only, collision-checked, slow) up to a full turn. Task 9 uses
+      #    the side D455 (task_registry.yaml): the held cup blocks much of the D405.
+      #    Initial search uses D455 only. D405 is used after a person is found
+      #    and the base turns to face them (lock_person_front).
+      - name: scan_for_person
+        type: scan_rotate
+        scan_task_ids: [9]
+        step_deg: 30
+        max_deg: 360
+        direction: left
+        detection_timeout_sec: 10.0  # ~2 s per MolmoPoint cycle: 3 samples + motion settle
+        min_target_range_m: 0.5
+        max_target_range_m: 4.0
+        allow_finger_map_contact: true  # fingers around the held cup
+        allow_held_cup_map_contact: true  # turning in place; the base stays checked
+        velocity_scaling: 0.2
+        acceleration_scaling: 0.2
+        endpoint_profile: transit
+        require_trajectory_approval: false  # turning in place only; STOP stays live
+
+      # 2. Face the person and drive straight toward them until the held cup is 0.65 m
+      #    from their measured front; arm and cup stay as they are (level). Slow.
+      #    Split (operator, 2026-11-15): the side camera loses the person once the base
+      #    turns to face them, and could lock onto someone else. So: turn in place to
+      #    face them head-on (no driving: standoff beyond any scan range, so the drive is
+      #    0), lock on with the FRONT camera (same person: within 0.6 m of the scan's fix,
+      #    horizontally), then drive in on that reading only.
+      - name: face_person
+        type: base_approach
+        # D455 is mounted facing +90 deg (left): turn that much before D405 confirmation.
+        turn_deg_by_scan_task: {9: 90.0}
+        standoff_m: 10.0
+        max_drive_m: 0.01  # must be > 0; the drive is 0 anyway (person closer than 10 m)
+        allow_finger_map_contact: true  # fingers around the held cup
+        velocity_scaling: 0.2
+        acceleration_scaling: 0.2
+        endpoint_profile: transit
+        require_trajectory_approval: true
+
+      - name: lock_person_front
+        type: detect
+        task_id: 12
+        detection_topic: /molmopoint/task_12/pose
+        detection_timeout_sec: 20.0
+        detection_min_stable_samples: 3
+        detection_stability_tolerance_m: 0.10
+        detection_max_refresh_shift_m: 1.0  # side-camera fix is uncalibrated: loose, xy only
+        detection_refresh_shift_xy_only: true
+        max_target_range_m: 4.0
+
+      - name: approach_person
+        type: base_approach
+        standoff_m: 0.65
+        max_drive_m: 3.5
+        allow_finger_map_contact: true  # fingers around the held cup
+        velocity_scaling: 0.2
+        acceleration_scaling: 0.2
+        endpoint_profile: transit
+        require_trajectory_approval: true
+
+      # 3. Find the open hand with the hand camera, close up: 3 agreeing samples within
+      #    2 cm, within 1 m of the person reading. No range cap from the base.
+      - name: find_hand
+        type: detect
+        task_id: 10
+        detection_topic: /molmopoint/task_10/pose
+        detection_timeout_sec: 30.0
+        detection_min_stable_samples: 3
+        detection_stability_tolerance_m: 0.02
+        detection_max_refresh_shift_m: 1.0
+        preserve_reference_z: false
+
+      # 4. Present: the cup bottom 10 cm above the palm. The base may shuffle (at most
+      #    35 cm, slow) to bring the hand into the arm's plane; arm at 20%.
+      - name: present_cup_above_hand
+        allow_finger_map_contact: true  # fingers around the held cup
+        clear_octomap_before_plan: true  # fresh map of the person and hand
+        velocity_scaling: 0.2
+        acceleration_scaling: 0.2
+        endpoint_profile: transit
+        type: pose
+        mobile_standoff: true
+        base_placement:
+          heading_offsets_deg: [0.0]
+          min_reach_margin_m: 0.03
+          joint_limit_margin_rad: 0.05
+          reach_preference: centre
+          base_motion: combined
+          max_base_move_m: 0.35
+          base_velocity_scaling: 0.2
+        require_trajectory_approval: true
+        frame_id: world
+        group_name: base_arm
+        target: detected
+        orientation_from_detection: true
+        offset_frame: target
+        offset_x: 0.0
+        offset_z: 0.10
+        gripper_value: 75.0
+        rpy_deg: [0.0, 0.0, 0.0]
+        position_tolerance_m: 0.03
+        position_tolerance_xy_m: 0.01
+        position_tolerance_z_m: 0.005
+        use_orientation_constraint: true
+        orientation_tolerance_rad: 0.05
+        planner_id: RRTConnectkConfigDefault
+        allowed_planning_time: 5.0
+        num_planning_attempts: 3
+
+      # 5a. Guarded lower onto the palm: aim the cup bottom 2 cm below the palm reading
+      #     at 10% and stop on contact (a stall = contact; never retried). The held cup
+      #     and fingers may touch map voxels (the hand) on this step only.
+      - name: lower_cup_into_hand
+        allow_finger_map_contact: true
+        allow_held_cup_map_contact: true
+        contact_ends_step: true
+        velocity_scaling: 0.1
+        acceleration_scaling: 0.1
+        type: pose
+        clear_octomap_before_plan: false
+        cartesian: true
+        require_trajectory_approval: true
+        frame_id: world
+        group_name: arm
+        heading_from_base: true
+        target: detected
+        orientation_from_detection: true
+        offset_frame: target
+        offset_x: 0.0
+        offset_z: -0.02
+        gripper_value: 75.0
+        rpy_deg: [0.0, 0.0, 0.0]
+        position_tolerance_m: 0.02
+        position_tolerance_z_m: 0.005
+        use_orientation_constraint: true
+        orientation_tolerance_rad: 0.05
+        maintain_orientation_during_path: true
+        max_replanning_attempts: 2
+        planner_id: RRTConnectkConfigDefault
+        allowed_planning_time: 5.0
+        num_planning_attempts: 3
+        post_delay_sec: 0.5
+
+      # 5b. Ask permission to open the gripper (operator, 2026-11-15): the console
+      #     shows "wait_for_person_to_take_cup/open_gripper" for approval; only Approve
+      #     opens it. Contact at the lower and a pull (shoulder or elbow encoder 1.5 deg
+      #     off its settled value for 0.3 s) are measured and shown as evidence.
+      #     No approval within 60 s, Reject or STOP: the sequence stops here and the
+      #     cup stays in the gripper (then "Open gripper" in the console opens it by hand).
+      - name: wait_for_person_to_take_cup
+        type: handoff_wait
+        contact_from_step: lower_cup_into_hand
+        require_release_approval: true
+        release_on_contact: true  # only with require_release_approval: false
+        operator_confirm: true
+        timeout_sec: 60.0
+        pull_threshold_deg: 1.5
+        pull_min_duration_sec: 0.3
+        pull_joints: [joint_shoulder, joint_elbow]
+        allow_finger_map_contact: true
+        allow_held_cup_map_contact: true
+
+      - name: release_cup_to_person
+        type: gripper
+        detach_cup: true
+        value: 0.0
+        max_attempts: 2
+        settle_sec: 1.0
+
+      # 6. Back the open hand straight away from the cup, then the base, then retract
+      #    the arm (upright only once well clear of the person).
+      - name: withdraw_hand_from_cup
+        allow_finger_map_contact: true  # the open fingers still surround the cup
+        allow_held_cup_map_contact: true
+        velocity_scaling: 0.2
+        acceleration_scaling: 0.2
+        type: pose
+        clear_octomap_before_plan: false
+        cartesian: true
+        require_trajectory_approval: false
+        frame_id: world
+        group_name: arm
+        target: previous_pose
+        orientation_from_detection: true
+        offset_frame: target
+        offset_x: -0.12
+        offset_z: 0.0
+        gripper_value: 0.0
+        rpy_deg: [0.0, 0.0, 0.0]
+        position_tolerance_m: 0.03
+        position_tolerance_z_m: 0.005
+        use_orientation_constraint: true
+        orientation_tolerance_rad: 0.05
+        maintain_orientation_during_path: true
+        planner_id: RRTConnectkConfigDefault
+        allowed_planning_time: 10.0
+        num_planning_attempts: 5
+
+      - name: back_away_from_person
+        type: joint_state
+        group_name: base
+        base_relative: true
+        allow_finger_map_contact: true
+        endpoint_profile: transit
+        velocity_scaling: 0.2
+        acceleration_scaling: 0.2
+        require_trajectory_approval: false
+        joints:
+          base_x: -0.30
+          base_y: 0.0
+          base_theta: 0.0
+
+      - name: retract_arm_after_handoff
+        clear_octomap_before_plan: false
+        endpoint_profile: transit
+        type: joint_state
+        group_name: arm
+        velocity_scaling: 0.3
+        acceleration_scaling: 0.3
+        require_trajectory_approval: false
+        joints:
+          joint_shoulder: 0.0
+          joint_elbow: 0.0
+          joint_wrist: 0.0
+          joint_hand: 0.0

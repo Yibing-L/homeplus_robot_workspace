@@ -22,6 +22,8 @@
 """Build an OctoMap-ready obstacle cloud from one RGB-D camera."""
 
 import json
+import os
+import warnings
 from typing import Optional
 
 import numpy as np
@@ -34,7 +36,14 @@ from rclpy.time import Time
 from sensor_msgs.msg import CameraInfo, Image, PointCloud2
 from std_msgs.msg import Bool, Header, String
 from std_srvs.srv import Empty
+from copy import deepcopy
+
 from tf2_ros import Buffer, TransformException, TransformListener
+from geometry_msgs.msg import Pose, PoseStamped
+from moveit_msgs.msg import CollisionObject
+from shape_msgs.msg import SolidPrimitive
+
+from homeplus_vision.table_plane import TablePlane, fit_table_plane, table_box
 
 
 class ObstacleCloudNode(Node):
@@ -54,6 +63,7 @@ class ObstacleCloudNode(Node):
         self.declare_parameter("obstacle_cloud_topic", "/obstacle_cloud")
         self.declare_parameter("pixel_stride", 4)
         self.declare_parameter("max_publish_rate_hz", 1.0)
+        self.declare_parameter("depth_median_frames", 1)
         self.declare_parameter("depth_unit_scale", 0.001)
         self.declare_parameter("min_depth_m", 0.0)
         self.declare_parameter("max_depth_m", 5.0)
@@ -70,9 +80,50 @@ class ObstacleCloudNode(Node):
         self.declare_parameter("target_padding_m", 0.02)
         self.declare_parameter("button_task_id", 2)
         self.declare_parameter("button_target_padding_m", 0.08)
+        # Free-standing pickup targets (the cup): the mask misses the cup's outer
+        # centimetre, and those edge points became voxels the palm "hit" right
+        # beside the cup (2026-10-30: 1.0-1.2 cm outside its sides). Appliance
+        # targets (tray, button) keep target_padding_m so nearby surfaces stay.
+        self.declare_parameter("cup_task_ids", [1])
+        # Never map what the gripper holds: drop points inside the held cup's space
+        # around held_object_frame before MoveIt sees them. MoveIt's own
+        # attached-object filter let the held cup into the map, which then blocked
+        # every move out of the current pose (2026-10-30). Empty frame disables.
+        self.declare_parameter("held_object_frame", "grasp_tcp")
+        self.declare_parameter("held_object_axis_forward_m", 0.043)
+        self.declare_parameter("held_object_radius_m", 0.07)
+        self.declare_parameter("held_object_below_m", 0.12)
+        self.declare_parameter("held_object_above_m", 0.08)
+        self.declare_parameter("cup_target_padding_m", 0.02)
         self.declare_parameter("mask_timeout_sec", 1.0)
         self.declare_parameter("clear_octomap_on_mask", False)
         self.declare_parameter("clear_octomap_service", "/clear_octomap")
+        # Table plane: remove the table surface from the voxel cloud and model it as one
+        # exact collision box, so 2 cm voxels don't inflate it into the gripper's path.
+        self.declare_parameter("table_plane_enable", False)
+        self.declare_parameter("table_world_frame", "world")
+        self.declare_parameter("table_z_min_m", 0.40)
+        self.declare_parameter("table_z_max_m", 1.20)
+        self.declare_parameter("table_max_tilt_deg", 4.0)
+        self.declare_parameter("table_inlier_tol_m", 0.01)
+        self.declare_parameter("table_min_inliers", 150)
+        self.declare_parameter("table_remove_below_m", 0.04)
+        self.declare_parameter("table_remove_above_m", 0.015)
+        self.declare_parameter("table_box_thickness_m", 0.04)
+        self.declare_parameter("table_assume_level", True)
+        self.declare_parameter("table_hold_sec", 10.0)
+        self.declare_parameter("table_target_max_radius_m", 0.08)
+        self.declare_parameter("table_target_margin_m", 0.01)
+        self.declare_parameter("table_object_id", "detected_table")
+        # Detector tasks whose target stands ON the table (the fit anchors on the
+        # target's base). For other targets (e.g. the drip tray, task 7) the anchor
+        # would be the target's own surface: keep the last table instead.
+        self.declare_parameter("table_fit_task_ids", [1])
+        self.declare_parameter("table_below_target_m", 0.03)
+        # The table fitted while it stood in clear view (pickup), kept across vision
+        # restarts. World coordinates are odometry, which an Arduino reset re-zeroes,
+        # so a stored table is only restored within the same bridge session.
+        self.declare_parameter("table_store_path", "~/.ros/homeplus_table.json")
         self.declare_parameter("clear_octomap_min_interval_sec", 15.0)
 
         self.camera_role = str(self.get_parameter("camera_role").value)
@@ -148,6 +199,9 @@ class ObstacleCloudNode(Node):
         self.tf_buffer = Buffer()
         self.tf_listener = TransformListener(self.tf_buffer, self)
         self.pending_depth = None
+        # Per-pixel median over the last N settled frames (see _median_depth).
+        self.depth_median_frames = max(1, int(self.get_parameter("depth_median_frames").value))
+        self.depth_history = []
         self.create_timer(0.02, self._process_pending_depth)
 
         self.fx: Optional[float] = None
@@ -167,6 +221,31 @@ class ObstacleCloudNode(Node):
         self.motion_active = self.pause_during_motion
         self.motion_finished_ns = 0
         self.ready_pub = self.create_publisher(String, "/vision/planning_cloud_ready", 10)
+        self.table_enable = bool(self.get_parameter("table_plane_enable").value)
+        self.table_fit_tasks = {int(t) for t in self.get_parameter("table_fit_task_ids").value}
+        self.table_below_target_m = float(self.get_parameter("table_below_target_m").value)
+        self.detector_task_id = None
+        self.table_from_fit_task = False
+        self.table_store = os.path.expanduser(str(self.get_parameter("table_store_path").value))
+        self.bridge_session = None
+        self.create_subscription(String, "/arduino/bridge_info", self._on_bridge_info,
+                                 QoSProfile(depth=1, durability=DurabilityPolicy.TRANSIENT_LOCAL))
+        self.table_world_frame = str(self.get_parameter("table_world_frame").value)
+        self.table_cfg = {k: float(self.get_parameter(f"table_{k}").value) for k in (
+            "z_min_m", "z_max_m", "max_tilt_deg", "inlier_tol_m", "remove_below_m",
+            "remove_above_m", "box_thickness_m", "target_max_radius_m", "target_margin_m")}
+        self.table_min_inliers = int(self.get_parameter("table_min_inliers").value)
+        self.table_assume_level = bool(self.get_parameter("table_assume_level").value)
+        self.table_hold_ns = int(float(self.get_parameter("table_hold_sec").value) * 1e9)
+        self.table_plane_last = None  # (plane, time_ns): reused when a frame misses
+        # The table is fixed but each view's fit wanders 0.65-0.73 m (hand-camera
+        # calibration): the box uses the median of recent level fits (2026-11-08).
+        self.table_heights = []
+        self.table_height_window = 15
+        self.table_object_id = str(self.get_parameter("table_object_id").value)
+        self.table_last = None  # (center, size, published_at_ns)
+        self.collision_pub = self.create_publisher(CollisionObject, "/collision_object", 10)
+        self.table_status_pub = self.create_publisher(String, "/vision/table_plane", 10)
 
         self.full_pub = self.create_publisher(
             PointCloud2, str(self.get_parameter("full_cloud_topic").value), 10
@@ -178,6 +257,19 @@ class ObstacleCloudNode(Node):
             PointCloud2, str(self.get_parameter("obstacle_cloud_topic").value), 10
         )
 
+        self.create_subscription(String, "/molmopoint/diagnostics", self._on_detector_diag, 10)
+        # Buttons are pressed into the appliance face: clear a small sphere of the
+        # face around the detected button point, or the fingertip's approach
+        # collides with face voxels within one cell of the button (2026-11-08).
+        # The mask can cover the whole machine, so this is not the mask's box.
+        self.declare_parameter("button_task_ids", [2, 8])
+        self.declare_parameter("button_clear_radius_m", 0.07)
+        self.button_pose = None  # (task_id, PoseStamped, received_ns)
+        for task in self.get_parameter("button_task_ids").value:
+            self.create_subscription(
+                PoseStamped, f"/molmopoint/task_{int(task)}/pose",
+                lambda m, t=int(task): setattr(self, "button_pose",
+                                               (t, m, self.get_clock().now().nanoseconds)), 10)
         self.create_subscription(
             CameraInfo,
             self.camera_info_topic,
@@ -247,6 +339,7 @@ class ObstacleCloudNode(Node):
             self.mask = None
             self.mask_received_at = None
             self.mask_was_active = False
+            self.depth_history = []
             self.get_logger().info(
                 "Pausing obstacle-cloud publication and invalidating the target "
                 "mask during hardware motion"
@@ -276,14 +369,64 @@ class ObstacleCloudNode(Node):
             self.tf_buffer.can_transform(frame, source, stamp)
             for frame in frames)
         if not ready:
-            if self.get_clock().now().nanoseconds - received_ns > 500_000_000:
+            age_ns = self.get_clock().now().nanoseconds - received_ns
+            if age_ns > 100_000_000:
+                settled = self._settled_restamp(msg, source, frames)
+                if settled is not None:
+                    self.pending_depth = None
+                    self._process_depth(settled)
+                    return
+            if age_ns > 500_000_000:
                 self.pending_depth = None
                 self.get_logger().warning(
-                    'Dropping depth frame: acquisition-time TF still missing after 0.5 s',
+                    'Dropping depth frame: acquisition-time TF still missing after 0.5 s '
+                    f'({self._tf_lag_detail(msg, source, frames)})',
                     throttle_duration_sec=5.0)
             return
         self.pending_depth = None
         self._process_depth(msg)
+
+    def _latest_tf_ns(self, frames, source):
+        """Oldest of the newest available transforms source->frame, or None."""
+        newest = []
+        for frame in frames:
+            if not frame or frame == source:
+                continue
+            try:
+                tf = self.tf_buffer.lookup_transform(frame, source, Time())
+            except TransformException:
+                return None
+            newest.append(Time.from_msg(tf.header.stamp).nanoseconds)
+        return min(newest) if newest else None
+
+    def _tf_lag_detail(self, msg, source, frames):
+        frame_ns = Time.from_msg(msg.header.stamp).nanoseconds
+        latest_ns = self._latest_tf_ns(frames, source)
+        if latest_ns is None:
+            return 'no transform available at all'
+        return (f'newest TF is {(frame_ns - latest_ns) / 1e6:+.0f} ms behind the frame; '
+                f'motion_active={self.motion_active}')
+
+    def _settled_restamp(self, msg, source, frames):
+        """While the arm is still, the camera pose is constant: a transform
+        measured after the arm settled equals the one at the frame's
+        acquisition time. Re-stamp the frame to that transform's time so every
+        downstream lookup (and MoveIt's sensor-origin lookup) uses it.
+        Returns None unless the frame and the transform both postdate settling."""
+        if self.motion_active or self.motion_finished_ns <= 0:
+            return None
+        frame_ns = Time.from_msg(msg.header.stamp).nanoseconds
+        latest_ns = self._latest_tf_ns(frames, source)
+        if (latest_ns is None or frame_ns <= self.motion_finished_ns
+                or latest_ns <= self.motion_finished_ns):
+            return None
+        restamped = deepcopy(msg)
+        restamped.header.stamp = Time(nanoseconds=latest_ns).to_msg()
+        self.get_logger().info(
+            'Settled arm: using post-settle TF for depth frame '
+            f'(frame {(frame_ns - latest_ns) / 1e6:+.0f} ms ahead of newest TF)',
+            throttle_duration_sec=10.0)
+        return restamped
 
     def _process_depth(self, msg: Image) -> None:
         if None in (self.fx, self.fy, self.cx, self.cy):
@@ -296,6 +439,10 @@ class ObstacleCloudNode(Node):
                 Time.from_msg(msg.header.stamp).nanoseconds <= self.motion_finished_ns):
             return
 
+        depth = self._median_depth(self.bridge.imgmsg_to_cv2(msg, desired_encoding="passthrough"))
+        if depth is None:
+            return
+
         now = self.get_clock().now()
         if self.max_publish_rate_hz > 0.0 and self.last_cloud_publish_at is not None:
             elapsed = (now - self.last_cloud_publish_at).nanoseconds / 1e9
@@ -303,7 +450,6 @@ class ObstacleCloudNode(Node):
                 return
         self.last_cloud_publish_at = now
 
-        depth = self.bridge.imgmsg_to_cv2(msg, desired_encoding="passthrough")
         source_frame = msg.header.frame_id or self.fallback_frame
         if not source_frame:
             self.get_logger().error("Depth image has no frame_id and no fallback_frame")
@@ -380,6 +526,9 @@ class ObstacleCloudNode(Node):
             obstacle_points = self._remove_target_box(
                 obstacle_points, object_points
             )
+            obstacle_points = self._clear_around_button(
+                obstacle_points, source_frame, msg.header.stamp
+            )
         else:
             obstacle_points = self._points_from_depth(
                 depth_sample, u_pixels, v_pixels, stable_valid
@@ -394,6 +543,9 @@ class ObstacleCloudNode(Node):
         obstacle_points, bounds_removed = self._filter_obstacle_bounds(
             obstacle_points, frame_id, msg.header.stamp
         )
+        if self.table_enable:
+            obstacle_points = self._model_table(obstacle_points, object_points, frame_id, msg.header.stamp)
+        obstacle_points = self._remove_held_object(obstacle_points, frame_id, msg.header.stamp)
         header = Header(stamp=msg.header.stamp, frame_id=frame_id)
         self.full_pub.publish(
             point_cloud2.create_cloud_xyz32(header, full_points.tolist())
@@ -417,6 +569,235 @@ class ObstacleCloudNode(Node):
             mask_active=mask is not None,
             frame_id=frame_id,
         )
+
+    def _median_depth(self, depth):
+        """Per-pixel median of the last N settled depth frames, or None until N are in.
+
+        At ~1 m the D405 sees the table at a grazing angle and its depth jumps by
+        ~4 cm (tails to 7 cm) between frames, while a camera-facing cup stays within
+        5 mm. A cloud built from one frame puts those outliers into the OctoMap as
+        voxels above the table. The camera is still between motions (the history is
+        reset when motion starts), so the median rejects the outlier frames.
+        """
+        n = self.depth_median_frames
+        if n <= 1:
+            return depth
+        if self.depth_history and self.depth_history[-1].shape != depth.shape:
+            self.depth_history = []
+        self.depth_history.append(depth)
+        self.depth_history = self.depth_history[-n:]
+        if len(self.depth_history) < n:
+            return None
+        stack = np.stack(self.depth_history).astype(np.float32)
+        stack[stack <= 0] = np.nan  # 0 = no depth; a pixel needs a majority of valid frames
+        valid_count = np.count_nonzero(np.isfinite(stack), axis=0)
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", RuntimeWarning)  # all-NaN pixels
+            median = np.nanmedian(stack, axis=0)
+        median[(valid_count * 2 <= n) | ~np.isfinite(median)] = 0
+        return median.astype(depth.dtype)
+
+    def _on_bridge_info(self, msg):
+        try:
+            session = json.loads(msg.data).get("session_id")
+        except ValueError:
+            return
+        if session and session != self.bridge_session:
+            self.bridge_session = session
+            self._restore_table()
+
+    def _restore_table(self):
+        if not self.table_enable or self.table_plane_last is not None or not self.bridge_session:
+            return
+        try:
+            with open(self.table_store) as f:
+                saved = json.load(f)
+        except (OSError, ValueError):
+            return
+        if saved.get("session_id") != self.bridge_session:
+            self.get_logger().info("Stored table is from another bridge session (odometry re-zeroed); not restored")
+            return
+        plane = TablePlane(normal=np.array(saved["normal"]), offset=float(saved["offset"]),
+                           height=float(saved["height"]), tilt_deg=float(saved["tilt_deg"]),
+                           inliers=np.zeros(0, dtype=bool))
+        self.table_plane_last = (plane, self.get_clock().now().nanoseconds)
+        self.table_from_fit_task = True
+        self.table_heights = [float(plane.height)]
+        self.table_last = None
+        self._publish_table_box(tuple(saved["center"]), tuple(saved["size"]), self.get_clock().now().to_msg())
+        self.get_logger().info(f"Restored the table from {self.table_store}: height {plane.height:.3f} m")
+
+    def _save_table(self, plane, center, size):
+        if not self.bridge_session:
+            return
+        data = {"session_id": self.bridge_session, "normal": [float(v) for v in plane.normal],
+                "offset": float(plane.offset), "height": float(plane.height), "tilt_deg": float(plane.tilt_deg),
+                "center": [float(v) for v in center], "size": [float(v) for v in size]}
+        try:
+            os.makedirs(os.path.dirname(self.table_store), exist_ok=True)
+            with open(self.table_store + ".tmp", "w") as f:
+                json.dump(data, f)
+            os.replace(self.table_store + ".tmp", self.table_store)
+        except OSError as exc:
+            self.get_logger().warn(f"Could not store the table: {exc}")
+
+    def _on_detector_diag(self, msg):
+        try:
+            task = json.loads(msg.data).get("task_id")
+        except ValueError:
+            return
+        if task is not None:
+            self.detector_task_id = int(task)
+
+    def _model_table(self, obstacle_points, object_points, frame_id, stamp_msg):
+        """Remove the table surface from the cloud and publish it as an exact box.
+
+        Also removes the target's base: the segmentation mask rarely reaches the
+        table, so the bottom few cm of the cup would otherwise stay as obstacles
+        that the grasp then "collides" with.
+        """
+        if len(obstacle_points) < self.table_min_inliers:
+            return obstacle_points
+        tf_world = self._lookup_transform(self.table_world_frame, frame_id, stamp_msg)
+        if tf_world is None:
+            return obstacle_points
+        world = self._transform_points(obstacle_points, tf_world)
+        t = tf_world.transform.translation
+        camera_xy = (t.x, t.y)
+        target = self._transform_points(object_points, tf_world).astype(np.float64) \
+            if len(object_points) >= 10 else None
+        support = None
+        if target is not None:
+            cx, cy = np.median(target[:, :2], axis=0)
+            support = (float(cx), float(cy), float(np.percentile(target[:, 2], 5)))
+        c = self.table_cfg
+        z_max, support = c["z_max_m"], support
+        if self.detector_task_id is not None and self.detector_task_id not in self.table_fit_tasks:
+            # The target (e.g. the drip tray, task 7) stands on the table rather than being
+            # set on it: anchoring the fit at the target's base put the "table" box at tray
+            # height (~0.87 m) and blocked every placement; dropping the box instead let the
+            # base drive into the table (2026-10-29). The table is the level plane below the
+            # target: fit unanchored, at least table_below_target_m under its surface.
+            # Prefer the table fitted while the target stood on it (the pickup): that view
+            # saw the table's near edge, which a held cup hides here. A box refitted now
+            # covered only the far part, and the base drove into the near edge (2026-10-29).
+            if target is None or self.table_from_fit_task:
+                if self.table_plane_last is None:
+                    return obstacle_points
+                if self.table_last is not None:
+                    # keep the kept table in the scene (e.g. after a MoveIt restart); throttled
+                    self._publish_table_box(self.table_last[0], self.table_last[1], stamp_msg)
+                last = self.table_plane_last[0]
+                dist = last.signed_distance(world.astype(np.float64))
+                band = (dist >= -c["remove_below_m"]) & (dist <= c["remove_above_m"])
+                return obstacle_points[~band]
+            z_max = min(z_max, float(np.percentile(target[:, 2], 5)) - self.table_below_target_m)
+            support = None
+        plane = fit_table_plane(world, z_min=c["z_min_m"], z_max=z_max,
+                                max_tilt_deg=c["max_tilt_deg"], inlier_tol=c["inlier_tol_m"],
+                                min_inliers=self.table_min_inliers, support=support,
+                                level=self.table_assume_level)
+        now_ns = self.get_clock().now().nanoseconds
+        status = {"found": plane is not None}
+        if plane is not None and self.table_assume_level:
+            plane = self._smoothed_level_plane(plane, world)
+        if plane is not None:
+            self.table_plane_last = (plane, now_ns)
+            self.table_from_fit_task = self.detector_task_id in self.table_fit_tasks
+        elif self.table_plane_last is not None and now_ns - self.table_plane_last[1] < self.table_hold_ns:
+            # One noisy frame must not pour the table back into the OctoMap as voxels.
+            last = self.table_plane_last[0]
+            dist = last.signed_distance(world.astype(np.float64))
+            band = (dist >= -c["remove_below_m"]) & (dist <= c["remove_above_m"])
+            base = self._target_base_column(world, target, last, camera_xy)
+            status.update(held=True, height_m=round(last.height, 4))
+            self.table_status_pub.publish(String(data=json.dumps(status)))
+            return obstacle_points[~(band | base)]
+        if plane is None:
+            # No level table in view (or the camera is tilted so it doesn't look level):
+            # keep the voxels; the earlier box, if any, stays in the planning scene.
+            self.table_status_pub.publish(String(data=json.dumps(status)))
+            return obstacle_points
+        dist = plane.signed_distance(world.astype(np.float64))
+        band = (dist >= -c["remove_below_m"]) & (dist <= c["remove_above_m"])
+        base = self._target_base_column(world, target, plane, camera_xy)
+        box = table_box(world, plane, thickness=c["box_thickness_m"])
+        if box is None:
+            # The smoothed table height has no points in this frame (it saw another
+            # surface): still remove the band at the known height, keep the existing box.
+            status.update(height_m=round(plane.height, 4), inliers=0, removed=int(np.count_nonzero(band)),
+                          box_kept=True)
+            self.table_status_pub.publish(String(data=json.dumps(status)))
+            return obstacle_points[~(band | base)]
+        center, size = box
+        self._publish_table_box(center, size, stamp_msg)
+        if self.table_from_fit_task:
+            self._save_table(plane, center, size)
+        status.update(height_m=round(plane.height, 4), tilt_deg=round(plane.tilt_deg, 2),
+                      inliers=int(np.count_nonzero(plane.inliers)), removed=int(np.count_nonzero(band)),
+                      target_base_removed=int(np.count_nonzero(base & ~band)),
+                      box_center=[round(v, 3) for v in center], box_size=[round(v, 3) for v in size])
+        self.table_status_pub.publish(String(data=json.dumps(status)))
+        return obstacle_points[~(band | base)]
+
+    def _smoothed_level_plane(self, plane, world):
+        """Replace one view's level-table height with the median of recent fits."""
+        self.table_heights = (self.table_heights + [float(plane.height)])[-self.table_height_window:]
+        height = float(np.median(self.table_heights))
+        if abs(height - plane.height) > 0.005:
+            self.get_logger().info(
+                f"Table fit {plane.height:.3f} m; using median {height:.3f} m of "
+                f"{len(self.table_heights)} fit(s)", throttle_duration_sec=10.0)
+        up = np.array([0.0, 0.0, 1.0])
+        return TablePlane(normal=up, offset=-height, height=height, tilt_deg=0.0,
+                          inliers=np.abs(world[:, 2].astype(np.float64) - height) <= self.table_cfg["inlier_tol_m"])
+
+    def _target_base_column(self, world, obj, plane, camera_xy):
+        """Mask of obstacle points inside the target's cylinder, from the table up.
+
+        The segmentation mask misses the cup's base and some of its edge pixels;
+        those points would stay as OctoMap voxels that the grasp "collides" with,
+        although the planner already treats the cup as an allowed-contact cylinder.
+        """
+        keep = np.zeros(len(world), dtype=bool)
+        if obj is None:
+            return keep
+        # The camera sees the front face: its median is the near surface and its
+        # half-width is the radius. Median and percentile are robust to mask leaks.
+        surface = np.median(obj[:, :2], axis=0)
+        radius = min(float(np.percentile(np.linalg.norm(obj[:, :2] - surface, axis=1), 80)),
+                     self.table_cfg["target_max_radius_m"])
+        away = surface - np.asarray(camera_xy, dtype=np.float64)
+        norm = np.linalg.norm(away)
+        center = surface + radius * away / norm if norm > 1e-6 else surface
+        radius += self.table_cfg["target_margin_m"]
+        top = float(np.percentile(obj[:, 2], 95)) + self.table_cfg["target_margin_m"]
+        w = world.astype(np.float64)
+        inside = np.linalg.norm(w[:, :2] - center, axis=1) <= radius
+        above_table = plane.signed_distance(w) >= 0.0
+        return inside & above_table & (w[:, 2] <= top)
+
+    def _publish_table_box(self, center, size, stamp_msg):
+        now_ns = self.get_clock().now().nanoseconds
+        if self.table_last is not None:
+            (oc, osz, at) = self.table_last
+            moved = abs(oc[2] - center[2]) > 0.005 or max(abs(a - b) for a, b in zip(osz[:2], size[:2])) > 0.03 \
+                or max(abs(a - b) for a, b in zip(oc[:2], center[:2])) > 0.02
+            if not moved and now_ns - at < 5e9:
+                return
+        obj = CollisionObject()
+        obj.header.frame_id = self.table_world_frame
+        obj.header.stamp = stamp_msg
+        obj.id = self.table_object_id
+        box = SolidPrimitive(type=SolidPrimitive.BOX, dimensions=list(size))
+        pose = Pose()
+        pose.position.x, pose.position.y, pose.position.z = center
+        pose.orientation.w = 1.0
+        obj.primitives = [box]
+        obj.primitive_poses = [pose]
+        obj.operation = CollisionObject.ADD
+        self.collision_pub.publish(obj)
+        self.table_last = (center, size, now_ns)
 
     def _current_mask(self):
         if self.mask is None or self.mask_received_at is None:
@@ -507,11 +888,44 @@ class ObstacleCloudNode(Node):
             f"mask={'active' if mask_active else 'missing'}"
         )
 
+    def _remove_held_object(self, points, frame_id, stamp_msg):
+        frame = str(self.get_parameter("held_object_frame").value).strip()
+        if not frame or not len(points):
+            return points
+        tf = self._lookup_transform(frame, frame_id, stamp_msg)
+        if tf is None:
+            return points
+        local = self._transform_points(points, tf)
+        radial = np.hypot(local[:, 0] - float(self.get_parameter("held_object_axis_forward_m").value), local[:, 1])
+        inside = ((radial < float(self.get_parameter("held_object_radius_m").value))
+                  & (local[:, 2] > -float(self.get_parameter("held_object_below_m").value))
+                  & (local[:, 2] < float(self.get_parameter("held_object_above_m").value)))
+        return points[~inside]
+
+    def _clear_around_button(self, obstacle_points, frame_id, stamp_msg):
+        radius = float(self.get_parameter("button_clear_radius_m").value)
+        bp = self.button_pose
+        if (radius <= 0.0 or bp is None or not len(obstacle_points)
+                or bp[0] != self.detector_task_id
+                or self.get_clock().now().nanoseconds - bp[2] > 15e9):
+            return obstacle_points
+        pose = bp[1]
+        tf = self._lookup_transform(frame_id, pose.header.frame_id, stamp_msg)
+        if tf is None:
+            return obstacle_points
+        p = pose.pose.position
+        center = self._transform_points(np.array([[p.x, p.y, p.z]], dtype=np.float32), tf)[0]
+        keep = np.linalg.norm(obstacle_points - center, axis=1) > radius
+        return obstacle_points[keep]
+
     def _remove_target_box(self, obstacle_points, object_points):
         if not len(obstacle_points) or not len(object_points):
             return obstacle_points
-        lower = object_points.min(axis=0) - self.target_padding_m
-        upper = object_points.max(axis=0) + self.target_padding_m
+        padding = self.target_padding_m
+        if self.detector_task_id in {int(t) for t in self.get_parameter("cup_task_ids").value}:
+            padding = max(padding, float(self.get_parameter("cup_target_padding_m").value))
+        lower = object_points.min(axis=0) - padding
+        upper = object_points.max(axis=0) + padding
         inside = np.all(
             (obstacle_points >= lower) & (obstacle_points <= upper), axis=1
         )
