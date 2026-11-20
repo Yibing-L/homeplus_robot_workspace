@@ -16,7 +16,7 @@ import tempfile
 from copy import deepcopy
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Tuple
 
 import rclpy
 from rclpy.serialization import serialize_message
@@ -3591,6 +3591,29 @@ class GestureMotionExecutor(Node):
     _FINGER_MAP_PAIRS = [('<octomap>', 'FingerL_new_1'), ('<octomap>', 'FingerR_new_1')]
     _CUP_BOTTOM_SUBFRAME = 'bottom'
 
+    def _tcp_orientation_deviation(self, frame: str, link: str, target_q) -> Optional[Tuple[float, float, float]]:
+        """Rotation vector (rad, per axis) taking the target orientation to the
+        link's current one, as MoveIt's ROTATION_VECTOR orientation constraint
+        measures it; None if TF is unavailable."""
+        try:
+            tf = self.tf_buffer.lookup_transform(frame, link, Time(), timeout=Duration(seconds=0.5))
+        except Exception:
+            return None
+        c = tf.transform.rotation
+        tx, ty, tz, tw = target_q.x, target_q.y, target_q.z, target_q.w
+        # q_err = conj(target) * current
+        x = tw * c.x - tx * c.w - ty * c.z + tz * c.y
+        y = tw * c.y + tx * c.z - ty * c.w - tz * c.x
+        z = tw * c.z - tx * c.y + ty * c.x - tz * c.w
+        w = tw * c.w + tx * c.x + ty * c.y + tz * c.z
+        if w < 0.0:
+            x, y, z, w = -x, -y, -z, -w
+        n = math.sqrt(x * x + y * y + z * z)
+        if n < 1e-9:
+            return (0.0, 0.0, 0.0)
+        angle = 2.0 * math.atan2(n, w)
+        return (x / n * angle, y / n * angle, z / n * angle)
+
     def _attach_nominal_cup(self):
         """Attach a standard held cup to grasp_tcp (no grasp-time measurement): the
         envelope held_cup_height_m x held_cup_radius_m, its axis
@@ -4805,6 +4828,26 @@ class GestureMotionExecutor(Node):
                     path_oc.absolute_x_axis_tolerance = float(path_tol)
                     path_oc.absolute_y_axis_tolerance = float(path_tol)
                     path_oc.absolute_z_axis_tolerance = max(float(path_tol), orient_tol_z)
+                # The path constraint must hold at the START too, or MoveIt rejects the
+                # start state ("start state invalid (a constraint)", 2026-11-20: cup 3.1 deg
+                # off level after a fault / manual grasp vs 2.9 deg). Widen each axis to the
+                # measured start deviation + margin (capped); the goal stays strict, so the
+                # move still ends level.
+                dev = self._tcp_orientation_deviation(pose_msg.header.frame_id, path_oc.link_name,
+                                                      pose_msg.pose.orientation)
+                if dev is not None:
+                    margin, cap = 0.02, 0.25
+                    widened = []
+                    for axis, d in zip("xyz", dev):
+                        attr = f"absolute_{axis}_axis_tolerance"
+                        cur = getattr(path_oc, attr)
+                        if abs(d) + margin > cur and abs(d) + margin <= cap:
+                            setattr(path_oc, attr, abs(d) + margin)
+                            widened.append(f"{axis} {cur:.3f}->{abs(d) + margin:.3f}")
+                    if widened:
+                        self.get_logger().warn(
+                            f"  {name}: start orientation is off by ({dev[0]:+.3f}, {dev[1]:+.3f}, "
+                            f"{dev[2]:+.3f}) rad; path tolerance widened to cover it: {', '.join(widened)}")
                 path_constraints.orientation_constraints.append(path_oc)
                 goal.request.path_constraints = path_constraints
                 self.get_logger().info(
