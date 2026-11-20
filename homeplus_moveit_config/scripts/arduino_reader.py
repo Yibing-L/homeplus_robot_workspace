@@ -42,6 +42,13 @@ JOG_UNDERRUN_PAD_MS = 20      # extra lookahead added whenever the firmware buff
 # Defence in depth against a console bug: velocity between consecutive streamed points,
 # hardware units per second (cm, cm, deg, deg...), about twice the console's own limits.
 JOG_MAX_RATE = [25.0, 25.0, 40.0, 180.0, 80.0, 120.0, 30.0, 25.0]
+# Idle drift (2026-11-20): with no command running, the firmware holds the end pose of its last
+# command forever. If the motors are switched off and the arm sags / the base is pushed, power-on
+# drives it straight back (and jerks). When the robot settles this far from the pose it was
+# holding, send STOP so the firmware's held target becomes where it actually is. SI units.
+IDLE_DRIFT_BASE_M = 0.03
+IDLE_DRIFT_THETA_RAD = math.radians(3.0)
+IDLE_DRIFT_ARM_RAD = math.radians(5.0)
 # A session must start from where the robot is: first point vs measured (hardware units).
 JOG_START_TOLERANCE = [2.0, 2.0, 1.5, 10.0, 10.0, 10.0, 3.0, 3.0]
 
@@ -139,6 +146,7 @@ class ArduinoBridge(Node):
         self.last_error = None
         self.id_requested = False
         self.jog = None
+        self.idle_hold_ref = None  # settled pose while idle; see IDLE_DRIFT_*
         self.joint_state_pub = self.create_publisher(JointState, '/joint_states', 10)
         self.hardware_state_pub = self.create_publisher(JointState, '/hardware/joint_states', 10)
         self.ack_pub = self.create_publisher(String, '/arduino/ack', 10)
@@ -212,6 +220,32 @@ class ArduinoBridge(Node):
         # subsequent successful command/explicit reinitialization.
         self.status_pub.publish(Bool(data=False))
         self.state_history.clear()
+
+    def _check_idle_drift(self, positions, settled):
+        """Idle and settled away from the pose held before (motors off / pushed): STOP, so the
+        firmware stops holding the old target and won't drive back at power-on."""
+        busy = self.active_id is not None or self.jog is not None or getattr(self, 'tx', None) is not None
+        if busy or not self.compatible:
+            self.idle_hold_ref = None  # a command moves the robot: take a fresh reference after it
+            return
+        if not settled:
+            return
+        ref = self.idle_hold_ref
+        if ref is None:
+            self.idle_hold_ref = list(positions)
+            return
+        idx = {n: i for i, n in enumerate(JOINT_NAMES)}
+        base = math.hypot(positions[idx['base_x']] - ref[idx['base_x']], positions[idx['base_y']] - ref[idx['base_y']])
+        theta = abs(positions[idx['base_theta']] - ref[idx['base_theta']])
+        arm = max(abs(positions[idx[n]] - ref[idx[n]]) for n in ('joint_shoulder', 'joint_elbow'))
+        if base > IDLE_DRIFT_BASE_M or theta > IDLE_DRIFT_THETA_RAD or arm > IDLE_DRIFT_ARM_RAD:
+            if self.ser:
+                self.ser.write(b'\nSTOP\n')
+            self.get_logger().warning(
+                f'Robot settled away from its held pose while idle (base {base * 100:.1f} cm, heading '
+                f'{math.degrees(theta):.1f} deg, arm {math.degrees(arm):.1f} deg): motors off or pushed. '
+                'Sent STOP so the held target is the current pose (no drive-back at power-on).')
+        self.idle_hold_ref = list(positions)
 
     def _stop_callback(self, msg):
         if msg.data:
@@ -306,6 +340,7 @@ class ArduinoBridge(Node):
             if self.active_id is None and not self.ready and settled:
                 self._set_ready(True)
                 self.status_pub.publish(Bool(data=True))
+            self._check_idle_drift(positions, settled)
             if first:
                 # State transport is healthy. Idle boot may acquire perception;
                 # execution additionally checks measured stillness on the host.

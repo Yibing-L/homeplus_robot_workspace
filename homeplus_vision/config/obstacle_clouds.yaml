@@ -39,8 +39,11 @@ d405_obstacle_cloud:
     # across an occasional frame with no point/segmentation result.
     mask_timeout_sec: 15.0
     clear_octomap_on_mask: false
-    # Keep measured table points in OctoMap; do not replace them with a fitted box.
-    table_plane_enable: false
+    # Model the table as one fitted flat box (table_plane.py, fitted live each frame)
+    # instead of 2 cm voxels. Back on 2026-11-20 (operator): with raw voxels the palm hit
+    # table voxels at ~0.71 m on every pickup approach (cup at 0.75 m). Trade-off: the
+    # table_remove_above_m band hides anything thinner than that lying on the table.
+    table_plane_enable: true
     table_world_frame: "world"
     table_z_min_m: 0.40
     table_z_max_m: 1.20
