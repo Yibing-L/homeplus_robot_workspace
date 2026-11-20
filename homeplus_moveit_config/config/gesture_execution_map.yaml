@@ -158,7 +158,10 @@ commands:
         target: detected
         orientation_from_detection: true
         offset_frame: target
-        offset_x: -0.15
+        # 22 cm back (was 15; operator, 2026-11-20): too close, the button sat low in the
+        # hand camera's view behind the fingers (the camera's line of sight is 6.7 cm above
+        # the press line, so the nearer the gripper, the lower the button appears).
+        offset_x: -0.22
         offset_z: 0.0
         gripper_value: 75.0
         rpy_deg: [0.0, 0.0, 0.0]
