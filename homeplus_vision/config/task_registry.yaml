@@ -15,10 +15,13 @@ tasks:
     name: press_square_button
     # Both buttons are silver; name the shape and place (2026-10-30).
     caption: the bottom silver button on the coffee machine
-    # Press along a fixed direction 30 deg below horizontal: at 45 deg the hand passed
-    # through the machine body ~8 cm above the button once the live map showed it (2026-11-08).
+    # Press along a fixed direction below horizontal: at 45 deg the hand passed through
+    # the machine body ~8 cm above the button once the live map showed it (2026-11-08).
+    # 30 -> 15 deg (operator, 2026-11-20): from the 30 deg standoff (gripper ~7.5 cm above
+    # the button, camera looking steeply down) the fingers hid the bottom button and the
+    # close-ups flipped between the two buttons. At 15 deg the standoff is ~3.9 cm above.
     target_geometry: point
-    approach_pitch_down_deg: 30
+    approach_pitch_down_deg: 15
     command_name: press_square_button
     command_type: sequence
 

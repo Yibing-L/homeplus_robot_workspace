@@ -11,6 +11,12 @@ Another session is working on accuracy (button press, place, pickup) at the same
 ## Rules (non-negotiable)
 - **No robot motion.** Never send motion commands, never start tasks, never publish to
   `/arduino/*` or `/gesture_control/*`. Read-only ROS subscriptions are fine.
+- **Do not use the GPU at all.** Never load a model, run inference, run `torch`/CUDA code,
+  start a benchmark or anything else that touches the GPU on this machine: the robot's
+  detector runs there. No `nvidia-smi`-heavy polling loops either (one-off reads are fine).
+  Model comparisons come from published benchmarks, model cards and papers, plus our logs.
+  Where a real measurement is needed, write the instrumentation/patch and the exact steps,
+  and hand it to the operator to run.
 - **Do not restart services** (`hp-vision`, `hp-moveit`, `hp-executor`, `hp-bridge`,
   `hp-tf`, the console) without the operator's explicit OK. Work offline where you can.
 - The GitHub repo is **public**: never commit secrets, IPs, instance IDs or passwords.
@@ -34,16 +40,19 @@ detection step wants 3 agreeing samples (≈10 s). The detector also pauses whil
 (firmware stuck reporting moving with motors unpowered).
 
 ## Questions to answer, with numbers
-1. **Where do the ~3 s per detection go?** Split `run_model_inference` into: processor /
-   multi-crop preprocessing (CPU), host→GPU copy, `generate` (and tokens generated), point
-   extraction. Do it offline: load the same model in the `.venv-molmopoint` venv on saved
-   frames (see below) — the GPU has room only if vision is stopped, so ask the operator for a
-   window, or measure with a minimal timing patch they can load at the next vision restart.
-2. **Cheap wins on the current model:** fewer crops / smaller input resolution, lower
+1. **Where do the ~3 s per detection go?** Write a minimal timing patch for
+   `run_model_inference` that adds `preprocess_sec` (processor / multi-crop, CPU),
+   `to_device_sec`, `generate_sec`, `n_generated_tokens` and `extract_sec` to the existing
+   `/molmopoint/diagnostics` JSON. Don't run it: give it to the operator with load steps
+   (vision restart) and a read-only script that summarises those fields from the topic.
+2. **Cheap wins on the current model** (estimate from docs/benchmarks; prepare each as a
+   parameter or small patch for the operator to try): fewer crops / smaller input resolution, lower
    `max_new_tokens` (a point needs ~10–20 tokens), SDPA/flash-attention, bf16 compute dtype,
    8-bit vs 4-bit (4-bit dequant is often slower), `torch.compile`. Measure accuracy too.
-3. **Faster models** for open-vocabulary pointing/boxes, benchmarked on OUR frames for speed
-   AND accuracy: e.g. smaller Molmo variants (Molmo-7B-O / MolmoE-1B), Grounding DINO
+3. **Faster models** for open-vocabulary pointing/boxes: compare from published latency and
+   accuracy numbers (note the GPU/precision each number was measured on) and how well each
+   handles our prompts; propose a small offline test set and protocol the operator can run
+   later: e.g. smaller Molmo variants (Molmo-7B-O / MolmoE-1B), Grounding DINO
    (tiny/base, there is a `Grounded-SAM-2/` checkout in the repo), OWLv2, YOLO-World,
    Florence-2, Qwen2.5-VL-3B, Moondream2. Prompts that matter: "red cup", "the bottom silver
    button on the coffee machine", "the top silver button on the coffee machine", the drip tray,
@@ -62,10 +71,10 @@ detection step wants 3 agreeing samples (≈10 s). The detector also pauses whil
    Quantify each from the logs (`journalctl --user -u hp-executor` / `-u hp-moveit`, the
    executor logs every step with timestamps).
 
-## Data you can use
+## Data you can use (read-only, CPU only)
 - `detection_logs/molmopoint_targets_*.jsonl`: every detection (pixel, model point, 3-D
   camera/world point, label, stamp). No images in there.
-- To get frames: with the operator's OK, record a short `ros2 bag` of
+- Only if the operator asks: frames for a later test set could be recorded with a short `ros2 bag` of
   `/cameras/d405/color/image_raw`, `/cameras/d405/aligned_depth_to_color/image_raw`,
   camera_info, and `/tf` `/tf_static` while vision runs (read-only), with the cup, buttons,
   tray and a person in view. Or save PNGs from those topics.
@@ -73,8 +82,8 @@ detection step wants 3 agreeing samples (≈10 s). The detector also pauses whil
 
 ## Deliverable
 A short report (also a markdown file under `docs/` on your branch):
-1. a table per option: ms/detection, accuracy on our frames (hit/miss per prompt, pixel error
-   where checkable), VRAM, effort;
+1. a table per option: expected ms/detection (with source), expected accuracy on our prompts,
+   VRAM, effort, and how confident the estimate is;
 2. the time budget of a full pickup → place → button run and the projected saving per fix;
 3. a ranked recommendation (do-now / try-next / skip);
 4. ready-to-load patches for the do-now items on `speed-investigation`, each small and
