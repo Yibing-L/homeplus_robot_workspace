@@ -39,8 +39,8 @@ d405_obstacle_cloud:
     # across an occasional frame with no point/segmentation result.
     mask_timeout_sec: 15.0
     clear_octomap_on_mask: false
-    # Model the table as an exact box instead of 2 cm voxels (see table_plane.py).
-    table_plane_enable: true
+    # Keep measured table points in OctoMap; do not replace them with a fitted box.
+    table_plane_enable: false
     table_world_frame: "world"
     table_z_min_m: 0.40
     table_z_max_m: 1.20

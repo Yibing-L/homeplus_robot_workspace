@@ -229,6 +229,8 @@ def derive_feeds(inp: Inputs, now: float) -> List[Dict[str, Any]]:
         note = None
         diag = inp.signals.get("/molmopoint/diagnostics")
         src_age = (diag.value or {}).get("frame_age_sec") if (kind == "overlay" and diag) else None
+        if kind == "overlay" and sig and isinstance(sig.value, dict) and sig.value.get("capture_age") is not None:
+            src_age = max(0.0, sig.value["capture_age"] + (age or 0))
         if sig is None:
             status = "off"
         elif kind == "overlay" and src_age is not None and src_age > 3.0 and age <= stale_after:
@@ -247,12 +249,26 @@ def derive_feeds(inp: Inputs, now: float) -> List[Dict[str, Any]]:
             if src and src["status"] in ("frozen", "stale", "off"):
                 status = "frozen" if src["status"] == "frozen" else "stale"
                 note = f"source camera {src['status']}: detector is drawing on an old frame"
+        activity = None
+        if kind == "overlay":
+            src = next((f for f in out if f["id"] == "d405_color"), None)
+            d = diag.value if diag and diag.fresh(now, inp.cfg["detector_down_sec"]) else {}
+            if src and src["status"] in ("stale", "off", "frozen"):
+                activity = "Camera disconnected or no fresh frames"
+            elif d.get("stage") == "motion_gate":
+                activity = "Paused during motion / waiting for a settled frame"
+            elif d.get("reason") in ("waiting_for_synced_frames", "rgbd_skew"):
+                activity = "Waiting for synchronized color/depth frames"
+            elif d.get("reason") == "processing":
+                activity = "Processing detection"
+            if activity:
+                note = activity
         out.append({"id": fid, "label": label, "kind": kind, "topic": sig.source if sig else None,
                     "seq": inp.frame_seq.get(fid), "age": age, "fps": round(fps, 1), "status": status,
                     "frozen_sec": round(frozen, 1), "stale_after": stale_after,
                     "strip": sig.strip(now) if sig else "0" * 120,
                     "depth_range_m": [0.15, 1.50] if kind == "depth" else None, "note": note,
-                    "source_age": src_age})
+                    "source_age": src_age, "activity": activity})
     return sorted(out, key=lambda f: [x[0] for x in FEEDS].index(f["id"]))
 
 

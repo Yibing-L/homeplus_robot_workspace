@@ -42,7 +42,7 @@ function FeedTile({ feed, big, onClick }: { feed: Feed; big?: boolean; onClick?:
       </div>
     ) : status === "stale" ? (
       <div className="veil">
-        <b>STALE</b>
+        <b>{!lost && feed.activity ? feed.activity : "STALE"}</b>
         <span>{lost ? "console link lost" : feed.note ?? `last frame ${fmtAge(age)} ago`}</span>
       </div>
     ) : status === "frozen" ? (
@@ -67,7 +67,7 @@ function FeedTile({ feed, big, onClick }: { feed: Feed; big?: boolean; onClick?:
         {veil}
       </div>
       <figcaption className="cap" title={`${feed.topic ?? ""} · frame #${feed.seq ?? "—"}`}>
-        <span className="age">{fmtAge(age)}</span>
+        <span className="age">{feed.activity ?? fmtAge(age)}</span>
         <span className="mono muted">
           {status === "stale" || status === "off" ? "— fps" : `${feed.fps.toFixed(1)} fps`}
           {feed.kind === "overlay" && feed.source_age != null ? ` · src ${fmtAge(feed.source_age)}` : ""}

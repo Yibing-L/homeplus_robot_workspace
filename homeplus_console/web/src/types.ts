@@ -86,6 +86,7 @@ export interface Feed {
   depth_range_m: [number, number] | null;
   note: string | null;
   source_age: number | null;
+  activity?: string | null;
 }
 
 export interface Component {

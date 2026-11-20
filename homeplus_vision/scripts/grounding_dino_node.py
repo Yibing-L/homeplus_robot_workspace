@@ -358,7 +358,8 @@ class MolmoPointNode(Node):
         self.latest_color = None
         self.latest_color_header = None
         self.latest_depth = None
-        self._depth_frames = deque(maxlen=60)
+        self._depth_frames = deque(maxlen=30)
+        self._color_frames = deque(maxlen=12)
         self.camera_info = None
         self._have_logged_color = False
         self._have_logged_depth = False
@@ -438,7 +439,7 @@ class MolmoPointNode(Node):
             )
 
         self.timer = self.create_timer(
-            1.0 / max(self.inference_rate, 0.1),
+            0.1,  # Retry transient input/TF gaps promptly; inference remains rate-limited.
             self.detect_loop,
             callback_group=self._inference_callback_group,
         )
@@ -731,7 +732,8 @@ class MolmoPointNode(Node):
         cam.camera_frame = str(self.get_parameter('secondary_camera_frame').value).strip()
         cam.latest_color = None
         cam.latest_color_header = None
-        cam.depth_frames = deque(maxlen=60)
+        cam.depth_frames = deque(maxlen=30)
+        cam.color_frames = deque(maxlen=12)
         cam.camera_info = None
         cam.last_processed_stamp_ns = -1
 
@@ -743,6 +745,7 @@ class MolmoPointNode(Node):
             color = self.bridge.imgmsg_to_cv2(msg, desired_encoding='bgr8')
             with self._state_lock:
                 cam.latest_color, cam.latest_color_header = color, msg.header
+                cam.color_frames.append((color, msg.header))
 
         def on_depth(msg):
             with self._state_lock:
@@ -774,6 +777,7 @@ class MolmoPointNode(Node):
         with self._state_lock:
             self.latest_color = color
             self.latest_color_header = msg.header
+            self._color_frames.append((color, msg.header))
         if not self._have_logged_color:
             self.get_logger().info(f"Received first color frame on {self.image_topic}")
             self._have_logged_color = True
@@ -824,7 +828,29 @@ class MolmoPointNode(Node):
                 and 0 <= self.get_clock().now().nanoseconds - frame_stamp_ns < int(float(self.get_parameter('max_observation_age_sec').value) * 1e9)
             )
 
+    @staticmethod
+    def _latest_rgbd_pair(colors, depths, now_ns, max_skew_ns, after_ns=0):
+        """Newest complete pair captured in the last second, in acquisition time.
+
+        Never mix an old accepted color with a newer depth, or consume a future
+        frame. Keep acquisition stamps for TF; receipt time is not exposure time.
+        """
+        stamp = MolmoPointNode._header_stamp_ns
+        for color, header in reversed(colors):
+            t = stamp(header)
+            if t <= after_ns or not 0 <= now_ns - t <= 1_000_000_000:
+                continue
+            eligible = [d for d in depths if 0 <= now_ns - stamp(d.header) <= 1_000_000_000 and
+                        stamp(d.header) > after_ns]
+            depth = min(eligible, key=lambda d: abs(stamp(d.header) - t), default=None)
+            if depth is not None and abs(stamp(depth.header) - t) <= max_skew_ns:
+                return color, header, depth
+        return None
+
     def detect_loop(self):
+        last_started = getattr(self, '_last_inference_started', None)
+        if last_started is not None and time.monotonic() - last_started < 1.0 / max(getattr(self, 'inference_rate', 0.5), 0.1):
+            return
         diag = self._new_cycle_diagnostics()
         with self._config_lock:
             task_camera = (getattr(self, 'tasks', {}).get(self.task_id) or {}).get('camera')
@@ -841,6 +867,16 @@ class MolmoPointNode(Node):
                         self._header_stamp_ns(header)), default=None) if header else None
             robot_moving = self._robot_moving
             motion_finished_stamp_ns = self._motion_finished_stamp_ns
+            colors = getattr(secondary, 'color_frames', None) if use_secondary else getattr(self, '_color_frames', None)
+            pair_missing = False
+            if colors is not None and color is not None:
+                pair = self._latest_rgbd_pair(
+                    colors, depth_frames, self.get_clock().now().nanoseconds,
+                    int(float(self.get_parameter('rgbd_max_skew_sec').value) * 1e9),
+                    motion_finished_stamp_ns if self.pause_during_motion else 0)
+                pair_missing = pair is None
+                if pair is not None:
+                    color, header, depth = pair
         diag['robot_moving'] = bool(robot_moving)
         image_topic = secondary.image_topic if use_secondary else self.image_topic
         camera_info_topic = secondary.camera_info_topic if use_secondary else self.camera_info_topic
@@ -863,6 +899,13 @@ class MolmoPointNode(Node):
             self._report_cycle(diag, 'inputs', 'waiting_for_color_or_camera_info')
             return
 
+        if pair_missing:
+            diag['frame_age_sec'] = round((self.get_clock().now().nanoseconds - self._header_stamp_ns(header)) / 1e9, 3)
+            if depth is not None:
+                diag['rgbd_skew_sec'] = round(abs(self._header_stamp_ns(depth.header) - self._header_stamp_ns(header)) / 1e9, 4)
+            self._report_cycle(diag, 'inputs', 'waiting_for_synced_frames',
+                               'Waiting for a fresh color/depth pair within the configured skew limit', 'warn')
+            return
         frame_stamp_ns = self._header_stamp_ns(header)
         diag['stamp_ns'] = frame_stamp_ns
         diag['frame_age_sec'] = round(
@@ -956,8 +999,10 @@ class MolmoPointNode(Node):
         self._dump_cycle_inputs(color, depth, camera_info, frame_tf,
                                 frame_stamp_ns, caption, task_id)
 
+        self._report_cycle(dict(diag), 'inference', 'processing')
         debug_img = img_resized.copy()
         inference_start = time.monotonic()
+        self._last_inference_started = inference_start
         try:
             detections = self.run_model_inference(img_resized, caption)
         except Exception as exc:
@@ -1522,7 +1567,10 @@ class MolmoPointNode(Node):
                         (0, 0, 0), 3, cv2.LINE_AA)
             cv2.putText(debug_img, text, (6, 18), cv2.FONT_HERSHEY_SIMPLEX, 0.5,
                         (255, 255, 255), 1, cv2.LINE_AA)
-            self.debug_img_pub.publish(self.bridge.cv2_to_imgmsg(debug_img, "bgr8"))
+            msg = self.bridge.cv2_to_imgmsg(debug_img, "bgr8")
+            stamp_ns = int(diag.get('stamp_ns', 0))
+            msg.header.stamp.sec, msg.header.stamp.nanosec = divmod(stamp_ns, 1_000_000_000)
+            self.debug_img_pub.publish(msg)
         if self.diagnostics_pub is not None:
             self.diagnostics_pub.publish(
                 String(data=json.dumps(diag, default=self._json_default)))

@@ -380,7 +380,9 @@ class RosIO:
             img = img.resize((640, int(img.height * 640 / img.width)))
         self._last_frame_put[fid] = now
         f = self.frames.put_image(fid, img, now)
-        self.store.update(f"img/{fid}", {"seq": f.seq}, topic)
+        stamp = m.header.stamp.sec + m.header.stamp.nanosec / 1e9
+        capture_age = (self._node.get_clock().now().nanoseconds / 1e9 - stamp) if stamp else None
+        self.store.update(f"img/{fid}", {"seq": f.seq, "capture_age": capture_age}, topic)
 
     def _source_for(self, node: str) -> str:
         """Which process said this? ROS log lines carry only the node name, so say so when it's ambiguous."""

@@ -134,7 +134,7 @@ class RemoteDetectorTests(unittest.TestCase):
     def test_rgbd_skew_is_named(self):
         self.frame['depth_stamp_ns'] = self.frame['stamp_ns'] + 100_000_000
         diag = self.run_cycle()['diagnostics']
-        self.assertEqual(diag['reason'], 'rgbd_skew')
+        self.assertEqual(diag['reason'], 'waiting_for_synced_frames')
         self.assertAlmostEqual(diag['rgbd_skew_sec'], 0.1)
 
     def test_tf_failure_is_named(self):
@@ -143,11 +143,12 @@ class RemoteDetectorTests(unittest.TestCase):
         self.assertEqual((diag['stage'], diag['reason'], diag['tf_ok']),
                          ('tf', 'tf_lookup_failed', False))
 
-    def test_stale_frame_discarded_after_inference_with_debug_image(self):
+    def test_stale_frame_rejected_before_inference(self):
         result = self.run_cycle(frame_age_sec=20.0)
         diag = result['diagnostics']
-        self.assertEqual((diag['stage'], diag['reason']), ('publish_gate', 'frame_stale'))
-        self.assertIsNotNone(result['debug_image'])
+        self.assertEqual((diag['stage'], diag['reason']), ('inputs', 'waiting_for_synced_frames'))
+        self.assertEqual(self.server.requests, [])
+        self.assertIsNone(result['debug_image'])
         self.assertIsNone(result['pose_world'])
 
     def test_missing_mask_is_named(self):
@@ -210,6 +211,39 @@ class PointSelectionParityTests(unittest.TestCase):
         self.assertEqual(local, [{
             'label': 'cup', 'score': 1.0, 'backend': 'molmopoint', 'object_id': 1,
             'point': [330, 250], 'bbox': [318, 238, 342, 262]}])
+
+
+class RGBDPairTests(unittest.TestCase):
+    def setUp(self):
+        from types import SimpleNamespace
+        self.ns = SimpleNamespace
+        self.node = replay.load_detector({'logs': [], 'published': {}, 'echo_logs': False}).MolmoPointNode
+
+    def header(self, ms):
+        ns = int(ms * 1_000_000)
+        return self.ns(stamp=self.ns(sec=ns // 1_000_000_000, nanosec=ns % 1_000_000_000))
+
+    def pair(self, colors, depths, after=0):
+        return self.node._latest_rgbd_pair(
+            [(name, self.header(t)) for name, t in colors],
+            [self.ns(header=self.header(t)) for t in depths],
+            10_000_000_000, 35_000_000, after)
+
+    def test_uses_newest_complete_pair_not_unmatched_latest_color(self):
+        result = self.pair([('matched', 9900), ('unmatched', 9990)], [9900])
+        self.assertEqual(result[0], 'matched')
+
+    def test_rejects_future_color_and_depth(self):
+        self.assertIsNone(self.pair([('future', 10100)], [10100]))
+        self.assertIsNone(self.pair([('color', 9990)], [10010]))
+
+    def test_rejects_stale_and_excess_skew(self):
+        self.assertIsNone(self.pair([('old', 8000)], [8000]))
+        self.assertIsNone(self.pair([('color', 9900)], [9800]))
+
+    def test_requires_both_frames_after_motion(self):
+        self.assertIsNone(self.pair([('color', 9910)], [9890], 9_900_000_000))
+        self.assertIsNotNone(self.pair([('color', 9930)], [9920], 9_900_000_000))
 
 
 if __name__ == '__main__':

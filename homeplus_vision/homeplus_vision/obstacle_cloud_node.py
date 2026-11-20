@@ -607,7 +607,7 @@ class ObstacleCloudNode(Node):
             self._restore_table()
 
     def _restore_table(self):
-        if self.table_plane_last is not None or not self.bridge_session:
+        if not self.table_enable or self.table_plane_last is not None or not self.bridge_session:
             return
         try:
             with open(self.table_store) as f:

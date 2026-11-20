@@ -399,3 +399,24 @@ def test_pose_before_cycle_report_is_paired(env):
         store.push_event("/molmopoint/diagnostics", {"stage": "done", "reason": "pose_published", "task_id": 1}, "d")
         tracker.observe(clock())
     assert [c["pose"] for c in list(tracker.mem.cycles)[-3:]] == [(1.08, 0.34, 0.76)] * 3
+
+
+def test_overlay_uses_its_own_capture_age_while_processing(env):
+    clock, store, tracker = env
+    store.update('img/d405_overlay', {'seq': 1, 'capture_age': 6.0}, 'overlay')
+    store.update('/molmopoint/diagnostics', {'stage': 'inference', 'reason': 'processing',
+                                          'frame_age_sec': 0.1}, 'diag')
+    state = derive(make(clock, store, tracker), clock(), 0)
+    overlay = next(f for f in state['feeds'] if f['id'] == 'd405_overlay')
+    assert overlay['source_age'] == 6.0
+    assert overlay['status'] == 'stale'
+    assert overlay['activity'] == 'Processing detection'
+
+
+def test_overlay_reports_camera_loss_before_processing(env):
+    clock, store, tracker = env
+    clock.t += 2
+    store.update('/molmopoint/diagnostics', {'stage': 'inference', 'reason': 'processing'}, 'diag')
+    state = derive(make(clock, store, tracker), clock(), 0)
+    overlay = next(f for f in state['feeds'] if f['id'] == 'd405_overlay')
+    assert overlay['activity'] == 'Camera disconnected or no fresh frames'

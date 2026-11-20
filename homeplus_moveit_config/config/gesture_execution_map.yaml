@@ -1133,11 +1133,11 @@ commands:
       # 1. Find the person: look at the current heading, then turn in place 30 deg at
       #    a time (base only, collision-checked, slow) up to a full turn. Task 9 uses
       #    the side D455 (task_registry.yaml): the held cup blocks much of the D405.
-      #    2026-11-15 (operator): look with BOTH cameras at every heading, front hand
-      #    camera first (task 12), then the side D455 (task 9); the first hit wins.
+      #    Initial search uses D455 only. D405 is used after a person is found
+      #    and the base turns to face them (lock_person_front).
       - name: scan_for_person
         type: scan_rotate
-        scan_task_ids: [12, 9]
+        scan_task_ids: [9]
         step_deg: 30
         max_deg: 360
         direction: left
@@ -1160,8 +1160,7 @@ commands:
       #    horizontally), then drive in on that reading only.
       - name: face_person
         type: base_approach
-        # Seen by the side D455 (task 9, mounted facing +90 deg = left): turn exactly
-        # that much. Seen by the front camera (task 12): turn by its bearing.
+        # D455 is mounted facing +90 deg (left): turn that much before D405 confirmation.
         turn_deg_by_scan_task: {9: 90.0}
         standoff_m: 10.0
         max_drive_m: 0.01  # must be > 0; the drive is 0 anyway (person closer than 10 m)
@@ -1193,7 +1192,7 @@ commands:
         require_trajectory_approval: true
 
       # 3. Find the open hand with the hand camera, close up: 3 agreeing samples within
-      #    2 cm, within 1 m of the person reading and of the base.
+      #    2 cm, within 1 m of the person reading. No range cap from the base.
       - name: find_hand
         type: detect
         task_id: 10
@@ -1202,7 +1201,6 @@ commands:
         detection_min_stable_samples: 3
         detection_stability_tolerance_m: 0.02
         detection_max_refresh_shift_m: 1.0
-        max_target_range_m: 1.1
         preserve_reference_z: false
 
       # 4. Present: the cup bottom 10 cm above the palm. The base may shuffle (at most
