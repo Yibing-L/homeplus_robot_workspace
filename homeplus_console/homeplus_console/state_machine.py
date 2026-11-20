@@ -230,7 +230,11 @@ def derive_feeds(inp: Inputs, now: float) -> List[Dict[str, Any]]:
         diag = inp.signals.get("/molmopoint/diagnostics")
         src_age = (diag.value or {}).get("frame_age_sec") if (kind == "overlay" and diag) else None
         if kind == "overlay" and sig and isinstance(sig.value, dict) and sig.value.get("capture_age") is not None:
-            src_age = max(0.0, sig.value["capture_age"] + (age or 0))
+            # The overlay is drawn on a frame captured before inference started; inference itself
+            # takes ~2-3.5 s, so subtract it (2026-11-20: every overlay read >3 s and was hidden).
+            infer = (diag.value or {}).get("inference_sec") if diag else None
+            infer = float(infer) if isinstance(infer, (int, float)) else 0.0
+            src_age = max(0.0, sig.value["capture_age"] - infer + (age or 0))
         if sig is None:
             status = "off"
         elif kind == "overlay" and src_age is not None and src_age > 3.0 and age <= stale_after:
