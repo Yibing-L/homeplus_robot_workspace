@@ -375,7 +375,7 @@ commands:
         target: detected
         orientation_from_detection: true
         offset_frame: target
-        offset_x: 0.03  # along the 60 deg press line (2026-11-08)
+        offset_x: 0.05  # along the 60 deg press line; 3 -> 5 cm past the surface: didn't go in far enough (operator, 2026-11-20). Guarded: a stall ends it.
         gripper_value: 75.0
         position_tolerance_m: 0.01
         use_orientation_constraint: true
